@@ -1,0 +1,10 @@
+repos:
+  - repo: https://github.com/FeryET/pre-commit-rust
+    rev: v1.2.1
+    hooks:
+      - id: fmt
+        args: ["--verbose", "--"]
+
+      - id: cargo-check
+      # - id: build
+      # - id: test

@@ -1,0 +1,130 @@
+//! Test utilities for autoqueues library
+//!
+//! Common helper functions and types used across different test modules
+
+use std::sync::Arc;
+use autoqueues::*;
+use tokio::time::Duration;
+
+/// Create a basic sensor queue for testing
+pub fn create_sensor_queue(name: &str, interval_ms: u64) -> Queue<i32> {
+    let name_owned = name.to_string();
+    let hook = create_test_hook(&name_owned);
+    let queue_type = QueueType::new(
+        QueueValue::NodeAvailability,
+        interval_ms,
+        2,
+        format!("{}_trace.log", name),
+        format!("{}_var", name),
+    );
+    let config = QueueConfig::new(Mode::Sensor, hook, Model::Linear, queue_type);
+    Queue::new(config)
+}
+
+/// Create a basic insight queue for testing
+pub fn create_insight_queue(name: &str, interval_ms: u64) -> Queue<String> {
+    let name_owned = name.to_string();
+    let hook: FunctionHook<String> = Arc::new(move |_| Ok(format!("Insight from {}", name_owned)));
+    let queue_type = QueueType::new(
+        QueueValue::NodeLoad,
+        interval_ms,
+        2,
+        format!("{}_trace.log", name),
+        format!("{}_var", name),
+    );
+    let config = QueueConfig::new(Mode::Insight, hook, Model::Linear, queue_type);
+    Queue::new(config)
+}
+
+/// Create a basic server queue for testing
+pub fn create_server_queue(name: &str, interval_ms: u64) -> Queue<i32> {
+    let hook = create_test_hook(name);
+    let queue_type = QueueType::new(
+        QueueValue::ClusterAvailability,
+        interval_ms,
+        2,
+        format!("{}_trace.log", name),
+        format!("{}_var", name),
+    );
+    let config = QueueConfig::new(Mode::Server, hook, Model::Quad, queue_type);
+    Queue::new(config)
+}
+
+/// Create a basic client queue for testing
+pub fn create_client_queue(name: &str, interval_ms: u64) -> Queue<i32> {
+    let hook = create_test_hook(name);
+    let queue_type = QueueType::new(
+        QueueValue::Sim,
+        interval_ms,
+        2,
+        format!("{}_trace.log", name),
+        format!("{}_var", name),
+    );
+    let config = QueueConfig::new(Mode::Client, hook, Model::Linear, queue_type);
+    Queue::new(config)
+}
+
+/// Create a test function hook that returns sequential values
+pub fn create_test_hook(_name: &str) -> FunctionHook<i32> {
+    let counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    Arc::new(move |_| {
+        let current = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok((current % 100) as i32) // Return values 0-99 cycling
+    })
+}
+
+/// Create a test queue configuration
+pub fn create_test_queue_config<T: Clone + Send + 'static>(
+    mode: Mode,
+    hook: FunctionHook<T>,
+    interval_ms: u64,
+    queue_value: QueueValue,
+) -> QueueConfig<T> {
+    let queue_type = QueueType::new(
+        queue_value,
+        interval_ms,
+        2,
+        "test_trace.log".to_string(),
+        "test_var".to_string(),
+    );
+    QueueConfig::new(mode, hook, Model::Linear, queue_type)
+}
+
+/// Helper to simulate realistic timestamp generation
+pub fn current_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// Helper function for async test delays
+pub async fn sleep_ms(ms: u64) {
+    tokio::time::sleep(Duration::from_millis(ms)).await;
+}
+
+/// Create a queue with AIMD configuration for testing
+pub fn create_aimd_queue(name: &str, interval_ms: u64) -> Queue<i32> {
+    let hook = create_test_hook(name);
+    let queue_type = QueueType::new(
+        QueueValue::NodeAvailability,
+        interval_ms,
+        2,
+        format!("{}_trace.log", name),
+        format!("{}_var", name),
+    );
+    let config = QueueConfig::new(Mode::Sensor, hook, Model::Linear, queue_type);
+    
+    let aimd_config = AimdConfig {
+        initial_interval_ms: interval_ms,
+        min_interval_ms: 100,
+        max_interval_ms: 5000,
+        additive_factor_ms: 50,
+        multiplicative_factor: 0.8,
+        variance_threshold: Some(1.0),
+        cooldown_ms: Some(0), // No cooldown for tests
+        window_size: Some(10),
+    };
+    
+    Queue::with_aimd(config, aimd_config)
+}
