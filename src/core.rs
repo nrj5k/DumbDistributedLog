@@ -10,10 +10,9 @@ use tokio::sync::{oneshot, Mutex};
 use tokio::time::interval;
 
 use crate::aimd::{AimdConfig, AimdController, AimdStats};
-use crate::enums::{Mode, Model, QueueError, QueueValue};
+use crate::enums::QueueError;
 use crate::server::QueueServerHandle;
-use crate::traits::{InsightQueue, SensorQueue};
-use crate::types::{QueueConfig, QueueStats, QueueType};
+use crate::types::{QueueConfig, QueueStats};
 
 pub type Timestamp = u64;
 pub type QueueData<T> = (Timestamp, T);

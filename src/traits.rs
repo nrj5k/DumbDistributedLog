@@ -4,7 +4,7 @@
 //! These traits establish the interface for different queue types in the system.
 
 use crate::aimd::{AimdConfig, AimdStats};
-use crate::enums::{Mode, Model, QueueValue};
+use crate::enums::{Mode, Model};
 use crate::types::QueueConfig;
 
 /// Trait for sensor-based queue implementations

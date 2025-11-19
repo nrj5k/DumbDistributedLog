@@ -2,11 +2,9 @@
 //!
 //! This module provides autonomous server functionality for queue system with graceful shutdown capabilities.
 
-use std::sync::Arc;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::core::Queue;
 use crate::enums::QueueError;
 
 /// Server handle for managing queue server lifecycle
