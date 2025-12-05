@@ -1,10 +1,32 @@
 [package]
 name = "autoqueues"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+
+# Disable doctests due to system rustdoc issue
+[lib]
+doctest = false
 
 [dependencies]
 circular-buffer = "1.2.0"
 tokio = { version = "1.0", features = ["full"] }
-thiserror = "1.0"
+thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sysinfo = "0.37"
+bincode = { version = "2.0" }
+uuid = { version = "1.0", features = ["v4"] }
+regex = "1.12"
+toml = "0.9"
+quinn = "0.11"
+rustls = "0.23"
+rcgen = "0.14"
+# Additional dependencies for stratified networking
+futures = "0.3"
+socket2 = "0.5"
+ordered-float = "4.0"
+cron = "0.12"
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+criterion = "0.7"

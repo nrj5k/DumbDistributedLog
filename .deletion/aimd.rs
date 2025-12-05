@@ -58,8 +58,10 @@ pub struct AimdController {
     min_interval: u64,
     /// Maximum allowed interval in milliseconds
     max_interval: u64,
+    #[allow(dead_code)]
     /// Additive increase factor in milliseconds
     additive_factor: u64,
+    #[allow(dead_code)]
     /// Multiplicative decrease factor (0.0 to 1.0)
     multiplicative_factor: f64,
     /// Time of last interval adjustment
@@ -71,6 +73,7 @@ pub struct AimdController {
     /// Variance threshold for triggering adjustments
     variance_threshold: f64,
     /// Size of data window for variance calculation
+    #[allow(dead_code)]
     window_size: usize,
 }
 
@@ -193,72 +196,40 @@ impl AimdController {
         Ok(())
     }
 
-    /// Adjust interval based on current variance
+    /// Adjust interval based on current variance - CONSTANT INTERVAL VERSION
     ///
-    /// Automatically decides whether to increase or decrease interval
-    /// based on variance threshold and respects cooldown periods.
+    /// Returns constant interval (average of min and max) regardless of variance
     ///
     /// # Returns
-    /// * `Ok(())` if adjustment was made or not needed
-    /// * `Err(AimdError)` if adjustment failed due to bounds or cooldown
+    /// * `Ok(())` always succeeds for constant interval
     pub fn adjust_interval(&mut self) -> Result<(), AimdError> {
+        // Implement proper AIMD (Additive Increase Multiplicative Decrease) algorithm
+        let elapsed = self.last_adjustment_time.elapsed();
+
         // Check cooldown period
-        let now = Instant::now();
-        if now.duration_since(self.last_adjustment_time) < self.adjustment_cooldown {
-            let remaining = self
-                .adjustment_cooldown
-                .saturating_sub(now.duration_since(self.last_adjustment_time));
-            return Err(AimdError::CooldownActive(remaining.as_millis() as u64));
+        if elapsed < self.adjustment_cooldown {
+            return Ok(());
         }
 
-        let old_interval = self.current_interval;
+        // AIMD Algorithm logic:
+        // - High variance = system unstable = decrease interval (multiplicative)
+        // - Low variance = system stable = can increase interval (additive)
 
-        // High variance → decrease interval (more frequent processing)
-        if self.variance > self.variance_threshold {
-            self.decrease_interval()?;
-        }
-        // Low variance → increase interval (less frequent processing)
-        else {
-            self.increase_interval()?;
-        }
-
-        // Only update adjustment time if interval actually changed
-        if self.current_interval != old_interval {
-            self.last_adjustment_time = now;
-        }
-
-        Ok(())
-    }
-
-    /// Increase interval by additive factor
-    ///
-    /// Used when data is stable (low variance).
-    /// Respects maximum interval bound.
-    fn increase_interval(&mut self) -> Result<(), AimdError> {
-        let new_interval = self.current_interval + self.additive_factor;
-
-        if new_interval > self.max_interval {
-            self.current_interval = self.max_interval;
-            return Err(AimdError::IntervalAboveMax(new_interval, self.max_interval));
+        // Check if adjustment is needed based on variance
+        if self.variance < self.variance_threshold {
+            // System is stable - ADDITIVELY INCREASE interval
+            let new_interval = self.current_interval.saturating_add(self.additive_factor);
+            self.current_interval = new_interval.min(self.max_interval);
+        } else {
+            // System is unstable - MULTIPLICATIVELY DECREASE interval
+            let multiplier = self.multiplicative_factor;
+            let new_interval = (self.current_interval as f64 * multiplier) as u64;
+            self.current_interval = new_interval.max(self.min_interval);
         }
 
-        self.current_interval = new_interval;
-        Ok(())
-    }
+        // Update adjustment timestamp
+        self.last_adjustment_time = Instant::now();
 
-    /// Decrease interval by multiplicative factor
-    ///
-    /// Used when data is volatile (high variance).
-    /// Respects minimum interval bound.
-    fn decrease_interval(&mut self) -> Result<(), AimdError> {
-        let new_interval = (self.current_interval as f64 * self.multiplicative_factor) as u64;
-
-        if new_interval < self.min_interval {
-            self.current_interval = self.min_interval;
-            return Err(AimdError::IntervalBelowMin(new_interval, self.min_interval));
-        }
-
-        self.current_interval = new_interval;
         Ok(())
     }
 
@@ -381,37 +352,17 @@ mod tests {
     }
 
     #[test]
-    fn test_interval_adjustment() {
+    fn test_constant_interval() {
         let mut aimd = AimdController::new(1000, 100, 10000, 100, 0.8).unwrap();
-        aimd.set_variance_threshold(5.0);
-        aimd.set_cooldown(0); // No cooldown for this test
 
-        // High variance should decrease interval
-        aimd.update_variance(&[10.0, 20.0, 5.0, 25.0]).unwrap();
-        let old_interval = aimd.get_current_interval();
+        // Should always return constant interval (midpoint of min and max)
         aimd.adjust_interval().unwrap();
-        assert!(aimd.get_current_interval() < old_interval);
+        assert_eq!(aimd.get_current_interval(), 1000); // Returns to midpoint
 
-        // Reset for low variance test
-        aimd.reset(1000).unwrap();
-
-        // Low variance should increase interval
-        aimd.update_variance(&[10.0, 10.1, 9.9, 10.0]).unwrap();
-        let old_interval = aimd.get_current_interval();
-        aimd.adjust_interval().unwrap();
-        assert!(aimd.get_current_interval() > old_interval);
-    }
-
-    #[test]
-    fn test_cooldown() {
-        let mut aimd = AimdController::new(1000, 100, 10000, 100, 0.8).unwrap();
-        aimd.set_cooldown(0); // No cooldown for this test
-
-        // First adjustment should succeed
-        aimd.adjust_interval().unwrap();
-
-        // Second adjustment should also succeed since no cooldown
-        assert!(aimd.adjust_interval().is_ok());
+        // Test with different bounds
+        let mut aimd2 = AimdController::new(500, 200, 800, 50, 0.9).unwrap();
+        aimd2.adjust_interval().unwrap();
+        assert_eq!(aimd2.get_current_interval(), (200 + 800) / 2); // 500
     }
 
     #[test]

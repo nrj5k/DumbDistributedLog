@@ -1,56 +1,37 @@
-//! # Autoqueues Library
+//! # Autoqueues Library - KISS Simplified
 //!
-//! A Rust library for autonomous queue systems with AIMD (Additive Increase Multiplicative Decrease)
-//! support. This library provides queue implementations that can automatically adjust their
-//! processing intervals based on data variance patterns.
+//! A Rust library for autonomous queue systems following KISS principle.
+//! Provides trait-based architecture with minimal complexity and maximum flexibility.
 //!
 //! ## Key Features
 //!
-//! - **Autonomous Servers**: Each queue runs its own async task
-//! - **Circular Buffer**: Fixed-capacity time-series storage  
-//! - **AIMD Integration**: Intelligent interval adaptation based on data variance
-//! - **Function Hooks**: Custom data processing via closures
-//! - **Trait System**: SensorQueue and InsightQueue implementations
+//! - **Trait-Based Design**: Ultra-minimal traits for maximum flexibility.
+//! - **Simple Expression Engine**: Basic arithmetic with local/global variables
+//! - **Unified Configuration**: Single file-based configuration system
+//! - **Queue Operations**: Clean, focused API for queue management
+//! - **System Metrics**: Real-time system monitoring
+//! - **Pub/Sub System**: Topic-based messaging within machine
 //!
 //! ## Quick Start
 //!
-//! ```rust,no_run
-//! use autoqueues::{Queue, QueueConfig, QueueType, FunctionHook};
-//! use std::sync::Arc;
-//!
-//! let hook: FunctionHook<i32> = Arc::new(|_| Ok(42));
-//! let queue_type = QueueType::new(
-//!     autoqueues::QueueValue::NodeAvailability,
-//!     1000,  // base_interval
-//!     2,     // increase_factor
-//!     "trace.txt".to_string(),
-//!     "var".to_string(),
-//! );
-//! let config = QueueConfig::new(
-//!     autoqueues::Mode::Sensor,
-//!     hook,
-//!     autoqueues::Model::Linear,
-//!     queue_type,
-//! );
-//! let queue = Queue::new(config);
-//! let server_handle = queue.start_server()?;
-//! ```
+//! See the examples directory for complete usage examples.
 
-pub mod aimd;
-pub mod core;
-pub mod enums;
-pub mod server;
-pub mod traits;
-pub mod types;
+// KISS Simplified modules
+pub mod config; // Unified configuration system
+pub mod expression; // New simplified expression system
+pub mod metrics; // System metrics (keep)
+pub mod networking; // Simple networking layer
+pub mod pubsub; // Pub/sub system (keep)
+pub mod queue;
+pub mod traits; // Trait definitions
+pub mod types; // Core types and utilities // New queue module structure
 
-// Re-export main types for convenience
-pub use aimd::{AimdConfig, AimdController, AimdStats};
-pub use core::Queue;
-pub use enums::{Mode, Model, QueueError, QueueValue};
-pub use server::QueueServerHandle;
-pub use traits::{AimdQueue, InsightQueue, QueueOperations, SensorQueue};
-pub use types::{FunctionHook, QueueConfig, QueueStats, QueueType};
-
-// Re-export the timestamp type
-pub use core::QueueData;
-pub use core::Timestamp;
+// Re-export main types for convenience (KISS simplified)
+pub use crate::config::{ConfigError, QueueConfig}; // Unified configuration
+pub use crate::expression::{Expression, ExpressionError, SimpleExpression}; // Expression engine
+pub use crate::metrics::{DiskMetrics, MemoryMetrics, MetricsCollector, SystemInfo, SystemMetrics};
+pub use crate::networking::{DistributedQueueManager, TcpTransport}; // Simple networking
+pub use crate::pubsub::{PubSubBroker, PubSubError, TopicMessage};
+pub use crate::queue::{Queue, QueueError, QueueServerHandle, SimpleQueue}; // New queue system
+pub use crate::traits::transport::{Transport, TransportError}; // Transport traits
+pub use crate::types::{QueueData, QueueStats, Timestamp};
