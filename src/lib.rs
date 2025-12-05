@@ -30,7 +30,7 @@ pub mod types; // Core types and utilities // New queue module structure
 pub use crate::config::{ConfigError, QueueConfig}; // Unified configuration
 pub use crate::expression::{Expression, ExpressionError, SimpleExpression}; // Expression engine
 pub use crate::metrics::{DiskMetrics, MemoryMetrics, MetricsCollector, SystemInfo, SystemMetrics};
-pub use crate::networking::{DistributedQueueManager, TcpTransport}; // Simple networking
+pub use crate::networking::{DistributedQueueManager, TcpTransport, NetworkNode}; // Simple networking
 pub use crate::pubsub::{PubSubBroker, PubSubError, TopicMessage};
 pub use crate::queue::{Queue, QueueError, QueueServerHandle, SimpleQueue}; // New queue system
 pub use crate::traits::transport::{Transport, TransportError}; // Transport traits
