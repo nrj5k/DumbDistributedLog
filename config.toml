@@ -1,0 +1,50 @@
+# AutoQueues Configuration File
+# This file demonstrates the queue manager configuration system
+
+[queues]
+# Base metrics that will be collected from the system
+base = ["cpu_usage", "memory_usage", "disk_usage", "network_io", "process_count"]
+
+# Derived expressions that calculate values from base metrics
+[queues.derived.health_score]
+formula = "(local.cpu_usage + local.memory_usage + local.disk_usage) / 3.0"
+
+description = "Overall system health score (0-100)"
+
+[queues.derived.system_load]
+formula = "(local.cpu_usage * 0.5) + (local.memory_usage * 0.3) + (local.disk_usage * 0.2)"
+description = "Weighted system load index"
+
+[queues.derived.performance_index]
+formula = "100.0 - local.health_score"
+description = "System performance index (higher is better)"
+
+[queues.derived.alert_threshold]
+formula = "max(local.cpu_usage, local.memory_usage) > 80.0 ? 1.0 : 0.0"
+description = "Alert trigger (1.0 = alert, 0.0 = normal)"
+
+[queues.derived.resource_efficiency]
+formula = "(local.cpu_usage < 50.0 && local.memory_usage < 70.0) ? 85.0 : 65.0"
+description = "Resource efficiency score"
+
+[queues.derived.predicted_load]
+formula = "local.cpu_usage * 1.1 + local.memory_usage * 0.1"
+description = "Predicted load based on current trends"
+
+# Advanced monitoring expressions
+[queues.derived.thermal_stress]
+formula = "(local.cpu_usage > 75.0 || local.memory_usage > 85.0) ? 90.0 : 30.0"
+description = "System thermal stress indicator"
+
+[queues.derived.optimization_needed]
+formula = "(local.health_score > 70.0) ? 0.0 : 1.0"
+description = "Indicates if system optimization is needed"
+
+# Network and I/O monitoring
+[queues.derived.io_pressure]
+formula = "local.network_io / 1000.0"
+description = "Network I/O pressure indicator"
+
+[queues.derived.congestion_level]
+formula = "local.process_count > 200 ? 80.0 : 40.0"
+description = "System congestion level"
