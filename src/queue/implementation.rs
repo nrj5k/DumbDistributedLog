@@ -11,14 +11,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex as TokioMutex, oneshot};
 use tokio::time::interval;
 
-use super::{Queue, QueueError, QueueServerHandle};
 use crate::expression::Expression;
+use crate::queue::{QueueError, QueueServerHandle};
+use crate::traits::queue::QueueTrait;
 use crate::types::{QueueData, QueueStats, Timestamp};
 
 /// Simple queue implementation
 pub struct SimpleQueue<T: Clone + Send + 'static> {
     data: Arc<TokioMutex<VecDeque<QueueData<T>>>>,
-    expression: Option<Box<dyn Expression>>,
+    expression: Option<Box<dyn Expression<T>>>,
     stats: Arc<TokioMutex<QueueStats>>,
 }
 
@@ -43,17 +44,36 @@ impl<T: Clone + Send + 'static> SimpleQueue<T> {
     }
 
     /// Create queue with expression
-    pub fn with_expression(expr: Box<dyn Expression>) -> Self {
+    pub fn with_expression(expr: Box<dyn Expression<T>>) -> Self {
         Self {
             data: Arc::new(TokioMutex::new(VecDeque::new())),
             expression: Some(expr),
             stats: Arc::new(TokioMutex::new(QueueStats::new())),
         }
     }
+
+    /// Get the expression if one is configured
+    pub fn get_expression(&self) -> Option<&dyn Expression<T>> {
+        self.expression.as_deref()
+    }
+
+    /// Check if queue has an expression configured
+    pub fn has_expression(&self) -> bool {
+        self.expression.is_some()
+    }
 }
 
-impl<T: Clone + Send + 'static> Queue for SimpleQueue<T> {
+impl<T: Clone + Send + 'static> QueueTrait for SimpleQueue<T> {
     type Data = T;
+
+    /// Get the current number of items in the queue
+    fn get_size(&self) -> usize {
+        if let Ok(data_guard) = self.data.try_lock() {
+            data_guard.len()
+        } else {
+            0 // Return 0 if we can't acquire the lock
+        }
+    }
 
     fn publish(&mut self, data: T) -> Result<(), QueueError> {
         let timestamp = SystemTime::now()
@@ -79,6 +99,9 @@ impl<T: Clone + Send + 'static> Queue for SimpleQueue<T> {
 
         stats_guard.total_published += 1;
         stats_guard.last_updated = timestamp;
+
+        // If we have an expression, we could evaluate it here for monitoring purposes
+        // For now, the expression field is maintained for future extensibility
 
         Ok(())
     }
@@ -151,5 +174,29 @@ mod tests {
 
         let recent = queue.get_latest_n(2);
         assert_eq!(recent, vec!["test2", "test1"]);
+    }
+
+    #[test]
+    fn test_queue_get_size() {
+        let mut queue: SimpleQueue<i32> = SimpleQueue::new();
+
+        // Empty queue should have size 0
+        assert_eq!(queue.get_size(), 0);
+
+        // Add some items
+        queue.publish(1).unwrap();
+        queue.publish(2).unwrap();
+        queue.publish(3).unwrap();
+
+        // Should have size 3
+        assert_eq!(queue.get_size(), 3);
+
+        // Test after getting latest (shouldn't change size)
+        let _latest = queue.get_latest();
+        assert_eq!(queue.get_size(), 3);
+
+        // Test after getting latest_n (shouldn't change size)
+        let _recent = queue.get_latest_n(2);
+        assert_eq!(queue.get_size(), 3);
     }
 }

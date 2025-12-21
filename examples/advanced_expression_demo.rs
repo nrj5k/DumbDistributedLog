@@ -49,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = abs_expr.evaluate(&local_vars, &global_vars)?;
     println!("   {} = {:.1}", abs_expr.expression, result);
 
-    let pow_expr = SimpleExpression::new("powf(local.memory, 2.0)")?;
+    let pow_expr = SimpleExpression::new("pow(local.memory, 2.0)")?;
     let result = pow_expr.evaluate(&local_vars, &global_vars)?;
     println!("   {} = {:.1}", pow_expr.expression, result);
 

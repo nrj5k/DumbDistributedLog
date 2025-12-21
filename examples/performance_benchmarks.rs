@@ -102,7 +102,7 @@ impl BenchmarkSuite {
             ("Math Function", "sqrt(local.cpu)"),
             (
                 "Complex Function",
-                "powf(local.memory, 2.0) + abs(local.disk)",
+                "pow(local.memory, 2.0) + abs(local.disk)",
             ),
             ("Comparison", "max(local.cpu, global.power)"),
         ];

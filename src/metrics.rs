@@ -50,6 +50,7 @@ pub struct SystemInfo {
 }
 
 /// System metrics collector
+#[derive(Debug)]
 pub struct MetricsCollector {
     system: System,
 }

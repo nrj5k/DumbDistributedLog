@@ -3,7 +3,7 @@
 //! Demonstrates the new simplified expression engine with basic arithmetic
 //! and local/global variable substitution.
 
-use autoqueues::expression::{Expression, SimpleExpression};
+use autoqueues::expression::{Expression, ExpressionF64};
 use std::collections::HashMap;
 
 #[tokio::main]
@@ -26,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     for expr in test_expressions {
-        match SimpleExpression::new(expr) {
+        match ExpressionF64::new(expr) {
             Ok(expression) => {
                 println!("✅ Parsed: {}", expr);
                 println!("   Local vars: {:?}", expression.required_local_vars());
@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Test expression evaluation
     println!("\n🔄 Testing Expression Evaluation:");
 
-    let expression = SimpleExpression::new("(local.cpu + global.memory) / 2.0")?;
+    let expression = ExpressionF64::new("(local.cpu + global.memory) / 2.0")?;
 
     let mut local_vars = HashMap::new();
     local_vars.insert("cpu".to_string(), 35.0);
@@ -60,26 +60,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Test division by zero protection
+    // Test division by zero protection during validation (improved behavior)
     println!("\n🛡️  Testing Division by Zero Protection:");
 
-    let zero_expr = SimpleExpression::new("local.value / 0.0")?;
-    local_vars.clear();
-    local_vars.insert("value".to_string(), 100.0);
-
-    match zero_expr.evaluate(&local_vars, &global_vars) {
+    // This will fail during validation (better - catches errors earlier)
+    match ExpressionF64::new("local.value / 0.0") {
         Ok(_) => {
-            println!("❌ Division by zero not caught!");
+            println!("❌ Literal division by zero not caught during validation!");
         }
         Err(e) => {
-            println!("✅ Division by zero caught: {}", e);
+            println!(
+                "✅ Literal division by zero caught during validation: {}",
+                e
+            );
+        }
+    }
+
+    // This will pass validation but fail during evaluation (runtime protection)
+    match ExpressionF64::new("local.value / local.zero") {
+        Ok(zero_expr) => {
+            local_vars.clear();
+            local_vars.insert("value".to_string(), 100.0);
+            // Don't insert "zero" variable, so it will be null/undefined
+
+            match zero_expr.evaluate(&local_vars, &global_vars) {
+                Ok(_) => {
+                    println!("❌ Runtime division by zero not caught!");
+                }
+                Err(e) => {
+                    println!("✅ Runtime division by zero caught: {}", e);
+                }
+            }
+        }
+        Err(e) => {
+            println!("❌ Unexpected validation error: {}", e);
         }
     }
 
     // Test undefined variable error
     println!("\n❓ Testing Undefined Variable Error:");
 
-    let undefined_expr = SimpleExpression::new("local.missing + global.memory")?;
+    let undefined_expr = ExpressionF64::new("local.missing + global.memory")?;
     local_vars.clear();
     // Don't add "missing" variable
 

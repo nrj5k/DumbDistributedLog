@@ -10,6 +10,7 @@ pub enum QueueError {
     Empty,
     PublishError(String),
     ServerError(String),
+    Other(String),
 }
 
 impl std::fmt::Display for QueueError {
@@ -18,6 +19,7 @@ impl std::fmt::Display for QueueError {
             QueueError::Empty => write!(f, "Queue is empty"),
             QueueError::PublishError(msg) => write!(f, "Publish error: {}", msg),
             QueueError::ServerError(msg) => write!(f, "Server error: {}", msg),
+            QueueError::Other(msg) => write!(f, "Other error: {}", msg),
         }
     }
 }
@@ -50,21 +52,4 @@ impl QueueServerHandle {
             Err(e) => Err(QueueError::ServerError(e.to_string())),
         }
     }
-}
-
-/// Ultra-minimal queue trait for maximum flexibility
-pub trait Queue: Send + Sync {
-    type Data: Clone + Send + 'static;
-
-    /// Publish data to queue
-    fn publish(&mut self, data: Self::Data) -> Result<(), QueueError>;
-
-    /// Get most recent data
-    fn get_latest(&self) -> Option<(Timestamp, Self::Data)>;
-
-    /// Get N most recent data items
-    fn get_latest_n(&self, n: usize) -> Vec<Self::Data>;
-
-    /// Start autonomous server
-    fn start_server(self) -> Result<QueueServerHandle, QueueError>;
 }

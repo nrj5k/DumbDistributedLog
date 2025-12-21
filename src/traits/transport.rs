@@ -3,6 +3,7 @@
 //! Provides simple networking interface following KISS principle.
 //! Ultra-minimal trait with 3 methods for future distributed features.
 
+use async_trait::async_trait;
 use std::net::SocketAddr;
 
 /// Transport errors
@@ -35,14 +36,37 @@ impl std::fmt::Display for TransportError {
 
 impl std::error::Error for TransportError {}
 
-/// Ultra-minimal transport trait for maximum flexibility
-pub trait Transport: Send + Sync {
+/// Connection information
+#[derive(Debug, Clone)]
+pub struct ConnectionInfo {
+    pub remote_addr: String,
+    pub transport_type: TransportType,
+    pub connected_at: std::time::Instant,
+}
+
+/// Transport types
+#[derive(Debug, Clone, PartialEq)]
+pub enum TransportType {
+    ZeroMQ,
+    QUIC,
+    TCP,
+}
+
+/// Ultra-minimal async transport trait for maximum flexibility
+#[async_trait]
+pub trait Transport: Send + Sync + std::fmt::Debug {
+    /// Connect to remote address
+    async fn connect(&self, addr: &str) -> Result<ConnectionInfo, TransportError>;
+    
     /// Send data to remote endpoint
-    fn send(&mut self, data: &[u8]) -> Result<(), TransportError>;
+    async fn send(&self, data: &[u8]) -> Result<(), TransportError>;
 
     /// Receive data from remote endpoint
-    fn receive(&mut self) -> Result<Vec<u8>, TransportError>;
-
-    /// Connect to remote address
-    fn connect(&mut self, addr: &str) -> Result<(), TransportError>;
+    async fn receive(&self) -> Result<Vec<u8>, TransportError>;
+    
+    /// Check if connected
+    fn is_connected(&self) -> bool;
+    
+    /// Get connection info
+    fn connection_info(&self) -> Option<ConnectionInfo>;
 }

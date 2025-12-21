@@ -66,7 +66,7 @@ timeout 10s cargo run --example <timeout-okay-example>
 ### Expression Engine
 - `local.cpu_percent + local.memory_percent)`
 - Division-by-zero protection
-- Mathematical functions: sqrt(), powf(), abs()
+- Mathematical functions: sqrt(), pow(), abs()
 - Real-time evaluation at queue intervals
 
 ### PubSub Messaging
