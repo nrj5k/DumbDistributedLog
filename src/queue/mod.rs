@@ -1,7 +1,6 @@
-//! Queue Module - KISS Simplified
+//! Queue Module with Local Operations
 //!
-//! Clean, focused queue operations following KISS principle.
-//! Implements ultra-minimal Queue trait with 4 essential methods.
+//! Provides queue operations using the established real networking foundation.
 
 pub mod implementation;
 pub mod queue_server;

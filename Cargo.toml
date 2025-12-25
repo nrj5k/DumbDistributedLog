@@ -28,8 +28,10 @@ ordered-float = "5"
 cron = "0.15"
 chrono = { version = "0.4", features = ["serde"] }
 zmq = "0.10.0"
-eval = "0.4.3"
 async-trait = "0.1.89"
+openraft = { version = "0.9.21", features = ["serde", "serde_json"] }
+rand = "0.9.2"
+evalexpr = { version = "13.1.0", features = ["regex", "serde"] }
 
 [dev-dependencies]
 criterion = "0.8"

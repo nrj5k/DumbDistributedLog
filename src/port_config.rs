@@ -189,14 +189,14 @@ mod tests {
     fn test_quic_configuration() {
         let config = PortConfig::quic();
         assert_eq!(config.protocol, TransportProtocol::Quic);
-        assert_eq!(config.quic_bind_addr(), "0.0.0.0:6942");
+        assert_eq!(config.quic_bind_addr(), "0.0.0.0:6967");
     }
 
     #[test]
     fn test_zeromq_configuration() {
         let config = PortConfig::zeromq();
         assert_eq!(config.protocol, TransportProtocol::ZeroMQ);
-        assert_eq!(config.zmq_bind_addr(), "tcp://0.0.0.0:6942");
+        assert_eq!(config.zmq_bind_addr(), "tcp://0.0.0.0:6967");
     }
 
     #[test]

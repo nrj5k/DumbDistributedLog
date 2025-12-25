@@ -183,7 +183,7 @@ impl QueueManager {
 
     /// Start the queue manager
     pub async fn start(&self) -> Result<(), QueueManagerError> {
-        println!("🚀 Starting Queue Manager...");
+        println!("Starting Queue Manager...");
 
         // Set running flag
         *self.running.write().await = true;
@@ -194,15 +194,15 @@ impl QueueManager {
         // Start background update task
         self.start_update_task().await?;
 
-        println!("✅ Queue Manager started successfully!");
-        println!("   📊 Managing {} queues", self.get_queue_count().await);
+        println!("Queue Manager started successfully!");
+        println!("   Managing {} queues", self.get_queue_count().await);
 
         Ok(())
     }
 
     /// Stop the queue manager gracefully
     pub async fn stop(&self) -> Result<(), QueueManagerError> {
-        println!("🛑 Stopping Queue Manager...");
+        println!("Stopping Queue Manager...");
 
         // Set running flag to false
         *self.running.write().await = false;
@@ -213,7 +213,7 @@ impl QueueManager {
         // Clear all queues
         self.clear_all_queues().await?;
 
-        println!("✅ Queue Manager stopped successfully!");
+        println!("Queue Manager stopped successfully!");
         Ok(())
     }
 
@@ -334,16 +334,16 @@ impl QueueManager {
         queues: &HashMap<String, ManagedQueue>,
         metrics: &SystemMetrics,
     ) {
-        let mut local_vars = HashMap::new();
-        let global_vars = HashMap::new();
+        let mut atomic_vars = HashMap::new();
+        let cluster_vars = HashMap::new();
 
         // Populate variables from system metrics
-        local_vars.insert("cpu_usage".to_string(), metrics.cpu_usage_percent as f64);
-        local_vars.insert(
+        atomic_vars.insert("cpu_usage".to_string(), metrics.cpu_usage_percent as f64);
+        atomic_vars.insert(
             "memory_usage".to_string(),
             metrics.memory_usage.usage_percent as f64,
         );
-        local_vars.insert(
+        atomic_vars.insert(
             "disk_usage".to_string(),
             metrics.disk_usage.usage_percent as f64,
         );
@@ -352,7 +352,7 @@ impl QueueManager {
         for (_, managed_queue) in queues.iter() {
             if managed_queue.is_derived {
                 if let Some(expression) = &managed_queue.expression {
-                    match expression.evaluate(&local_vars, &global_vars) {
+                    match expression.evaluate(&atomic_vars, &cluster_vars) {
                         Ok(value) => {
                             if let Ok(mut queue_guard) = managed_queue.queue.try_lock() {
                                 // Use the Queue trait method

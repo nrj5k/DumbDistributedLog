@@ -70,10 +70,16 @@ pub struct AutoQueuesConfig {
     /// Auto-discovery settings
     #[serde(default = "default_true")]
     pub auto_discovery: bool,
-    /// Global metrics configuration (auto-aggregations)
+    /// Derived metrics configuration (aggregations of local metrics)
     #[serde(default)]
-    pub global_metrics: HashMap<String, GlobalMetricConfig>,
-    /// Per-metric leader assignment
+    pub derived_metrics: HashMap<String, DerivedMetricConfig>,
+    /// Node scores for weighted leader assignment
+    #[serde(default)]
+    pub node_scores: HashMap<String, f64>,  // hostname → score
+    /// Node order for hostname → node_id mapping
+    #[serde(default)]
+    pub node_order: Vec<String>,  // hostnames in order
+    /// Per-metric leader assignment (optional override)
     #[serde(default)]
     pub leaders: HashMap<u64, LeaderGroupConfig>,
     /// Bootstrap and discovery configuration
@@ -94,19 +100,15 @@ pub enum AssignmentStrategy {
     RoundRobin,         // Simple distribution
 }
 
-/// NEW: Global metric configuration
-#[derive(Debug, Deserialize, Serialize)]
-pub struct GlobalMetricConfig {
+/// NEW: Derived metric configuration (aggregations of local metrics)
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DerivedMetricConfig {
     pub aggregation: String,           // sum, average, max, min
+    pub sources: Vec<String>,          // local metric sources
     #[serde(default = "default_true")]
     pub auto_aggregate: bool,          // Enable automatic calculation
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub required_nodes: Option<usize>, // Minimum nodes for reliable aggregate
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expression: Option<String>,    // Custom expression (uses existing engine)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub required_global_vars: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub required_local_vars: Option<Vec<String>>,
 }
 
 /// NEW: Per-metric leader configuration
@@ -118,14 +120,38 @@ pub struct LeaderGroupConfig {
     pub heartbeat_interval_ms: u32,
 }
 
-/// NEW: Bootstrap and discovery configuration
-#[derive(Debug, Deserialize, Serialize)]
+    /// NEW: Bootstrap and discovery configuration
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BootstrapConfig {
     pub anchor_nodes: Vec<u64>,         // Logical node IDs for anchor points
     pub discovery_port: u16,
     pub autoqueues_port: u16,           // Standard AutoQueues coordination port
+    #[serde(default = "default_coordination_port")]
+    pub coordination_port: u16,         // Separate port for Raft coordination (default: 6968)
+    #[serde(default = "default_data_port")]
+    pub data_port: u16,                 // Data plane port (default: 6967)
+    #[serde(default = "default_aimd_min_interval")]
+    pub aimd_min_interval_ms: u64,      // AIMD minimum interval in ms
+    #[serde(default = "default_aimd_max_interval")]
+    pub aimd_max_interval_ms: u64,      // AIMD maximum interval in ms (for freshness timeout)
     #[serde(default = "default_true")]
     pub enable_multicast: bool,         // UDP multicast discovery
+}
+
+fn default_coordination_port() -> u16 {
+    6968  // One port higher than data port
+}
+
+fn default_data_port() -> u16 {
+    6967  // Default data plane port
+}
+
+fn default_aimd_min_interval() -> u64 {
+    100  // 100ms minimum interval
+}
+
+fn default_aimd_max_interval() -> u64 {
+    5000  // 5000ms maximum interval (for freshness timeout detection)
 }
 
 /// NEW: Node mapping customization (hostnames → logical IDs)
@@ -207,6 +233,82 @@ impl QueueConfig {
         self.autoqueues.as_ref().map(|aq| aq.assignment_strategy.clone()).unwrap_or_default()
     }
 
+    /// NEW: Get derived metrics configuration
+    pub fn get_derived_metrics(&self) -> HashMap<String, DerivedMetricConfig> {
+        self.autoqueues.as_ref()
+            .map(|aq| aq.derived_metrics.clone())
+            .unwrap_or_default()
+    }
+
+    /// NEW: Get derived metric by name
+    pub fn get_derived_metric(&self, name: &str) -> Option<&DerivedMetricConfig> {
+        self.autoqueues.as_ref()
+            .and_then(|aq| aq.derived_metrics.get(name))
+    }
+
+    /// NEW: Get node scores (hostname → score)
+    pub fn get_node_scores(&self) -> HashMap<String, f64> {
+        self.autoqueues.as_ref()
+            .map(|aq| aq.node_scores.clone())
+            .unwrap_or_default()
+    }
+
+    /// NEW: Get node order (for hostname → node_id mapping)
+    pub fn get_node_order(&self) -> &[String] {
+        self.autoqueues.as_ref()
+            .map(|aq| aq.node_order.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// NEW: Convert hostname to node_id using node_order
+    /// Returns 0 if hostname not found
+    pub fn hostname_to_node_id(&self, hostname: &str) -> u64 {
+        self.get_node_order().iter()
+            .position(|h| h == hostname)
+            .map(|i| (i + 1) as u64)  // 1-indexed
+            .unwrap_or(0)  // 0 = not found
+    }
+
+    /// NEW: Get node_id for this node (from hostname in node_order)
+    pub fn get_local_node_id(&self) -> u64 {
+        // Get hostname from system
+        if let Ok(hostname) = std::env::var("HOSTNAME") {
+            self.hostname_to_node_id(&hostname)
+        } else {
+            // Fallback: use first node in order as this node
+            1
+        }
+    }
+
+    /// NEW: Get AIMD intervals from bootstrap config
+    pub fn get_aimd_intervals(&self) -> (u64, u64) {
+        if let Some(aq) = self.autoqueues.as_ref() {
+            (aq.bootstrap.aimd_min_interval_ms, aq.bootstrap.aimd_max_interval_ms)
+        } else {
+            (100, 5000)  // defaults
+        }
+    }
+
+    /// NEW: Get freshness timeout (2 × AIMD max interval)
+    pub fn get_freshness_timeout_ms(&self) -> u64 {
+        let (_, max_interval) = self.get_aimd_intervals();
+        max_interval * 2
+    }
+
+    /// NEW: Get coordination port
+    pub fn get_coordination_port(&self) -> u16 {
+        self.autoqueues.as_ref()
+            .map(|aq| aq.bootstrap.coordination_port)
+            .unwrap_or(6968)
+    }
+
+    /// NEW: Get data port
+    pub fn get_data_port(&self) -> u16 {
+        self.autoqueues.as_ref()
+            .map(|aq| aq.bootstrap.data_port)
+            .unwrap_or(6967)
+    }
+
     /// NEW: Validate AutoQueue configuration
     fn validate_autoqueue_config(aq_config: &AutoQueuesConfig) -> Result<(), ConfigError> {
         // Validate logical ID uniqueness in node groups
@@ -220,18 +322,40 @@ impl QueueConfig {
                 }
             }
         }
-        
-        // Validate global metrics
-        for (metric_name, metric_config) in &aq_config.global_metrics {
+
+        // Validate derived metrics
+        for (metric_name, metric_config) in &aq_config.derived_metrics {
             match metric_config.aggregation.as_str() {
                 "sum" | "average" | "max" | "min" => {},
                 _ => return Err(ConfigError::ValidationError(format!(
-                    "Invalid aggregation type '{}' for metric {}", 
+                    "Invalid aggregation type '{}' for metric {}",
                     metric_config.aggregation, metric_name
                 ))),
             }
+
+            // Validate sources reference local metrics
+            for source in &metric_config.sources {
+                if !source.starts_with("local.") {
+                    return Err(ConfigError::ValidationError(format!(
+                        "Derived metric '{}' source '{}' must start with 'local.'",
+                        metric_name, source
+                    )));
+                }
+            }
         }
-        
+
+        // Validate node_scores hostnames match node_order
+        if !aq_config.node_order.is_empty() {
+            for hostname in aq_config.node_scores.keys() {
+                if !aq_config.node_order.contains(hostname) {
+                    return Err(ConfigError::ValidationError(format!(
+                        "Node score hostname '{}' not found in node_order",
+                        hostname
+                    )));
+                }
+            }
+        }
+
         Ok(())
     }
 

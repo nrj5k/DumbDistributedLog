@@ -2,7 +2,7 @@
 //!
 //! Ultra-minimal trait with 4 essential methods for maximum flexibility.
 
-use crate::types::Timestamp;
+
 
 /// Simple queue errors
 #[derive(Debug)]
