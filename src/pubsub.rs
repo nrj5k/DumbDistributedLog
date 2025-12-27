@@ -11,24 +11,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{RwLock, mpsc};
 
 /// Publisher-Subscriber specific errors
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum PubSubError {
+    #[error("Topic '{0}' not found")]
     TopicNotFound(String),
+    
+    #[error("Conflict for '{0}'")]
     SubscriptionConflict(String),
+    
+    #[error("Serialization: {0}")]
     SerializationError(String),
 }
-
-impl std::fmt::Display for PubSubError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PubSubError::TopicNotFound(topic) => write!(f, "Topic '{}' not found", topic),
-            PubSubError::SubscriptionConflict(topic) => write!(f, "Conflict for '{}'", topic),
-            PubSubError::SerializationError(msg) => write!(f, "Serialization: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for PubSubError {}
 
 pub type Topic = String;
 pub type SubscriptionId = uuid::Uuid;

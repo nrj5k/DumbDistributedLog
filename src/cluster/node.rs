@@ -3,6 +3,7 @@
 //! Wrapper around OpenRaft that manages the Raft node lifecycle.
 //! Currently minimal implementation - full OpenRaft integration to follow.
 
+use std::time::Duration;
 use thiserror::Error;
 use zmq::{Context, Socket, SocketType};
 
@@ -79,7 +80,7 @@ impl RaftNode {
                         is_active: true,
                         last_seen: std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
+                            .unwrap_or_else(|_| Duration::from_secs(0))
                             .as_secs(),
                     },
                 );

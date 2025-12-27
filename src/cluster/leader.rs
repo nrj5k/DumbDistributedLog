@@ -9,6 +9,14 @@ use tokio::sync::mpsc;
 use tokio::time::interval;
 use zmq::{Context, Socket, SocketType};
 
+#[derive(Debug, thiserror::Error)]
+pub enum LeaderError {
+    #[error("Lock error: {0}")]
+    LockError(String),
+    #[error("ZMQ error: {0}")]
+    ZmqError(#[from] zmq::Error),
+}
+
 #[derive(Debug, Clone)]
 pub struct LeaderConfig {
     pub node_id: u64,
@@ -122,7 +130,22 @@ impl Leader {
 
         for peer in &config.peer_nodes {
             let peer_addr = format!("tcp://{}", peer);
-            let _ = subscribe_socket.connect(&peer_addr);
+            // Add retry mechanism for peer connections
+            let mut retry_count = 0;
+            let max_retries = 3;
+            while retry_count < max_retries {
+                match subscribe_socket.connect(&peer_addr) {
+                    Ok(_) => break,
+                    Err(e) => {
+                        retry_count += 1;
+                        if retry_count >= max_retries {
+                            eprintln!("Failed to connect to peer {} after {} retries: {}", peer_addr, max_retries, e);
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(100 * retry_count as u64));
+                    }
+                }
+            }
         }
 
         let publish_socket = context.socket(SocketType::PUB)?;
@@ -191,10 +214,17 @@ impl Leader {
                 Ok(Ok(request)) => {
                     let response = if request.starts_with("get_metric:") {
                         let metric = request.trim_start_matches("get_metric:");
-                        let guard = state.read().unwrap();
-                        match guard.aggregated_values.get(metric) {
-                            Some(v) => format!("OK:{}", v.value),
-                            None => "NOT_FOUND".to_string(),
+                        match state.read() {
+                            Ok(guard) => {
+                                match guard.aggregated_values.get(metric) {
+                                    Some(v) => format!("OK:{}", v.value),
+                                    None => "NOT_FOUND".to_string(),
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Lock error in query handler: {}", e);
+                                "INTERNAL_ERROR".to_string()
+                            }
                         }
                     } else {
                         "INVALID_REQUEST".to_string()
@@ -220,7 +250,22 @@ impl Leader {
 
         for peer in &peers {
             let peer_addr = format!("tcp://{}", peer);
-            let _ = socket.connect(&peer_addr);
+            // Add retry mechanism for subscriber connections
+            let mut retry_count = 0;
+            let max_retries = 3;
+            while retry_count < max_retries {
+                match socket.connect(&peer_addr) {
+                    Ok(_) => break,
+                    Err(e) => {
+                        retry_count += 1;
+                        if retry_count >= max_retries {
+                            eprintln!("Failed to connect subscriber to peer {} after {} retries: {}", peer_addr, max_retries, e);
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(100 * retry_count as u64));
+                    }
+                }
+            }
         }
 
         loop {
@@ -231,11 +276,17 @@ impl Leader {
                         let metric = parts[0].to_string();
                         if let Ok(node_id) = parts[1].parse::<u64>() {
                             if let Ok(value) = parts[2].parse::<f64>() {
-                                let mut guard = state.write().unwrap();
-                                let entry = guard.local_values.entry(metric).or_insert_with(Vec::new);
-                                entry.push((node_id, value, Instant::now()));
-                                if entry.len() > 100 {
-                                    entry.drain(0..(entry.len() - 100));
+                                match state.write() {
+                                    Ok(mut guard) => {
+                                        let entry = guard.local_values.entry(metric).or_insert_with(Vec::new);
+                                        entry.push((node_id, value, Instant::now()));
+                                        if entry.len() > 100 {
+                                            entry.drain(0..(entry.len() - 100));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Lock error in subscription handler: {}", e);
+                                    }
                                 }
                             }
                         }
@@ -250,17 +301,27 @@ impl Leader {
 
     async fn aggregate_all(&mut self) {
         let now = Instant::now();
-        let derived_metrics: Vec<DerivedMetric> = {
-            let state = self.state.read().unwrap();
-            state.derived_metrics.clone()
+        let derived_metrics: Vec<DerivedMetric> = match self.state.read() {
+            Ok(state) => state.derived_metrics.clone(),
+            Err(e) => {
+                eprintln!("Lock error reading derived metrics: {}", e);
+                return;
+            }
         };
 
         {
-            let mut state = self.state.write().unwrap();
-            for metric in &derived_metrics {
-                self.aggregate_metric(&metric, &mut state);
+            match self.state.write() {
+                Ok(mut state) => {
+                    for metric in &derived_metrics {
+                        self.aggregate_metric(&metric, &mut state);
+                    }
+                    state.last_aggregation = Some(now);
+                }
+                Err(e) => {
+                    eprintln!("Lock error writing state: {}", e);
+                    return;
+                }
             }
-            state.last_aggregation = Some(now);
         }
 
         self.publish_all();
@@ -297,9 +358,12 @@ impl Leader {
     }
 
     fn publish_all(&self) {
-        let values: HashMap<String, AggregatedMetricValue> = {
-            let state = self.state.read().unwrap();
-            state.aggregated_values.clone()
+        let values: HashMap<String, AggregatedMetricValue> = match self.state.read() {
+            Ok(state) => state.aggregated_values.clone(),
+            Err(e) => {
+                eprintln!("Lock error reading aggregated values: {}", e);
+                HashMap::new()
+            }
         };
 
         for (_, value) in &values {
@@ -314,17 +378,28 @@ impl Leader {
     }
 
     pub fn update_local_value(&mut self, value: LocalMetricValue) {
-        let mut state = self.state.write().unwrap();
-        let entry = state.local_values.entry(value.metric_name.clone()).or_insert_with(Vec::new);
-        entry.push((value.node_id, value.value, Instant::now()));
-        if entry.len() > 10 {
-            entry.drain(0..(entry.len() - 10));
+        match self.state.write() {
+            Ok(mut state) => {
+                let entry = state.local_values.entry(value.metric_name.clone()).or_insert_with(Vec::new);
+                entry.push((value.node_id, value.value, Instant::now()));
+                if entry.len() > 10 {
+                    entry.drain(0..(entry.len() - 10));
+                }
+            }
+            Err(e) => {
+                eprintln!("Lock error updating local value: {}", e);
+            }
         }
     }
 
     pub fn get_aggregated_value(&self, metric_name: &str) -> Option<f64> {
-        let state = self.state.read().unwrap();
-        state.aggregated_values.get(metric_name).map(|v| v.value)
+        match self.state.read() {
+            Ok(state) => state.aggregated_values.get(metric_name).map(|v| v.value),
+            Err(e) => {
+                eprintln!("Lock error reading aggregated value: {}", e);
+                None
+            }
+        }
     }
 
     pub fn state(&self) -> &Arc<RwLock<LeaderState>> {

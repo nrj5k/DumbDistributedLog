@@ -16,6 +16,14 @@ use std::sync::Mutex;
 use std::time::Instant;
 use zmq::{Context, Socket, SocketType};
 
+#[derive(Debug, thiserror::Error)]
+pub enum ZmqError {
+    #[error("Lock error: {0}")]
+    LockError(String),
+    #[error("ZMQ error: {0}")]
+    ZmqError(#[from] zmq::Error),
+}
+
 /// ZeroMQ-based pub/sub broker
 pub struct ZmqPubSubBroker {
     context: Context,
@@ -81,8 +89,14 @@ impl ZmqPubSubBroker {
         frame.push(0); // Separator
         frame.extend_from_slice(&message);
 
-        let publisher = self.publisher.lock().unwrap();
-        publisher.send(&frame, zmq::DONTWAIT)?;
+        match self.publisher.lock() {
+            Ok(publisher) => {
+                publisher.send(&frame, zmq::DONTWAIT)?;
+            }
+            Err(e) => {
+                return Err(Box::new(ZmqError::LockError(e.to_string())));
+            }
+        }
 
         Ok(())
     }
@@ -99,15 +113,27 @@ impl ZmqPubSubBroker {
         subscriber.connect(connect_addr)?;
         subscriber.set_subscribe(topic_pattern.as_bytes())?;
 
-        let mut subscribers = self.subscribers.lock().unwrap();
-        subscribers.insert(subscriber_id.clone(), subscriber);
+        match self.subscribers.lock() {
+            Ok(mut subscribers) => {
+                subscribers.insert(subscriber_id.clone(), subscriber);
+            }
+            Err(e) => {
+                return Err(Box::new(ZmqError::LockError(e.to_string())));
+            }
+        }
 
         // Track subscription
-        let mut subscriptions = self.subscriptions.lock().unwrap();
-        subscriptions
-            .entry(topic_pattern.to_string())
-            .or_insert_with(Vec::new)
-            .push(connect_addr.to_string());
+        match self.subscriptions.lock() {
+            Ok(mut subscriptions) => {
+                subscriptions
+                    .entry(topic_pattern.to_string())
+                    .or_insert_with(Vec::new)
+                    .push(connect_addr.to_string());
+            }
+            Err(e) => {
+                return Err(Box::new(ZmqError::LockError(e.to_string())));
+            }
+        }
 
         Ok(subscriber_id)
     }
@@ -117,56 +143,78 @@ impl ZmqPubSubBroker {
         &self,
         subscriber_id: &str,
     ) -> Result<Option<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
-        let mut subscribers = self.subscribers.lock().unwrap();
-
-        if let Some(subscriber) = subscribers.get_mut(subscriber_id) {
-            match subscriber.recv_bytes(zmq::DONTWAIT) {
-                Ok(data) => {
-                    // Extract topic and payload
-                    if let Some(separator_pos) = data.iter().position(|&b| b == 0) {
-                        let topic = String::from_utf8_lossy(&data[..separator_pos]).to_string();
-                        let payload = data[separator_pos + 1..].to_vec();
-                        Ok(Some((topic, payload)))
-                    } else {
-                        Ok(None)
+        match self.subscribers.lock() {
+            Ok(mut subscribers) => {
+                if let Some(subscriber) = subscribers.get_mut(subscriber_id) {
+                    match subscriber.recv_bytes(zmq::DONTWAIT) {
+                        Ok(data) => {
+                            // Extract topic and payload
+                            if let Some(separator_pos) = data.iter().position(|&b| b == 0) {
+                                let topic = String::from_utf8_lossy(&data[..separator_pos]).to_string();
+                                let payload = data[separator_pos + 1..].to_vec();
+                                Ok(Some((topic, payload)))
+                            } else {
+                                Ok(None)
+                            }
+                        }
+                        Err(zmq::Error::EAGAIN) => Ok(None), // No message available
+                        Err(e) => Err(e.into()),
                     }
+                } else {
+                    Ok(None)
                 }
-                Err(zmq::Error::EAGAIN) => Ok(None), // No message available
-                Err(e) => Err(e.into()),
             }
-        } else {
-            Ok(None)
+            Err(e) => {
+                Err(Box::new(ZmqError::LockError(e.to_string())))
+            }
         }
     }
 
     /// Get subscription statistics
     pub fn subscription_stats(&self) -> HashMap<String, usize> {
-        let subscriptions = self.subscriptions.lock().unwrap();
-        let mut stats = HashMap::new();
-
-        for (topic, subscribers) in subscriptions.iter() {
-            stats.insert(topic.clone(), subscribers.len());
+        match self.subscriptions.lock() {
+            Ok(subscriptions) => {
+                let mut stats = HashMap::new();
+                
+                for (topic, subscribers) in subscriptions.iter() {
+                    stats.insert(topic.clone(), subscribers.len());
+                }
+                
+                stats
+            }
+            Err(e) => {
+                eprintln!("Lock error reading subscriptions: {}", e);
+                HashMap::new()
+            }
         }
-
-        stats
     }
 
     /// Unsubscribe
     pub fn unsubscribe(&self, subscriber_id: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let mut subscribers = self.subscribers.lock().unwrap();
-        let mut subscriptions = self.subscriptions.lock().unwrap();
-
-        // Extract topic and address from subscriber_id
-        if let Some((topic_pattern, connect_addr)) = subscriber_id.split_once('@') {
-            subscriptions
-                .entry(topic_pattern.to_string())
-                .and_modify(|addrs| {
-                    addrs.retain(|addr| addr != connect_addr);
-                });
+        let subscribers_result = self.subscribers.lock();
+        let subscriptions_result = self.subscriptions.lock();
+        
+        match (subscribers_result, subscriptions_result) {
+            (Ok(mut subscribers), Ok(mut subscriptions)) => {
+                // Extract topic and address from subscriber_id
+                if let Some((topic_pattern, connect_addr)) = subscriber_id.split_once('@') {
+                    subscriptions
+                        .entry(topic_pattern.to_string())
+                        .and_modify(|addrs| {
+                            addrs.retain(|addr| addr != connect_addr);
+                        });
+                }
+                
+                subscribers.remove(subscriber_id);
+                Ok(())
+            }
+            (Err(e), _) => {
+                Err(Box::new(ZmqError::LockError(e.to_string())))
+            }
+            (_, Err(e)) => {
+                Err(Box::new(ZmqError::LockError(e.to_string())))
+            }
         }
-
-        subscribers.remove(subscriber_id);
-        Ok(())
     }
 }
 
@@ -192,9 +240,15 @@ impl ZmqPubSubClient {
 
     /// Connect publisher to broker
     pub fn connect_publisher(&self, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let publisher = self.publisher.lock().unwrap();
-        publisher.connect(addr)?;
-        Ok(())
+        match self.publisher.lock() {
+            Ok(publisher) => {
+                publisher.connect(addr)?;
+                Ok(())
+            }
+            Err(e) => {
+                Err(Box::new(ZmqError::LockError(e.to_string())))
+            }
+        }
     }
 
     /// Publish message
@@ -209,8 +263,14 @@ impl ZmqPubSubClient {
         frame.push(0); // Separator
         frame.extend_from_slice(&message);
 
-        let publisher = self.publisher.lock().unwrap();
-        publisher.send(&frame, zmq::DONTWAIT)?;
+        match self.publisher.lock() {
+            Ok(publisher) => {
+                publisher.send(&frame, zmq::DONTWAIT)?;
+            }
+            Err(e) => {
+                return Err(Box::new(ZmqError::LockError(e.to_string())));
+            }
+        }
 
         Ok(())
     }
@@ -227,8 +287,14 @@ impl ZmqPubSubClient {
         subscriber.connect(connect_addr)?;
         subscriber.set_subscribe(topic_pattern.as_bytes())?;
 
-        let mut subscribers = self.subscribers.lock().unwrap();
-        subscribers.insert(subscriber_id.clone(), subscriber);
+        match self.subscribers.lock() {
+            Ok(mut subscribers) => {
+                subscribers.insert(subscriber_id.clone(), subscriber);
+            }
+            Err(e) => {
+                return Err(Box::new(ZmqError::LockError(e.to_string())));
+            }
+        }
 
         Ok(subscriber_id)
     }
@@ -238,25 +304,30 @@ impl ZmqPubSubClient {
         &self,
         subscriber_id: &str,
     ) -> Result<Option<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
-        let mut subscribers = self.subscribers.lock().unwrap();
-
-        if let Some(subscriber) = subscribers.get_mut(subscriber_id) {
-            match subscriber.recv_bytes(zmq::DONTWAIT) {
-                Ok(data) => {
-                    // Extract topic and payload
-                    if let Some(separator_pos) = data.iter().position(|&b| b == 0) {
-                        let topic = String::from_utf8_lossy(&data[..separator_pos]).to_string();
-                        let payload = data[separator_pos + 1..].to_vec();
-                        Ok(Some((topic, payload)))
-                    } else {
-                        Ok(None)
+        match self.subscribers.lock() {
+            Ok(mut subscribers) => {
+                if let Some(subscriber) = subscribers.get_mut(subscriber_id) {
+                    match subscriber.recv_bytes(zmq::DONTWAIT) {
+                        Ok(data) => {
+                            // Extract topic and payload
+                            if let Some(separator_pos) = data.iter().position(|&b| b == 0) {
+                                let topic = String::from_utf8_lossy(&data[..separator_pos]).to_string();
+                                let payload = data[separator_pos + 1..].to_vec();
+                                Ok(Some((topic, payload)))
+                            } else {
+                                Ok(None)
+                            }
+                        }
+                        Err(zmq::Error::EAGAIN) => Ok(None), // No message available
+                        Err(e) => Err(e.into()),
                     }
+                } else {
+                    Ok(None)
                 }
-                Err(zmq::Error::EAGAIN) => Ok(None), // No message available
-                Err(e) => Err(e.into()),
             }
-        } else {
-            Ok(None)
+            Err(e) => {
+                Err(Box::new(ZmqError::LockError(e.to_string())))
+            }
         }
     }
 }
@@ -316,16 +387,28 @@ impl ZmqTransport {
     pub fn is_connected(&self) -> bool {
         // Check if we have connection info stored
         // For real ZeroMQ, we'd need to check socket state
-        let connection_info = self.connection_info.lock().unwrap();
-        connection_info.is_some()
+        match self.connection_info.lock() {
+            Ok(connection_info) => connection_info.is_some(),
+            Err(e) => {
+                eprintln!("Lock error checking connection: {}", e);
+                false
+            }
+        }
     }
 
     /// Get remote address
     pub fn remote_addr(&self) -> Option<String> {
-        let connection_info = self.connection_info.lock().unwrap();
-        connection_info
-            .as_ref()
-            .map(|info| info.remote_addr.clone())
+        match self.connection_info.lock() {
+            Ok(connection_info) => {
+                connection_info
+                    .as_ref()
+                    .map(|info| info.remote_addr.clone())
+            }
+            Err(e) => {
+                eprintln!("Lock error getting remote address: {}", e);
+                None
+            }
+        }
     }
 }
 
@@ -339,9 +422,9 @@ impl Transport for ZmqTransport {
 
         // Use tokio::task::spawn_blocking for async bridge to sync ZeroMQ
         tokio::task::spawn_blocking(move || {
-            let socket = socket_clone.lock().unwrap();
-
-            socket.connect(&addr_owned).map_err(|_e| {
+            match socket_clone.lock() {
+                Ok(socket) => {
+socket.connect(&addr_owned).map_err(|e| {
                 TransportError::ConnectionLost {
                     remote_addr: addr_owned.parse().unwrap_or_else(|_| {
                         // Fallback to a dummy address if parsing fails
@@ -350,13 +433,20 @@ impl Transport for ZmqTransport {
                 }
             })?;
 
-            let connection_info = ConnectionInfo {
-                remote_addr: addr_owned,
-                transport_type,
-                connected_at: Instant::now(),
-            };
+                    let connection_info = ConnectionInfo {
+                        remote_addr: addr_owned,
+                        transport_type,
+                        connected_at: Instant::now(),
+                    };
 
-            Ok(connection_info)
+                    Ok(connection_info)
+                }
+                Err(e) => {
+                    Err(TransportError::ConnectionLost {
+                        remote_addr: "0.0.0.0:0".parse().unwrap(),
+                    })
+                }
+            }
         })
         .await
         .map_err(|_| TransportError::NetworkUnreachable)?
@@ -369,13 +459,22 @@ impl Transport for ZmqTransport {
 
         // Use async bridge for real ZeroMQ operations
         tokio::task::spawn_blocking(move || {
-            let socket = socket_clone.lock().unwrap();
-
-            socket
-                .send(&data_vec, 0)
-                .map_err(|_| TransportError::NetworkUnreachable)?;
-
-            Ok(())
+            match socket_clone.lock() {
+                Ok(socket) => {
+                    socket
+                        .send(&data_vec, 0)
+                        .map_err(|e| TransportError::NetworkUnreachable { 
+                            source: format!("ZMQ error: {}", e) 
+                        })?;
+                    
+                    Ok(())
+                }
+                Err(e) => {
+                    Err(TransportError::NetworkUnreachable { 
+                        source: format!("Lock error: {}", e) 
+                    })
+                }
+            }
         })
         .await
         .map_err(|_| TransportError::NetworkUnreachable)?
@@ -387,13 +486,22 @@ impl Transport for ZmqTransport {
 
         // Use async bridge for real ZeroMQ operations
         tokio::task::spawn_blocking(move || {
-            let socket = socket_clone.lock().unwrap();
+            match socket_clone.lock() {
+                Ok(socket) => {
+                    let data = socket
+                        .recv_bytes(0)
+                        .map_err(|e| TransportError::NetworkUnreachable { 
+                            source: Box::new(e)
+                        })?;
 
-            let data = socket
-                .recv_bytes(0)
-                .map_err(|_| TransportError::NetworkUnreachable)?;
-
-            Ok(data)
+                    Ok(data)
+                }
+                Err(e) => {
+                    Err(TransportError::NetworkUnreachable { 
+                        source: format!("Lock error: {}", e) 
+                    })
+                }
+            }
         })
         .await
         .map_err(|_| TransportError::NetworkUnreachable)?
@@ -402,13 +510,49 @@ impl Transport for ZmqTransport {
     fn is_connected(&self) -> bool {
         // Check if we have connection info stored
         // For real ZeroMQ, we'd need to check socket state
-        let connection_info = self.connection_info.lock().unwrap();
-        connection_info.is_some()
+        match self.connection_info.lock() {
+            Ok(connection_info) => connection_info.is_some(),
+            Err(e) => {
+                eprintln!("Lock error checking connection: {}", e);
+                false
+            }
+        }
     }
 
     fn connection_info(&self) -> Option<ConnectionInfo> {
-        let connection_info = self.connection_info.lock().unwrap();
-        connection_info.clone()
+        match self.connection_info.lock() {
+            Ok(connection_info) => connection_info.clone(),
+            Err(e) => {
+                eprintln!("Lock error getting connection info: {}", e);
+                None
+            }
+        }
+    }
+}
+
+impl ZmqTransport {
+    async fn connect_with_retry(
+        addr: &str, 
+        max_retries: usize, 
+        base_delay: std::time::Duration
+    ) -> Result<ConnectionInfo, ZmqError> {
+        let mut delay = base_delay;
+        for attempt in 0..max_retries {
+            match Self::try_connect(addr).await {
+                Ok(info) => return Ok(info),
+                Err(e) if attempt == max_retries - 1 => return Err(e),
+                Err(_) => {
+                    tokio::time::sleep(delay).await;
+                    delay *= 2;
+                }
+            }
+        }
+        Err(ZmqError::ZmqError(zmq::Error::EAGAIN))
+    }
+    
+    async fn try_connect(addr: &str) -> Result<ConnectionInfo, ZmqError> {
+        // Implementation would go here
+        Err(ZmqError::ZmqError(zmq::Error::EAGAIN))
     }
 }
 

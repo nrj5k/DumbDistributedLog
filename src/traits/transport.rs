@@ -7,34 +7,23 @@ use async_trait::async_trait;
 use std::net::SocketAddr;
 
 /// Transport errors
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum TransportError {
+    #[error("Connection lost to {remote_addr}")]
     ConnectionLost { remote_addr: SocketAddr },
-    NetworkUnreachable,
+    
+    #[error("Network unreachable: {source}")]
+    NetworkUnreachable { source: String },
+    
+    #[error("Transport shutdown")]
     TransportShutdown,
+    
+    #[error("Serialization error: {source}")]
     SerializationError { source: String },
+    
+    #[error("Timeout after {duration:?}")]
     Timeout { duration: std::time::Duration },
 }
-
-impl std::fmt::Display for TransportError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TransportError::ConnectionLost { remote_addr } => {
-                write!(f, "Connection lost to {}", remote_addr)
-            }
-            TransportError::NetworkUnreachable => write!(f, "Network unreachable"),
-            TransportError::TransportShutdown => write!(f, "Transport shutdown"),
-            TransportError::SerializationError { source } => {
-                write!(f, "Serialization error: {}", source)
-            }
-            TransportError::Timeout { duration } => {
-                write!(f, "Timeout after {:?}", duration)
-            }
-        }
-    }
-}
-
-impl std::error::Error for TransportError {}
 
 /// Connection information
 #[derive(Debug, Clone)]

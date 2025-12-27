@@ -16,6 +16,14 @@ use tokio::sync::mpsc;
 use tokio::time::interval;
 use zmq::{Context, Socket, SocketType};
 
+#[derive(Debug, thiserror::Error)]
+pub enum LeaderLeaderError {
+    #[error("Lock error: {0}")]
+    LockError(String),
+    #[error("ZMQ error: {0}")]
+    ZmqError(#[from] zmq::Error),
+}
+
 /// LeaderLeader configuration
 #[derive(Debug, Clone)]
 pub struct LeaderLeaderConfig {
@@ -182,32 +190,43 @@ impl LeaderLeader {
         let timeout = Duration::from_millis(self.config.freshness_timeout_ms);
 
         // Clone needed data to avoid borrow issues
-        let derived_metrics: Vec<DerivedMetric> = {
-            let state = self.state.read().unwrap();
-            state.derived_metrics.clone()
+        let derived_metrics: Vec<DerivedMetric> = match self.state.read() {
+            Ok(state) => state.derived_metrics.clone(),
+            Err(e) => {
+                eprintln!("Lock error reading derived metrics: {}", e);
+                return;
+            }
         };
 
-        let stale_metrics: Vec<String> = {
-            let state = self.state.read().unwrap();
-            let mut stale = Vec::new();
-            for metric in &derived_metrics {
-                if let Some(last_instant) = state.metric_timestamps.get(&metric.name) {
-                    let elapsed = now.duration_since(*last_instant);
-                    if elapsed > timeout {
+        let stale_metrics: Vec<String> = match self.state.read() {
+            Ok(state) => {
+                let mut stale = Vec::new();
+                for metric in &derived_metrics {
+                    if let Some(last_instant) = state.metric_timestamps.get(&metric.name) {
+                        let elapsed = now.duration_since(*last_instant);
+                        if elapsed > timeout {
+                            stale.push(metric.name.clone());
+                        }
+                    } else {
                         stale.push(metric.name.clone());
                     }
-                } else {
-                    stale.push(metric.name.clone());
                 }
+                stale
             }
-            stale
+            Err(e) => {
+                eprintln!("Lock error reading metric timestamps: {}", e);
+                Vec::new()
+            }
         };
 
         // Handle stale metrics
         for metric_name in stale_metrics {
-            let has_leader = {
-                let state = self.state.read().unwrap();
-                state.leader_map.get_leader(&metric_name).is_some()
+            let has_leader = match self.state.read() {
+                Ok(state) => state.leader_map.get_leader(&metric_name).is_some(),
+                Err(e) => {
+                    eprintln!("Lock error checking leader: {}", e);
+                    false
+                }
             };
 
             if has_leader {
@@ -220,9 +239,12 @@ impl LeaderLeader {
 
     /// Handle a stale derived metric
     fn handle_stale_metric(&mut self, metric_name: &str) {
-        let current_leader = {
-            let state = self.state.read().unwrap();
-            state.leader_map.get_leader(metric_name)
+        let current_leader = match self.state.read() {
+            Ok(state) => state.leader_map.get_leader(metric_name),
+            Err(e) => {
+                eprintln!("Lock error reading current leader: {}", e);
+                None
+            }
         };
 
         if let Some(leader_id) = current_leader {
@@ -235,9 +257,13 @@ impl LeaderLeader {
             let new_leader = self.select_new_leader(metric_name, leader_id);
 
             if let Some(new_id) = new_leader {
-                {
-                    let mut state = self.state.write().unwrap();
-                    state.leader_map.set_leader(metric_name.to_string(), new_id);
+                match self.state.write() {
+                    Ok(mut state) => {
+                        state.leader_map.set_leader(metric_name.to_string(), new_id);
+                    }
+                    Err(e) => {
+                        eprintln!("Lock error writing leader assignment: {}", e);
+                    }
                 }
                 println!(
                     "Reassigned '{}' from leader {} to leader {}",
@@ -252,25 +278,39 @@ impl LeaderLeader {
 
     /// Assign initial leader for a metric
     fn assign_initial_leader(&mut self, metric_name: &str) {
-        let metric_index = {
-            let state = self.state.read().unwrap();
-            state
-                .derived_metrics
-                .iter()
-                .position(|m| &m.name == metric_name)
-                .unwrap_or(0)
+        let metric_index = match self.state.read() {
+            Ok(state) => {
+                state
+                    .derived_metrics
+                    .iter()
+                    .position(|m| &m.name == metric_name)
+                    .unwrap_or(0)
+            }
+            Err(e) => {
+                eprintln!("Lock error reading derived metrics for index: {}", e);
+                0
+            }
         };
 
-        let node_count = {
-            let state = self.state.read().unwrap();
-            state.leader_map.assignments().len().max(1)
+        let node_count = match self.state.read() {
+            Ok(state) => state.leader_map.assignments().len().max(1),
+            Err(e) => {
+                eprintln!("Lock error reading node count: {}", e);
+                1
+            }
         };
 
         let node_id = ((metric_index % node_count) + 1) as u64;
 
         {
-            let mut state = self.state.write().unwrap();
-            state.leader_map.set_leader(metric_name.to_string(), node_id);
+            match self.state.write() {
+                Ok(mut state) => {
+                    state.leader_map.set_leader(metric_name.to_string(), node_id);
+                }
+                Err(e) => {
+                    eprintln!("Lock error writing initial leader assignment: {}", e);
+                }
+            }
         }
         println!("Assigned initial leader {} for '{}'", node_id, metric_name);
 
@@ -280,14 +320,19 @@ impl LeaderLeader {
 
     /// Select a new leader for a metric (excluding current leader)
     fn select_new_leader(&self, _metric_name: &str, exclude_node: u64) -> Option<u64> {
-        let assignments: Vec<(String, u64)> = {
-            let state = self.state.read().unwrap();
-            state
-                .leader_map
-                .assignments()
-                .iter()
-                .map(|(k, v)| (k.clone(), *v))
-                .collect()
+        let assignments: Vec<(String, u64)> = match self.state.read() {
+            Ok(state) => {
+                state
+                    .leader_map
+                    .assignments()
+                    .iter()
+                    .map(|(k, v)| (k.clone(), *v))
+                    .collect()
+            }
+            Err(e) => {
+                eprintln!("Lock error reading assignments: {}", e);
+                Vec::new()
+            }
         };
 
         // Collect all unique node IDs from assignments
@@ -309,9 +354,12 @@ impl LeaderLeader {
 
     /// Broadcast leader map to all nodes
     fn broadcast_leader_map(&self) {
-        let leader_map = {
-            let state = self.state.read().unwrap();
-            state.leader_map.clone()
+        let leader_map = match self.state.read() {
+            Ok(state) => state.leader_map.clone(),
+            Err(e) => {
+                eprintln!("Lock error reading leader map: {}", e);
+                return;
+            }
         };
 
         let leader_map_json = serde_json::to_string(&leader_map).unwrap();
@@ -330,37 +378,67 @@ impl LeaderLeader {
 
     /// Update metric timestamp (called when receiving metric update)
     pub fn update_metric_timestamp(&mut self, metric_name: String) {
-        let mut state = self.state.write().unwrap();
-        state.metric_timestamps.insert(metric_name, Instant::now());
+        match self.state.write() {
+            Ok(mut state) => {
+                state.metric_timestamps.insert(metric_name, Instant::now());
+            }
+            Err(e) => {
+                eprintln!("Lock error updating metric timestamp: {}", e);
+            }
+        }
     }
 
     /// Get current leader map
     pub fn leader_map(&self) -> LeaderMap {
-        self.state.read().unwrap().leader_map.clone()
+        match self.state.read() {
+            Ok(state) => state.leader_map.clone(),
+            Err(e) => {
+                eprintln!("Lock error reading leader map: {}", e);
+                LeaderMap::new()
+            }
+        }
     }
 
     /// Check if this node is leaderleader
     pub fn is_leaderleader(&self) -> bool {
-        self.state.read().unwrap().is_leaderleader
+        match self.state.read() {
+            Ok(state) => state.is_leaderleader,
+            Err(e) => {
+                eprintln!("Lock error checking leaderleader status: {}", e);
+                false
+            }
+        }
     }
 
     /// Become leaderleader (simple election for now)
     pub fn become_leaderleader(&mut self) {
-        let mut state = self.state.write().unwrap();
-        state.is_leaderleader = true;
-        state.current_term += 1;
-        state.voted_for = Some(self.config.node_id);
-        println!(
-            "Node {} became leaderleader (term {})",
-            self.config.node_id, state.current_term
-        );
+        match self.state.write() {
+            Ok(mut state) => {
+                state.is_leaderleader = true;
+                state.current_term += 1;
+                state.voted_for = Some(self.config.node_id);
+                println!(
+                    "Node {} became leaderleader (term {})",
+                    self.config.node_id, state.current_term
+                );
+            }
+            Err(e) => {
+                eprintln!("Lock error becoming leaderleader: {}", e);
+            }
+        }
     }
 
     /// Step down as leaderleader
     pub fn step_down(&mut self) {
-        let mut state = self.state.write().unwrap();
-        state.is_leaderleader = false;
-        println!("Node {} stepped down as leaderleader", self.config.node_id);
+        match self.state.write() {
+            Ok(mut state) => {
+                state.is_leaderleader = false;
+                println!("Node {} stepped down as leaderleader", self.config.node_id);
+            }
+            Err(e) => {
+                eprintln!("Lock error stepping down: {}", e);
+            }
+        }
     }
 }
 

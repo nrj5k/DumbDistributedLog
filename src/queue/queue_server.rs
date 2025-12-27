@@ -5,26 +5,20 @@
 
 
 /// Simple queue errors
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum QueueError {
+    #[error("Queue is empty")]
     Empty,
+    
+    #[error("Publish error: {0}")]
     PublishError(String),
+    
+    #[error("Server error: {0}")]
     ServerError(String),
+    
+    #[error("Other error: {0}")]
     Other(String),
 }
-
-impl std::fmt::Display for QueueError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            QueueError::Empty => write!(f, "Queue is empty"),
-            QueueError::PublishError(msg) => write!(f, "Publish error: {}", msg),
-            QueueError::ServerError(msg) => write!(f, "Server error: {}", msg),
-            QueueError::Other(msg) => write!(f, "Other error: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for QueueError {}
 
 /// Queue server handle for lifecycle management
 pub struct QueueServerHandle {

@@ -7,24 +7,17 @@ use evalexpr::*;
 use std::collections::HashMap;
 
 /// Expression errors
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum ExpressionError {
+    #[error("Parse error: {0}")]
     ParseError(String),
+    
+    #[error("Undefined variable: {0}")]
     UndefinedVariable(String),
+    
+    #[error("Division by zero in: {0}")]
     DivisionByZero(String),
 }
-
-impl std::fmt::Display for ExpressionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ExpressionError::ParseError(msg) => write!(f, "Parse error: {}", msg),
-            ExpressionError::UndefinedVariable(var) => write!(f, "Undefined variable: {}", var),
-            ExpressionError::DivisionByZero(msg) => write!(f, "Division by zero in: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for ExpressionError {}
 
 /// Ultra-minimal expression trait for maximum flexibility
 pub trait Expression<T>: Send + Sync {
@@ -320,7 +313,7 @@ where
             Ok(result) => result
                 .as_float()
                 .map(|f| T::from(f))
-                .map_err(|_| ExpressionError::ParseError("Not a number".to_string())),
+                .map_err(|e| ExpressionError::ParseError(format!("Not a number: {}", e))),
             Err(e) => Err(ExpressionError::ParseError(format!("Evalexpr error: {}", e))),
         }
     }
