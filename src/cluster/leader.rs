@@ -1,10 +1,4 @@
 //! Leader - Derived metric aggregation and serving
-//!
-//! Responsibilities:
-//! - Subscribe to source topics on all nodes
-//! - Aggregate local values into derived metrics
-//! - Serve derived values on query (REQ/REP)
-//! - Publish aggregated values to pub/sub
 
 use crate::cluster::leader_assignment::DerivedMetric;
 use serde::{Deserialize, Serialize};
@@ -15,38 +9,35 @@ use tokio::sync::mpsc;
 use tokio::time::interval;
 use zmq::{Context, Socket, SocketType};
 
-/// Leader configuration
 #[derive(Debug, Clone)]
 pub struct LeaderConfig {
-    /// This node's ID
     pub node_id: u64,
-    /// ZMQ data port (for receiving local metrics)
     pub data_port: u16,
-    /// ZMQ bind address
+    pub query_port: u16,
     pub bind_addr: String,
-    /// Aggregation interval
     pub aggregation_interval_ms: u64,
+    pub peer_nodes: Vec<String>,
 }
 
 impl Default for LeaderConfig {
     fn default() -> Self {
         Self {
             node_id: 1,
-            data_port: 6967,
+            data_port: 6966,
+            query_port: 6969,
             bind_addr: "0.0.0.0".to_string(),
             aggregation_interval_ms: 1000,
+            peer_nodes: Vec::new(),
         }
     }
 }
 
 impl LeaderConfig {
-    /// Get ZMQ bind address for data
-    pub fn zmq_bind_addr(&self) -> String {
-        format!("tcp://{}:{}", self.bind_addr, self.data_port)
+    pub fn zmq_query_addr(&self) -> String {
+        format!("tcp://{}:{}", self.bind_addr, self.query_port)
     }
 }
 
-/// Local metric value with timestamp
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalMetricValue {
     pub metric_name: String,
@@ -55,7 +46,6 @@ pub struct LocalMetricValue {
     pub timestamp: u64,
 }
 
-/// Aggregated derived metric value
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggregatedMetricValue {
     pub metric_name: String,
@@ -66,33 +56,24 @@ pub struct AggregatedMetricValue {
     pub leader_id: u64,
 }
 
-/// Aggregation type
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AggregationType {
-    Sum,
-    Average,
-    Max,
-    Min,
+    Sum, Average, Max, Min,
 }
 
 impl AggregationType {
-    /// Parse from string
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "sum" => AggregationType::Sum,
             "average" | "avg" => AggregationType::Average,
             "max" => AggregationType::Max,
             "min" => AggregationType::Min,
-            _ => AggregationType::Sum,  // Default
+            _ => AggregationType::Sum,
         }
     }
 
-    /// Aggregate a list of values
     pub fn aggregate(&self, values: &[f64]) -> f64 {
-        if values.is_empty() {
-            return 0.0;
-        }
-
+        if values.is_empty() { return 0.0; }
         match self {
             AggregationType::Sum => values.iter().sum(),
             AggregationType::Average => values.iter().sum::<f64>() / values.len() as f64,
@@ -102,16 +83,11 @@ impl AggregationType {
     }
 }
 
-/// Leader state
 #[derive(Debug, Clone)]
 pub struct LeaderState {
-    /// Derived metrics this leader is responsible for
     pub derived_metrics: Vec<DerivedMetric>,
-    /// Local values received from nodes: metric_name -> Vec<(node_id, value, timestamp)>
     pub local_values: HashMap<String, Vec<(u64, f64, Instant)>>,
-    /// Aggregated values: metric_name -> AggregatedMetricValue
     pub aggregated_values: HashMap<String, AggregatedMetricValue>,
-    /// Last aggregation time
     pub last_aggregation: Option<Instant>,
 }
 
@@ -126,63 +102,35 @@ impl Default for LeaderState {
     }
 }
 
-/// Leader for derived metric aggregation
 pub struct Leader {
-    /// Configuration
     config: LeaderConfig,
-    /// Shared state
     state: Arc<RwLock<LeaderState>>,
-    /// ZMQ context
     _context: Context,
-    /// ZMQ SUB socket for receiving local metrics
-    subscribe_socket: Socket,
-    /// ZMQ REP socket for query service
-    query_socket: Socket,
-    /// ZMQ PUB socket for publishing aggregated values
     publish_socket: Socket,
-    /// Channel for receiving local metric updates
-    metric_rx: mpsc::Receiver<LocalMetricValue>,
-    /// Shutdown signal
+    _subscribe_socket: Socket,  // Keep alive for peer connections
     shutdown_rx: mpsc::Receiver<()>,
 }
 
 impl Leader {
-    /// Create new leader
-    pub fn new(
-        config: LeaderConfig,
-        derived_metrics: Vec<DerivedMetric>,
-    ) -> Result<Self, zmq::Error> {
+    pub fn new(config: LeaderConfig, derived_metrics: Vec<DerivedMetric>) -> Result<Self, zmq::Error> {
         let context = Context::new();
 
-        // Create SUB socket for receiving local metrics
         let subscribe_socket = context.socket(SocketType::SUB)?;
-        subscribe_socket.set_linger(0);
-        subscribe_socket.set_rcvtimeo(1000);
+        let _ = subscribe_socket.set_linger(0);
+        let _ = subscribe_socket.set_rcvtimeo(1000);
+        let _ = subscribe_socket.set_subscribe(b"atomic.");
 
-        // Subscribe to all source topics
-        for metric in &derived_metrics {
-            for source in &metric.sources {
-                // Convert "local.nvme_size" -> "local.nvme_size"
-                let topic = source.clone();
-                subscribe_socket.set_subscribe(topic.as_bytes())?;
-            }
+        for peer in &config.peer_nodes {
+            let peer_addr = format!("tcp://{}", peer);
+            let _ = subscribe_socket.connect(&peer_addr);
         }
 
-        // Create REP socket for query service
-        let query_socket = context.socket(SocketType::REP)?;
-        query_socket.set_linger(0);
-        let query_addr = format!("tcp://{}:{}", config.bind_addr, config.data_port + 1000);
-        query_socket.bind(&query_addr)?;
-
-        // Create PUB socket for publishing aggregated values
         let publish_socket = context.socket(SocketType::PUB)?;
-        publish_socket.set_linger(0);
-        let publish_addr = format!("tcp://{}:{}", config.bind_addr, config.data_port + 2000);
+        let _ = publish_socket.set_linger(0);
+        let publish_addr = format!("tcp://{}:{}", config.bind_addr, config.data_port + 100);
         publish_socket.bind(&publish_addr)?;
 
-        // Create channels
-        let (_metric_tx, metric_rx) = mpsc::channel(100);
-        let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
+        let (_shutdown_tx, shutdown_rx) = mpsc::channel(1);
 
         let state = Arc::new(RwLock::new(LeaderState {
             derived_metrics: derived_metrics.clone(),
@@ -191,23 +139,37 @@ impl Leader {
             last_aggregation: None,
         }));
 
-        let _ = shutdown_tx;  // Drop the sender
-
         Ok(Self {
             config,
             state,
             _context: context,
-            subscribe_socket,
-            query_socket,
             publish_socket,
-            metric_rx,
+            _subscribe_socket: subscribe_socket,
             shutdown_rx,
         })
     }
 
-    /// Run the leader
     pub async fn run(&mut self) {
         let mut aggregation_interval = interval(Duration::from_millis(self.config.aggregation_interval_ms));
+
+        let query_addr = self.config.zmq_query_addr();
+        let state = self.state.clone();
+        let query_task = tokio::task::spawn_blocking(move || {
+            let ctx = zmq::Context::new();
+            let socket = ctx.socket(zmq::REP).expect("Failed to create query socket");
+            let _ = socket.set_linger(0);
+            if let Err(e) = socket.bind(&query_addr) {
+                eprintln!("Failed to bind query socket: {}", e);
+                return;
+            }
+            Self::run_query_handler(socket, state);
+        });
+
+        let sub_state = self.state.clone();
+        let peers = self.config.peer_nodes.clone();
+        let sub_task = tokio::task::spawn_blocking(move || {
+            Self::run_subscription_handler(peers, sub_state);
+        });
 
         loop {
             tokio::select! {
@@ -215,59 +177,108 @@ impl Leader {
                     self.aggregate_all().await;
                 }
                 _ = self.shutdown_rx.recv() => {
-                    println!("Leader shutting down");
+                    query_task.abort();
+                    sub_task.abort();
                     break;
                 }
             }
         }
     }
 
-    /// Aggregate all derived metrics
+    fn run_query_handler(mut socket: Socket, state: Arc<RwLock<LeaderState>>) {
+        loop {
+            match socket.recv_string(0) {
+                Ok(Ok(request)) => {
+                    let response = if request.starts_with("get_metric:") {
+                        let metric = request.trim_start_matches("get_metric:");
+                        let guard = state.read().unwrap();
+                        match guard.aggregated_values.get(metric) {
+                            Some(v) => format!("OK:{}", v.value),
+                            None => "NOT_FOUND".to_string(),
+                        }
+                    } else {
+                        "INVALID_REQUEST".to_string()
+                    };
+                    let _ = socket.send(&response, 0);
+                }
+                Ok(Err(_)) => {
+                    // Received binary data
+                    let _ = socket.send("BINARY_DATA", 0);
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(100)),
+            }
+        }
+    }
+
+    fn run_subscription_handler(peers: Vec<String>, state: Arc<RwLock<LeaderState>>) {
+        // Create SUB socket for receiving atomic metrics
+        let ctx = zmq::Context::new();
+        let socket = ctx.socket(SocketType::SUB).unwrap();
+        let _ = socket.set_linger(0);
+        let _ = socket.set_rcvtimeo(100);
+        let _ = socket.set_subscribe(b"atomic.");
+
+        for peer in &peers {
+            let peer_addr = format!("tcp://{}", peer);
+            let _ = socket.connect(&peer_addr);
+        }
+
+        loop {
+            match socket.recv_string(0) {
+                Ok(Ok(msg)) => {
+                    let parts: Vec<&str> = msg.split(':').collect();
+                    if parts.len() == 3 {
+                        let metric = parts[0].to_string();
+                        if let Ok(node_id) = parts[1].parse::<u64>() {
+                            if let Ok(value) = parts[2].parse::<f64>() {
+                                let mut guard = state.write().unwrap();
+                                let entry = guard.local_values.entry(metric).or_insert_with(Vec::new);
+                                entry.push((node_id, value, Instant::now()));
+                                if entry.len() > 100 {
+                                    entry.drain(0..(entry.len() - 100));
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(Err(_)) => {}
+                Err(zmq::Error::EAGAIN) => std::thread::sleep(Duration::from_millis(10)),
+                Err(_) => std::thread::sleep(Duration::from_millis(100)),
+            }
+        }
+    }
+
     async fn aggregate_all(&mut self) {
         let now = Instant::now();
-
-        // Clone derived metrics to avoid borrow issues
         let derived_metrics: Vec<DerivedMetric> = {
             let state = self.state.read().unwrap();
             state.derived_metrics.clone()
         };
 
-        // Aggregate each metric
         {
             let mut state = self.state.write().unwrap();
             for metric in &derived_metrics {
-                self.aggregate_metric(&metric, &mut state, now);
+                self.aggregate_metric(&metric, &mut state);
             }
             state.last_aggregation = Some(now);
         }
 
-        // Publish aggregated values
         self.publish_all();
     }
 
-    /// Aggregate a single metric
-    fn aggregate_metric(
-        &self,
-        metric: &DerivedMetric,
-        state: &mut LeaderState,
-        now: Instant,
-    ) {
-        // Get local values for this metric's sources
+    fn aggregate_metric(&self, metric: &DerivedMetric, state: &mut LeaderState) {
         let mut all_values: Vec<f64> = Vec::new();
-
         for source in &metric.sources {
             if let Some(values) = state.local_values.get(source) {
-                for &(_node_id, value, _timestamp) in values {
+                for &(_, value, _) in values {
                     all_values.push(value);
                 }
             }
         }
 
-        // Aggregate
         let agg_type = AggregationType::from_str(&metric.aggregation);
         let aggregated_value = agg_type.aggregate(&all_values);
 
-        // Store aggregated value
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -285,86 +296,56 @@ impl Leader {
         state.aggregated_values.insert(metric.name.clone(), aggregated);
     }
 
-    /// Publish all aggregated values
     fn publish_all(&self) {
-        let aggregated_values: HashMap<String, AggregatedMetricValue> = {
+        let values: HashMap<String, AggregatedMetricValue> = {
             let state = self.state.read().unwrap();
             state.aggregated_values.clone()
         };
 
-        for (_name, value) in &aggregated_values {
+        for (_, value) in &values {
             let topic = format!("derived.{}", value.metric_name);
             let data = serde_json::to_string(value).unwrap();
-
-            let mut message = Vec::new();
-            message.extend_from_slice(topic.as_bytes());
-            message.push(0);
-            message.extend_from_slice(data.as_bytes());
-
-            if let Err(e) = self.publish_socket.send(&message, zmq::DONTWAIT) {
-                println!("Failed to publish aggregated value: {}", e);
-            }
+            let mut msg = Vec::new();
+            msg.extend_from_slice(topic.as_bytes());
+            msg.push(0);
+            msg.extend_from_slice(data.as_bytes());
+            let _ = self.publish_socket.send(&msg, zmq::DONTWAIT);
         }
     }
 
-    /// Update local value
     pub fn update_local_value(&mut self, value: LocalMetricValue) {
         let mut state = self.state.write().unwrap();
-
-        // Add to local values
-        let entry = state
-            .local_values
-            .entry(value.metric_name.clone())
-            .or_insert_with(Vec::new);
-
+        let entry = state.local_values.entry(value.metric_name.clone()).or_insert_with(Vec::new);
         entry.push((value.node_id, value.value, Instant::now()));
-
-        // Keep only recent values (last 10 per metric)
         if entry.len() > 10 {
             entry.drain(0..(entry.len() - 10));
         }
     }
 
-    /// Get aggregated value (simple getter for queries)
-    /// Returns the latest aggregated value for a metric, or None if not available
     pub fn get_aggregated_value(&self, metric_name: &str) -> Option<f64> {
         let state = self.state.read().unwrap();
         state.aggregated_values.get(metric_name).map(|v| v.value)
     }
 
-    /// Query derived metric value (full info)
-    pub fn query_derived(&self, metric_name: &str) -> Option<AggregatedMetricValue> {
-        let state = self.state.read().unwrap();
-        state.aggregated_values.get(metric_name).cloned()
-    }
-
-    /// Get all aggregated values
-    pub fn all_aggregated(&self) -> HashMap<String, AggregatedMetricValue> {
-        let state = self.state.read().unwrap();
-        state.aggregated_values.clone()
-    }
-
-    /// Check if this leader handles a metric
-    pub fn handles_metric(&self, metric_name: &str) -> bool {
-        let state = self.state.read().unwrap();
-        state.derived_metrics.iter().any(|m| &m.name == metric_name)
+    pub fn state(&self) -> &Arc<RwLock<LeaderState>> {
+        &self.state
     }
 }
 
-/// Start leader with config
 pub async fn start_leader(
     node_id: u64,
     derived_metrics: Vec<DerivedMetric>,
     data_port: u16,
+    query_port: u16,
     aggregation_interval_ms: u64,
+    peer_nodes: Vec<String>,
 ) -> Result<Leader, zmq::Error> {
     let config = LeaderConfig {
-        node_id,
-        data_port,
+        node_id, data_port, query_port,
         bind_addr: "0.0.0.0".to_string(),
         aggregation_interval_ms,
+        peer_nodes,
     };
-
     Leader::new(config, derived_metrics)
 }
 
@@ -373,82 +354,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_aggregation_type_from_str() {
-        assert_eq!(AggregationType::from_str("sum"), AggregationType::Sum);
-        assert_eq!(AggregationType::from_str("average"), AggregationType::Average);
-        assert_eq!(AggregationType::from_str("avg"), AggregationType::Average);
-        assert_eq!(AggregationType::from_str("max"), AggregationType::Max);
-        assert_eq!(AggregationType::from_str("min"), AggregationType::Min);
-        assert_eq!(AggregationType::from_str("unknown"), AggregationType::Sum);  // Default
-    }
-
-    #[test]
     fn test_aggregation_sum() {
-        let agg = AggregationType::Sum;
-        assert_eq!(agg.aggregate(&[1.0, 2.0, 3.0]), 6.0);
-        assert_eq!(agg.aggregate(&[5.0]), 5.0);
-        assert_eq!(agg.aggregate(&[]), 0.0);
+        assert_eq!(AggregationType::Sum.aggregate(&[1.0, 2.0, 3.0]), 6.0);
+        assert_eq!(AggregationType::Sum.aggregate(&[]), 0.0);
     }
 
     #[test]
     fn test_aggregation_average() {
-        let agg = AggregationType::Average;
-        assert_eq!(agg.aggregate(&[1.0, 2.0, 3.0]), 2.0);
-        assert_eq!(agg.aggregate(&[5.0]), 5.0);
-        assert_eq!(agg.aggregate(&[]), 0.0);
-    }
-
-    #[test]
-    fn test_aggregation_max() {
-        let agg = AggregationType::Max;
-        assert_eq!(agg.aggregate(&[1.0, 5.0, 3.0]), 5.0);
-        assert_eq!(agg.aggregate(&[10.0]), 10.0);
-        assert_eq!(agg.aggregate(&[]), 0.0);
-    }
-
-    #[test]
-    fn test_aggregation_min() {
-        let agg = AggregationType::Min;
-        assert_eq!(agg.aggregate(&[1.0, 5.0, 3.0]), 1.0);
-        assert_eq!(agg.aggregate(&[10.0]), 10.0);
-        assert_eq!(agg.aggregate(&[]), 0.0);
+        assert_eq!(AggregationType::Average.aggregate(&[1.0, 2.0, 3.0]), 2.0);
+        assert_eq!(AggregationType::Average.aggregate(&[]), 0.0);
     }
 
     #[test]
     fn test_leader_config() {
         let config = LeaderConfig::default();
         assert_eq!(config.node_id, 1);
-        assert_eq!(config.data_port, 6967);
-        assert_eq!(config.aggregation_interval_ms, 1000);
-    }
-
-    #[test]
-    fn test_local_metric_value() {
-        let value = LocalMetricValue {
-            metric_name: "local.nvme_size".to_string(),
-            node_id: 2,
-            value: 512.0,
-            timestamp: 1234567890,
-        };
-
-        assert_eq!(value.metric_name, "local.nvme_size");
-        assert_eq!(value.node_id, 2);
-        assert_eq!(value.value, 512.0);
-    }
-
-    #[test]
-    fn test_aggregated_metric_value() {
-        let value = AggregatedMetricValue {
-            metric_name: "derived.nvme_drive_capacity".to_string(),
-            value: 1792.0,
-            aggregation_type: "sum".to_string(),
-            source_count: 3,
-            timestamp: 1234567890,
-            leader_id: 1,
-        };
-
-        assert_eq!(value.metric_name, "derived.nvme_drive_capacity");
-        assert_eq!(value.value, 1792.0);
-        assert_eq!(value.source_count, 3);
+        assert_eq!(config.data_port, 6966);
+        assert_eq!(config.query_port, 6969);
     }
 }

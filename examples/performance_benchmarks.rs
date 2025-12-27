@@ -1,9 +1,9 @@
-//! Comprehensive performance benchmarks for AutoQueues
+//! Comprehensive performance benchmarks for AutoSimpleQueues
 //!
 //! Measures performance of queue operations, expression evaluation,
 //! and system metrics collection.
 
-use autoqueues::{Expression, MetricsCollector, Queue, SimpleExpression, SimpleQueue};
+use autoqueues::{Expression, MetricsCollector, SimpleQueue, SimpleExpression, QueueTrait};
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -19,7 +19,7 @@ impl BenchmarkSuite {
     }
 
     fn run_all_benchmarks(&mut self) {
-        println!("🏁 AutoQueues Performance Benchmarks");
+        println!("🏁 AutoSimpleQueues Performance Benchmarks");
         println!("====================================");
 
         self.benchmark_queue_operations();
@@ -31,12 +31,12 @@ impl BenchmarkSuite {
     }
 
     fn benchmark_queue_operations(&mut self) {
-        println!("\n📊 Queue Operations Benchmark");
+        println!("\n📊 SimpleQueue Operations Benchmark");
         println!("------------------------------");
 
         // Test queue creation
         let start = Instant::now();
-        let mut queue = SimpleQueue::<String>::new();
+        let mut queue: SimpleQueue<String> = SimpleQueue::new();
         let creation_time = start.elapsed();
 
         // Test queue publishing
@@ -61,7 +61,7 @@ impl BenchmarkSuite {
         let batch_time = start.elapsed();
 
         println!(
-            "   Queue Creation:     {:8.3} μs",
+            "   SimpleQueue Creation:     {:8.3} μs",
             creation_time.as_micros()
         );
         println!("   10k Publish Ops:    {:8.3} ms", publish_time.as_millis());
@@ -108,7 +108,7 @@ impl BenchmarkSuite {
         ];
 
         for (name, expr_str) in test_expressions {
-            let expr = SimpleExpression::new(expr_str).unwrap();
+            let expr = SimpleExpression::<f64>::new(expr_str).unwrap();
 
             // Warm up
             for _ in 0..100 {
@@ -179,7 +179,7 @@ impl BenchmarkSuite {
         println!("--------------------------");
 
         // Test queue memory usage
-        let mut queue = SimpleQueue::<String>::new();
+        let mut queue: SimpleQueue<String> = SimpleQueue::new();
 
         // Add items and measure memory growth
         let start = Instant::now();
@@ -198,12 +198,12 @@ impl BenchmarkSuite {
         );
 
         // Test expression memory usage
-        let expressions: Vec<SimpleExpression> = vec![
-            SimpleExpression::new("local.cpu").unwrap(),
-            SimpleExpression::new("local.memory").unwrap(),
-            SimpleExpression::new("local.cpu + local.memory").unwrap(),
-            SimpleExpression::new("sqrt(local.cpu)").unwrap(),
-            SimpleExpression::new("max(local.cpu, local.memory)").unwrap(),
+        let expressions: Vec<SimpleExpression<f64>> = vec![
+            SimpleExpression::<f64>::new("local.cpu").unwrap(),
+            SimpleExpression::<f64>::new("local.memory").unwrap(),
+            SimpleExpression::<f64>::new("local.cpu + local.memory").unwrap(),
+            SimpleExpression::<f64>::new("sqrt(local.cpu)").unwrap(),
+            SimpleExpression::<f64>::new("max(local.cpu, local.memory)").unwrap(),
         ];
 
         let start = Instant::now();
@@ -255,7 +255,7 @@ impl BenchmarkSuite {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut benchmark = BenchmarkSuite::new();
 
-    println!("🚀 Starting AutoQueues Performance Benchmarks...");
+    println!("🚀 Starting AutoSimpleQueues Performance Benchmarks...");
     println!("This will test various aspects of the system performance.");
     println!();
 
@@ -266,13 +266,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     benchmark.run_all_benchmarks();
 
     println!("\n📋 Benchmark Summary:");
-    println!("   ✅ Queue operations tested");
+    println!("   ✅ SimpleQueue operations tested");
     println!("   ✅ Expression evaluation tested");
     println!("   ✅ Metrics collection tested");
     println!("   ✅ Memory usage analyzed");
     println!();
     println!("💡 Performance Tips:");
-    println!("   • Queue operations are optimized for high throughput");
+    println!("   • SimpleQueue operations are optimized for high throughput");
     println!("   • Expression evaluation is cached for repeated use");
     println!("   • Metrics collection uses efficient system calls");
     println!("   • Memory usage scales linearly with data volume");

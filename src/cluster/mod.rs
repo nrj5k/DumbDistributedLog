@@ -10,6 +10,7 @@ pub mod leader_map_client;
 pub mod leaderleader;
 pub mod node;
 pub mod state_machine;
+pub mod cluster_var_client;
 
 // Re-exports for convenient usage
 pub use config::ClusterConfig;
@@ -19,3 +20,4 @@ pub use leader_map_client::{ConsensusConfig, LeaderMapClient};
 pub use leaderleader::{LeaderLeader, LeaderLeaderConfig, LeaderLeaderState, start_leaderleader};
 pub use node::RaftNode;
 pub use state_machine::{ClusterState, ClusterCommand, ClusterResponse, NodeInfo};
+pub use cluster_var_client::{ClusterVarClient, ClusterVarClientConfig};

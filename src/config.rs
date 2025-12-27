@@ -61,6 +61,10 @@ pub struct DerivedFormula {
 /// NEW: AutoQueue distributed coordination configuration
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AutoQueuesConfig {
+    /// Cluster node addresses for distributed operation
+    /// Format: "hostname:port" e.g., ["server1:6966", "server2:6966", "server3:6966"]
+    #[serde(default)]
+    pub cluster_nodes: Vec<String>,
     /// Node assignment strategy - automatic vs manual control
     #[serde(default)]
     pub assignment_strategy: AssignmentStrategy,
@@ -84,7 +88,7 @@ pub struct AutoQueuesConfig {
     pub leaders: HashMap<u64, LeaderGroupConfig>,
     /// Bootstrap and discovery configuration
     pub bootstrap: BootstrapConfig,
-    /// NEW: Node mapping customization (optional)
+    /// Node mapping customization (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_mapping: Option<NodeMappingConfig>,
 }
@@ -129,7 +133,9 @@ pub struct BootstrapConfig {
     #[serde(default = "default_coordination_port")]
     pub coordination_port: u16,         // Separate port for Raft coordination (default: 6968)
     #[serde(default = "default_data_port")]
-    pub data_port: u16,                 // Data plane port (default: 6967)
+    pub data_port: u16,                 // Data plane port (default: 6966)
+    #[serde(default = "default_query_port")]
+    pub query_port: u16,                // Leader REQ/REP port (default: 6969)
     #[serde(default = "default_aimd_min_interval")]
     pub aimd_min_interval_ms: u64,      // AIMD minimum interval in ms
     #[serde(default = "default_aimd_max_interval")]
@@ -143,7 +149,11 @@ fn default_coordination_port() -> u16 {
 }
 
 fn default_data_port() -> u16 {
-    6967  // Default data plane port
+    6966  // Default data plane port
+}
+
+fn default_query_port() -> u16 {
+    6969  // Default query port for REQ/REP
 }
 
 fn default_aimd_min_interval() -> u64 {
@@ -307,6 +317,25 @@ impl QueueConfig {
         self.autoqueues.as_ref()
             .map(|aq| aq.bootstrap.data_port)
             .unwrap_or(6967)
+    }
+
+    /// NEW: Get cluster nodes for distributed operation
+    pub fn get_cluster_nodes(&self) -> &[String] {
+        self.autoqueues.as_ref()
+            .map(|aq| aq.cluster_nodes.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// NEW: Check if running in distributed mode
+    pub fn is_distributed(&self) -> bool {
+        !self.get_cluster_nodes().is_empty()
+    }
+
+    /// NEW: Get query port (for leader REQ/REP)
+    pub fn get_query_port(&self) -> u16 {
+        self.autoqueues.as_ref()
+            .map(|aq| aq.bootstrap.query_port)
+            .unwrap_or(6969)
     }
 
     /// NEW: Validate AutoQueue configuration

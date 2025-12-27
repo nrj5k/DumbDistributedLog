@@ -2,7 +2,7 @@
 //!
 //! Tests the complete queue system with real data flow.
 
-use autoqueues::{Queue, queue::SimpleQueue};
+use autoqueues::{SimpleQueue, queue::QueueTrait};
 use std::time::Duration;
 
 #[tokio::main]

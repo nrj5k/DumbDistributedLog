@@ -3,10 +3,14 @@
 //! Provides real-time system information including CPU usage, memory consumption,
 //! disk usage, and system information. Uses sysinfo crate for cross-platform
 //! compatibility.
+//!
+//! Also provides MetricPublisher for sending atomic metrics to the cluster.
 
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::net::SocketAddr;
 use sysinfo::{Disks, System};
+use zmq::{Context, Socket, SocketType};
 
 /// System metrics data structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -217,5 +221,118 @@ impl MetricsCollector {
 impl Default for MetricsCollector {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// === Metric Publisher for Distributed Operation ===
+
+/// Configuration for metric publishing
+#[derive(Debug, Clone)]
+pub struct PublisherConfig {
+    pub node_id: u64,
+    pub publish_port: u16,
+    pub bind_addr: String,
+    pub peers: Vec<SocketAddr>,
+}
+
+impl Default for PublisherConfig {
+    fn default() -> Self {
+        Self {
+            node_id: 1,
+            publish_port: 6966,
+            bind_addr: "0.0.0.0".to_string(),
+            peers: Vec::new(),
+        }
+    }
+}
+
+impl PublisherConfig {
+    pub fn zmq_bind_addr(&self) -> String {
+        format!("tcp://{}:{}", self.bind_addr, self.publish_port)
+    }
+}
+
+/// Metric Publisher - sends atomic metrics to the cluster via ZMQ PUB
+pub struct MetricPublisher {
+    config: PublisherConfig,
+    socket: Socket,
+}
+
+impl MetricPublisher {
+    pub fn new(config: PublisherConfig) -> Result<Self, zmq::Error> {
+        let ctx = Context::new();
+        let socket = ctx.socket(SocketType::PUB)?;
+        let _ = socket.set_linger(0);
+        socket.bind(&config.zmq_bind_addr())?;
+
+        for peer in &config.peers {
+            let peer_addr = format!("tcp://{}", peer);
+            socket.connect(&peer_addr)?;
+        }
+
+        Ok(Self { config, socket })
+    }
+
+    pub fn publish(&self, metric: &str, value: f64) {
+        let msg = format!("{}:{}:{}", metric, self.config.node_id, value);
+        if let Err(e) = self.socket.send(&msg, 0) {
+            eprintln!("Failed to publish metric {}: {}", metric, e);
+        }
+    }
+
+    pub fn publish_cpu_percent(&self, value: f64) {
+        self.publish("atomic.cpu_percent", value);
+    }
+
+    pub fn publish_memory_percent(&self, value: f64) {
+        self.publish("atomic.memory_percent", value);
+    }
+
+    pub fn publish_port(&self) -> u16 {
+        self.config.publish_port
+    }
+
+    pub fn node_id(&self) -> u64 {
+        self.config.node_id
+    }
+}
+
+/// Parse incoming metric message: "metric:node_id:value"
+pub fn parse_metric_message(msg: &str) -> Option<(String, u64, f64)> {
+    let parts: Vec<&str> = msg.split(':').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let metric = parts[0].to_string();
+    let node_id = parts[1].parse().ok()?;
+    let value = parts[2].parse().ok()?;
+    Some((metric, node_id, value))
+}
+
+#[cfg(test)]
+mod publisher_tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_metric_message() {
+        let msg = "atomic.cpu_percent:1:45.5";
+        let parsed = parse_metric_message(msg).unwrap();
+        assert_eq!(parsed.0, "atomic.cpu_percent");
+        assert_eq!(parsed.1, 1);
+        assert_eq!(parsed.2, 45.5);
+    }
+
+    #[test]
+    fn test_parse_invalid_message() {
+        assert!(parse_metric_message("invalid").is_none());
+        assert!(parse_metric_message("a:b").is_none());
+    }
+
+    #[test]
+    fn test_publisher_config_default() {
+        let config = PublisherConfig::default();
+        assert_eq!(config.node_id, 1);
+        assert_eq!(config.publish_port, 6966);
+        assert_eq!(config.zmq_bind_addr(), "tcp://0.0.0.0:6966");
     }
 }

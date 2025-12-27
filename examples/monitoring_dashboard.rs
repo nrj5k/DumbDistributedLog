@@ -11,7 +11,7 @@ use std::time::Duration;
 
 struct Dashboard {
     metrics: MetricsCollector,
-    expressions: Vec<SimpleExpression>,
+    expressions: Vec<SimpleExpression<f64>>,
     local_vars: HashMap<String, f64>,
     global_vars: HashMap<String, f64>,
 }
@@ -33,16 +33,16 @@ impl Dashboard {
     fn setup_default_expressions(&mut self) {
         // System health expressions
         self.expressions
-            .push(SimpleExpression::new("local.cpu_percent").unwrap());
+            .push(SimpleExpression::<f64>::new("local.cpu_percent").unwrap());
         self.expressions
-            .push(SimpleExpression::new("local.memory_percent").unwrap());
+            .push(SimpleExpression::<f64>::new("local.memory_percent").unwrap());
         self.expressions.push(
-            SimpleExpression::new("(local.cpu_percent + local.memory_percent) / 2.0").unwrap(),
+            SimpleExpression::<f64>::new("(local.cpu_percent + local.memory_percent) / 2.0").unwrap(),
         );
         self.expressions
-            .push(SimpleExpression::new("sqrt(local.cpu_percent) * 10.0").unwrap());
+            .push(SimpleExpression::<f64>::new("sqrt(local.cpu_percent) * 10.0").unwrap());
         self.expressions
-            .push(SimpleExpression::new("max(local.cpu_percent, local.memory_percent)").unwrap());
+            .push(SimpleExpression::<f64>::new("max(local.cpu_percent, local.memory_percent)").unwrap());
     }
 
     fn update_metrics(&mut self) {

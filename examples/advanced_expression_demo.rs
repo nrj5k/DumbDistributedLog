@@ -25,44 +25,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--------------------------------");
 
     // Test simple variable first
-    let simple_var = SimpleExpression::new("local.cpu")?;
-    let result = simple_var.evaluate(&local_vars, &global_vars)?;
+    let simple_var = SimpleExpression::<f64>::new("local.cpu")?;
+    let result: f64 = simple_var.evaluate(&local_vars, &global_vars)?;
     println!("   {} = {}", simple_var.expression, result);
 
-    let addition = SimpleExpression::new("local.cpu + local.memory")?;
-    let result = addition.evaluate(&local_vars, &global_vars)?;
+    let addition = SimpleExpression::<f64>::new("local.cpu + local.memory")?;
+    let result: f64 = addition.evaluate(&local_vars, &global_vars)?;
     println!("   {} = {}", addition.expression, result);
 
-    let multiplication = SimpleExpression::new("local.cpu * local.disk")?;
-    let result = multiplication.evaluate(&local_vars, &global_vars)?;
+    let multiplication = SimpleExpression::<f64>::new("local.cpu * local.disk")?;
+    let result: f64 = multiplication.evaluate(&local_vars, &global_vars)?;
     println!("   {} = {}", multiplication.expression, result);
 
     // Demo 2: Advanced math functions
     println!("\n2. Advanced Math Functions:");
     println!("--------------------------");
 
-    let sqrt_expr = SimpleExpression::new("sqrt(local.cpu)")?;
-    let result = sqrt_expr.evaluate(&local_vars, &global_vars)?;
+    let sqrt_expr = SimpleExpression::<f64>::new("sqrt(local.cpu)")?;
+    let result: f64 = sqrt_expr.evaluate(&local_vars, &global_vars)?;
     println!("   {} = {:.2}", sqrt_expr.expression, result);
 
-    let abs_expr = SimpleExpression::new("abs(local.temperature)")?;
-    let result = abs_expr.evaluate(&local_vars, &global_vars)?;
+    let abs_expr = SimpleExpression::<f64>::new("abs(local.temperature)")?;
+    let result: f64 = abs_expr.evaluate(&local_vars, &global_vars)?;
     println!("   {} = {:.1}", abs_expr.expression, result);
 
-    let pow_expr = SimpleExpression::new("pow(local.memory, 2.0)")?;
-    let result = pow_expr.evaluate(&local_vars, &global_vars)?;
+    let pow_expr = SimpleExpression::<f64>::new("pow(local.memory, 2.0)")?;
+    let result: f64 = pow_expr.evaluate(&local_vars, &global_vars)?;
     println!("   {} = {:.1}", pow_expr.expression, result);
 
     // Demo 3: Comparison functions
     println!("\n3. Comparison Functions:");
     println!("-----------------------");
 
-    let max_expr = SimpleExpression::new("max(local.cpu, global.power)")?;
-    let result = max_expr.evaluate(&local_vars, &global_vars)?;
+    let max_expr = SimpleExpression::<f64>::new("max(local.cpu, global.power)")?;
+    let result: f64 = max_expr.evaluate(&local_vars, &global_vars)?;
     println!("   {} = {:.1}", max_expr.expression, result);
 
-    let min_expr = SimpleExpression::new("min(local.memory, local.disk)")?;
-    let result = min_expr.evaluate(&local_vars, &global_vars)?;
+    let min_expr = SimpleExpression::<f64>::new("min(local.memory, local.disk)")?;
+    let result: f64 = min_expr.evaluate(&local_vars, &global_vars)?;
     println!("   {} = {:.1}", min_expr.expression, result);
 
     // Demo 4: Complex expressions
@@ -70,16 +70,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("----------------------");
 
     // Health score calculation
-    let health_expr = SimpleExpression::new("(local.cpu + local.memory) / 2.0")?;
-    let result = health_expr.evaluate(&local_vars, &global_vars)?;
+    let health_expr = SimpleExpression::<f64>::new("(local.cpu + local.memory) / 2.0")?;
+    let result: f64 = health_expr.evaluate(&local_vars, &global_vars)?;
     println!(
         "   Health Score: {} = {:.1}",
         health_expr.expression, result
     );
 
     // Performance index
-    let perf_expr = SimpleExpression::new("sqrt(local.cpu) * abs(local.temperature)")?;
-    let result = perf_expr.evaluate(&local_vars, &global_vars)?;
+    let perf_expr = SimpleExpression::<f64>::new("sqrt(local.cpu) * abs(local.temperature)")?;
+    let result: f64 = perf_expr.evaluate(&local_vars, &global_vars)?;
     println!(
         "   Performance Index: {} = {:.2}",
         perf_expr.expression, result
@@ -90,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("----------------------");
 
     let complex_expr =
-        SimpleExpression::new("max(local.cpu, global.network) + min(local.memory, local.disk)")?;
+        SimpleExpression::<f64>::new("max(local.cpu, global.network) + min(local.memory, local.disk)")?;
     let local_vars_required = complex_expr.required_local_vars();
     let global_vars_required = complex_expr.required_global_vars();
 
@@ -103,14 +103,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("------------------");
 
     // Division by zero protection
-    let div_zero = SimpleExpression::new("local.cpu / 0.0")?;
+    let div_zero = SimpleExpression::<f64>::new("local.cpu / 0.0")?;
     match div_zero.evaluate(&local_vars, &global_vars) {
         Ok(_) => println!("   ❌ Division by zero not caught!"),
         Err(e) => println!("   ✅ Division by zero correctly caught: {}", e),
     }
 
     // Undefined variable
-    let undefined = SimpleExpression::new("local.missing_var")?;
+    let undefined = SimpleExpression::<f64>::new("local.missing_var")?;
     match undefined.evaluate(&local_vars, &global_vars) {
         Ok(_) => println!("   ❌ Undefined variable not caught!"),
         Err(e) => println!("   ✅ Undefined variable correctly caught: {}", e),

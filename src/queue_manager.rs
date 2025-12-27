@@ -7,6 +7,7 @@
 //! - Coordinates graceful shutdown
 //! - Provides unified management interface
 
+use crate::cluster::cluster_var_client::ClusterVarClient;
 use crate::traits::queue::QueueTrait;
 use crate::{
     config::{ConfigError, QueueConfig},
@@ -16,6 +17,7 @@ use crate::{
     types::Timestamp,
 };
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
@@ -81,6 +83,10 @@ pub struct QueueManager {
     running: Arc<RwLock<bool>>,
     /// Update task handle
     update_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    /// Cluster leaders for distributed metrics
+    cluster_leaders: Arc<RwLock<HashMap<String, SocketAddr>>>,
+    /// Cluster variable client
+    cluster_client: Arc<ClusterVarClient>,
 }
 
 /// Queue manager errors
@@ -162,6 +168,8 @@ impl QueueManager {
             system_metrics: Arc::new(RwLock::new(None)),
             running: Arc::new(RwLock::new(false)),
             update_handle: Arc::new(Mutex::new(None)),
+            cluster_leaders: Arc::new(RwLock::new(HashMap::new())),
+            cluster_client: Arc::new(ClusterVarClient::default()),
         })
     }
 
@@ -287,6 +295,8 @@ impl QueueManager {
         let queues = self.queues.clone();
         let metrics = self.metrics.clone();
         let system_metrics = self.system_metrics.clone();
+        let cluster_leaders = self.cluster_leaders.clone();
+        let cluster_client = self.cluster_client.clone();
         let update_interval = self.config.update_interval_ms;
 
         let handle = tokio::spawn(async move {
@@ -305,7 +315,29 @@ impl QueueManager {
                         if let Ok(queues_guard) = queues.try_read() {
                             let system_data = system_metrics.read().await;
                             if let Some(metrics) = system_data.as_ref() {
-                                Self::update_derived_queues(&queues_guard, metrics).await;
+                                // Get cluster variables using spawn_blocking
+                                let cluster_leaders_data = cluster_leaders.read().await.clone();
+                                let cluster_client_clone = cluster_client.clone();
+                                
+                                let cluster_vars_handle = tokio::task::spawn_blocking(move || {
+                                    Self::query_cluster_variables(&cluster_client_clone, &cluster_leaders_data)
+                                });
+                                
+                                match cluster_vars_handle.await {
+                                    Ok(Ok(cluster_vars)) => {
+                                        Self::update_derived_queues(&queues_guard, metrics, &cluster_vars).await;
+                                    }
+                                    Ok(Err(e)) => {
+                                        eprintln!("Error querying cluster variables: {}", e);
+                                        // Continue with empty cluster vars
+                                        Self::update_derived_queues(&queues_guard, metrics, &HashMap::new()).await;
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Error joining cluster vars task: {}", e);
+                                        // Continue with empty cluster vars
+                                        Self::update_derived_queues(&queues_guard, metrics, &HashMap::new()).await;
+                                    }
+                                }
                             }
                         }
                     }
@@ -333,9 +365,9 @@ impl QueueManager {
     async fn update_derived_queues(
         queues: &HashMap<String, ManagedQueue>,
         metrics: &SystemMetrics,
+        cluster_vars: &HashMap<String, f64>,
     ) {
         let mut atomic_vars = HashMap::new();
-        let cluster_vars = HashMap::new();
 
         // Populate variables from system metrics
         atomic_vars.insert("cpu_usage".to_string(), metrics.cpu_usage_percent as f64);
@@ -352,7 +384,7 @@ impl QueueManager {
         for (_, managed_queue) in queues.iter() {
             if managed_queue.is_derived {
                 if let Some(expression) = &managed_queue.expression {
-                    match expression.evaluate(&atomic_vars, &cluster_vars) {
+                    match expression.evaluate(&atomic_vars, cluster_vars) {
                         Ok(value) => {
                             if let Ok(mut queue_guard) = managed_queue.queue.try_lock() {
                                 // Use the Queue trait method
@@ -462,6 +494,21 @@ impl QueueManager {
     /// Check if manager is running
     pub async fn is_running(&self) -> bool {
         *self.running.read().await
+    }
+
+    /// Query cluster variables from leaders
+    fn query_cluster_variables(
+        cluster_client: &ClusterVarClient,
+        cluster_leaders: &HashMap<String, SocketAddr>,
+    ) -> Result<HashMap<String, f64>, String> {
+        // Convert HashMap<String, SocketAddr> to Vec<(String, SocketAddr)> for the client
+        let metric_leaders: Vec<(String, SocketAddr)> = cluster_leaders
+            .iter()
+            .map(|(metric, addr)| (metric.clone(), *addr))
+            .collect();
+        
+        // Query cluster variables using the client
+        cluster_client.query_cluster_vars(&metric_leaders)
     }
 }
 
