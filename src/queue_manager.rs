@@ -7,10 +7,10 @@
 //! - Coordinates graceful shutdown
 //! - Provides unified management interface
 
-use crate::cluster::cluster_var_client::ClusterVarClient;
 use crate::traits::queue::QueueTrait;
 use crate::{
     config::{ConfigError, QueueConfig},
+    constants,
     expression::{Expression, ExpressionError, ExpressionF64},
     metrics::{MetricsCollector, SystemMetrics},
     queue::{QueueError, SimpleQueue},
@@ -42,10 +42,10 @@ impl Default for QueueManagerConfig {
     fn default() -> Self {
         Self {
             config_path: "config.toml".to_string(),
-            update_interval_ms: 1000,
-            max_queues: 100,
+            update_interval_ms: constants::time::METRICS_INTERVAL_MS,
+            max_queues: constants::system::MAX_QUEUES,
             enable_metrics: true,
-            shutdown_timeout_ms: 5000,
+            shutdown_timeout_ms: constants::system::SHUTDOWN_TIMEOUT_MS,
         }
     }
 }
@@ -75,8 +75,8 @@ pub struct QueueManager {
     queue_config: Arc<RwLock<QueueConfig>>,
     /// Managed queues by name
     queues: Arc<RwLock<HashMap<String, ManagedQueue>>>,
-    /// Metrics collector
-    metrics: Arc<Mutex<MetricsCollector>>,
+    /// Metrics collector (RwLock for concurrent read-heavy access)
+    metrics: Arc<RwLock<MetricsCollector>>,
     /// System metrics cache
     system_metrics: Arc<RwLock<Option<SystemMetrics>>>,
     /// Running flag for graceful shutdown
@@ -85,8 +85,6 @@ pub struct QueueManager {
     update_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Cluster leaders for distributed metrics
     cluster_leaders: Arc<RwLock<HashMap<String, SocketAddr>>>,
-    /// Cluster variable client
-    cluster_client: Arc<ClusterVarClient>,
 }
 
 /// Queue manager errors
@@ -164,12 +162,11 @@ impl QueueManager {
             config,
             queue_config: Arc::new(RwLock::new(queue_config)),
             queues: Arc::new(RwLock::new(HashMap::new())),
-            metrics: Arc::new(Mutex::new(MetricsCollector::new())),
+            metrics: Arc::new(RwLock::new(MetricsCollector::new())),
             system_metrics: Arc::new(RwLock::new(None)),
             running: Arc::new(RwLock::new(false)),
             update_handle: Arc::new(Mutex::new(None)),
             cluster_leaders: Arc::new(RwLock::new(HashMap::new())),
-            cluster_client: Arc::new(ClusterVarClient::default()),
         })
     }
 
@@ -296,7 +293,6 @@ impl QueueManager {
         let metrics = self.metrics.clone();
         let system_metrics = self.system_metrics.clone();
         let cluster_leaders = self.cluster_leaders.clone();
-        let cluster_client = self.cluster_client.clone();
         let update_interval = self.config.update_interval_ms;
 
         let handle = tokio::spawn(async move {
@@ -306,7 +302,7 @@ impl QueueManager {
                 tokio::select! {
                     _ = interval.tick() => {
                         // Update system metrics
-                        if let Ok(mut metrics_guard) = metrics.try_lock() {
+                        if let Ok(mut metrics_guard) = metrics.try_write() {
                             let new_metrics = metrics_guard.get_all_metrics();
                             *system_metrics.write().await = Some(new_metrics);
                         }
@@ -315,33 +311,16 @@ impl QueueManager {
                         if let Ok(queues_guard) = queues.try_read() {
                             let system_data = system_metrics.read().await;
                             if let Some(metrics) = system_data.as_ref() {
-                                // Get cluster variables using spawn_blocking
+                                // Simplified cluster variables handling for HPC core
                                 let cluster_leaders_data = cluster_leaders.read().await.clone();
-                                let cluster_client_clone = cluster_client.clone();
-                                
-                                let cluster_vars_handle = tokio::task::spawn_blocking(move || {
-                                    Self::query_cluster_variables(&cluster_client_clone, &cluster_leaders_data)
-                                });
-                                
-                                match cluster_vars_handle.await {
-                                    Ok(Ok(cluster_vars)) => {
-                                        Self::update_derived_queues(&queues_guard, metrics, &cluster_vars).await;
-                                    }
-                                    Ok(Err(e)) => {
-                                        eprintln!("Error querying cluster variables: {}", e);
-                                        // Continue with empty cluster vars
-                                        Self::update_derived_queues(&queues_guard, metrics, &HashMap::new()).await;
-                                    }
-                                    Err(e) => {
-                                        eprintln!("Error joining cluster vars task: {}", e);
-                                        // Continue with empty cluster vars
-                                        Self::update_derived_queues(&queues_guard, metrics, &HashMap::new()).await;
-                                    }
-                                }
+                                let cluster_vars = Self::query_cluster_variables(&cluster_leaders_data)
+                                    .unwrap_or_else(|_| HashMap::new());
+
+                                Self::update_derived_queues(&queues_guard, metrics, &cluster_vars).await;
                             }
                         }
                     }
-                    _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    _ = tokio::time::sleep(Duration::from_millis(constants::time::SHORT_SLEEP_INTERVAL_MS)) => {
                         // Allow graceful shutdown checking
                         continue;
                     }
@@ -384,7 +363,13 @@ impl QueueManager {
         for (_, managed_queue) in queues.iter() {
             if managed_queue.is_derived {
                 if let Some(expression) = &managed_queue.expression {
-                    match expression.evaluate(&atomic_vars, cluster_vars) {
+                    // Merge atomic and cluster variables for simplified expression engine
+                    let mut all_vars = atomic_vars.clone();
+                    for (key, value) in cluster_vars {
+                        all_vars.insert(key.clone(), *value);
+                    }
+                    
+                    match expression.evaluate(&all_vars) {
                         Ok(value) => {
                             if let Ok(mut queue_guard) = managed_queue.queue.try_lock() {
                                 // Use the Queue trait method
@@ -496,19 +481,13 @@ impl QueueManager {
         *self.running.read().await
     }
 
-    /// Query cluster variables from leaders
+    /// Query cluster variables from leaders (simplified for HPC core)
     fn query_cluster_variables(
-        cluster_client: &ClusterVarClient,
-        cluster_leaders: &HashMap<String, SocketAddr>,
+        _cluster_leaders: &HashMap<String, SocketAddr>,
     ) -> Result<HashMap<String, f64>, String> {
-        // Convert HashMap<String, SocketAddr> to Vec<(String, SocketAddr)> for the client
-        let metric_leaders: Vec<(String, SocketAddr)> = cluster_leaders
-            .iter()
-            .map(|(metric, addr)| (metric.clone(), *addr))
-            .collect();
-        
-        // Query cluster variables using the client
-        cluster_client.query_cluster_vars(&metric_leaders)
+        // Simplified implementation for HPC core - return empty map
+        // Full implementation moved to out-of-scope components
+        Ok(HashMap::new())
     }
 }
 

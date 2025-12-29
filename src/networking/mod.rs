@@ -1,7 +1,8 @@
-//! Networking module for AutoQueues - ZMQ focus
+//! Networking module for AutoQueues - HPC-optimized
 //!
-//! Provides ZeroMQ transport implementation for distributed queue systems.
+//! Provides minimal transport abstractions for high-performance communication.
+//! Focused on RDMA-ready interfaces for ultra-low latency.
 
-pub mod zmq_pubsub;
+pub mod transport_traits;
 
-pub use zmq_pubsub::{ZmqPubSubBroker, ZmqPubSubClient, ZmqTransport};
+pub use transport_traits::{ConnectionInfo, Transport, TransportError, TransportType};

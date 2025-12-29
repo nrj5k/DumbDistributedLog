@@ -2,20 +2,18 @@
 //!
 //! Ultra-minimal trait with 4 essential methods for maximum flexibility.
 
-
-
 /// Simple queue errors
 #[derive(Debug, thiserror::Error)]
 pub enum QueueError {
     #[error("Queue is empty")]
     Empty,
-    
+
     #[error("Publish error: {0}")]
     PublishError(String),
-    
+
     #[error("Server error: {0}")]
     ServerError(String),
-    
+
     #[error("Other error: {0}")]
     Other(String),
 }

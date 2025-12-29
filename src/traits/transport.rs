@@ -11,16 +11,18 @@ use std::net::SocketAddr;
 pub enum TransportError {
     #[error("Connection lost to {remote_addr}")]
     ConnectionLost { remote_addr: SocketAddr },
-    
-    #[error("Network unreachable: {source}")]
-    NetworkUnreachable { source: String },
-    
+
+    #[error("Network unreachable")]
+    NetworkUnreachable,
+
     #[error("Transport shutdown")]
     TransportShutdown,
-    
+
     #[error("Serialization error: {source}")]
-    SerializationError { source: String },
-    
+    SerializationError {
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
     #[error("Timeout after {duration:?}")]
     Timeout { duration: std::time::Duration },
 }
@@ -46,16 +48,16 @@ pub enum TransportType {
 pub trait Transport: Send + Sync + std::fmt::Debug {
     /// Connect to remote address
     async fn connect(&self, addr: &str) -> Result<ConnectionInfo, TransportError>;
-    
+
     /// Send data to remote endpoint
     async fn send(&self, data: &[u8]) -> Result<(), TransportError>;
 
     /// Receive data from remote endpoint
     async fn receive(&self) -> Result<Vec<u8>, TransportError>;
-    
+
     /// Check if connected
     fn is_connected(&self) -> bool;
-    
+
     /// Get connection info
     fn connection_info(&self) -> Option<ConnectionInfo>;
 }

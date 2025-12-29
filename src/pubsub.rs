@@ -15,10 +15,10 @@ use tokio::sync::{RwLock, mpsc};
 pub enum PubSubError {
     #[error("Topic '{0}' not found")]
     TopicNotFound(String),
-    
+
     #[error("Conflict for '{0}'")]
     SubscriptionConflict(String),
-    
+
     #[error("Serialization: {0}")]
     SerializationError(String),
 }

@@ -1,5 +1,6 @@
 //! Unified Configuration System - KISS Simplified
 
+use crate::constants;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -19,7 +20,9 @@ impl std::fmt::Display for ConfigError {
             ConfigError::FileNotFound(path) => write!(f, "Config file not found: {}", path),
             ConfigError::ParseError(msg) => write!(f, "TOML parse error: {}", msg),
             ConfigError::ValidationError(msg) => write!(f, "Config validation error: {}", msg),
-            ConfigError::SectionNotFound(section) => write!(f, "Config section not found: {}", section),
+            ConfigError::SectionNotFound(section) => {
+                write!(f, "Config section not found: {}", section)
+            }
         }
     }
 }
@@ -79,10 +82,10 @@ pub struct AutoQueuesConfig {
     pub derived_metrics: HashMap<String, DerivedMetricConfig>,
     /// Node scores for weighted leader assignment
     #[serde(default)]
-    pub node_scores: HashMap<String, f64>,  // hostname → score
+    pub node_scores: HashMap<String, f64>, // hostname → score
     /// Node order for hostname → node_id mapping
     #[serde(default)]
-    pub node_order: Vec<String>,  // hostnames in order
+    pub node_order: Vec<String>, // hostnames in order
     /// Per-metric leader assignment (optional override)
     #[serde(default)]
     pub leaders: HashMap<u64, LeaderGroupConfig>,
@@ -97,20 +100,20 @@ pub struct AutoQueuesConfig {
 #[derive(Debug, Default, Clone, Deserialize, Serialize, PartialEq)]
 pub enum AssignmentStrategy {
     #[default]
-    Automatic,           // System handles everything
-    HostnameMapping,     // User provides specific mappings
-    TagBased,           // Map by node capabilities/roles
-    LocationBased,      // Map by physical location
-    RoundRobin,         // Simple distribution
+    Automatic, // System handles everything
+    HostnameMapping, // User provides specific mappings
+    TagBased,        // Map by node capabilities/roles
+    LocationBased,   // Map by physical location
+    RoundRobin,      // Simple distribution
 }
 
 /// NEW: Derived metric configuration (aggregations of local metrics)
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DerivedMetricConfig {
-    pub aggregation: String,           // sum, average, max, min
-    pub sources: Vec<String>,          // local metric sources
+    pub aggregation: String,  // sum, average, max, min
+    pub sources: Vec<String>, // local metric sources
     #[serde(default = "default_true")]
-    pub auto_aggregate: bool,          // Enable automatic calculation
+    pub auto_aggregate: bool, // Enable automatic calculation
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required_nodes: Option<usize>, // Minimum nodes for reliable aggregate
 }
@@ -118,50 +121,50 @@ pub struct DerivedMetricConfig {
 /// NEW: Per-metric leader configuration
 #[derive(Debug, Deserialize, Serialize)]
 pub struct LeaderGroupConfig {
-    pub node_group: Vec<u64>,           // Logical node IDs for this coordinator
-    pub leader_metrics: Vec<String>,    // Metrics this coordinator calculates
+    pub node_group: Vec<u64>,        // Logical node IDs for this coordinator
+    pub leader_metrics: Vec<String>, // Metrics this coordinator calculates
     pub election_timeout_ms: u32,
     pub heartbeat_interval_ms: u32,
 }
 
-    /// NEW: Bootstrap and discovery configuration
+/// NEW: Bootstrap and discovery configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BootstrapConfig {
-    pub anchor_nodes: Vec<u64>,         // Logical node IDs for anchor points
+    pub anchor_nodes: Vec<u64>, // Logical node IDs for anchor points
     pub discovery_port: u16,
-    pub autoqueues_port: u16,           // Standard AutoQueues coordination port
+    pub autoqueues_port: u16, // Standard AutoQueues coordination port
     #[serde(default = "default_coordination_port")]
-    pub coordination_port: u16,         // Separate port for Raft coordination (default: 6968)
+    pub coordination_port: u16, // Separate port for Raft coordination (default: 6968)
     #[serde(default = "default_data_port")]
-    pub data_port: u16,                 // Data plane port (default: 6966)
+    pub data_port: u16, // Data plane port (default: 6966)
     #[serde(default = "default_query_port")]
-    pub query_port: u16,                // Leader REQ/REP port (default: 6969)
+    pub query_port: u16, // Leader REQ/REP port (default: 6969)
     #[serde(default = "default_aimd_min_interval")]
-    pub aimd_min_interval_ms: u64,      // AIMD minimum interval in ms
+    pub aimd_min_interval_ms: u64, // AIMD minimum interval in ms
     #[serde(default = "default_aimd_max_interval")]
-    pub aimd_max_interval_ms: u64,      // AIMD maximum interval in ms (for freshness timeout)
+    pub aimd_max_interval_ms: u64, // AIMD maximum interval in ms (for freshness timeout)
     #[serde(default = "default_true")]
-    pub enable_multicast: bool,         // UDP multicast discovery
+    pub enable_multicast: bool, // UDP multicast discovery
 }
 
 fn default_coordination_port() -> u16 {
-    6968  // One port higher than data port
+    constants::network::DEFAULT_COORDINATION_PORT // One port higher than data port
 }
 
 fn default_data_port() -> u16 {
-    6966  // Default data plane port
+    constants::network::DEFAULT_DATA_PORT // Default data plane port
 }
 
 fn default_query_port() -> u16 {
-    6969  // Default query port for REQ/REP
+    constants::network::DEFAULT_QUERY_PORT // Default query port for REQ/REP
 }
 
 fn default_aimd_min_interval() -> u64 {
-    100  // 100ms minimum interval
+    constants::time::AIMD_MIN_INTERVAL_MS // 100ms minimum interval
 }
 
 fn default_aimd_max_interval() -> u64 {
-    5000  // 5000ms maximum interval (for freshness timeout detection)
+    constants::time::AIMD_MAX_INTERVAL_MS // 5000ms maximum interval (for freshness timeout detection)
 }
 
 /// NEW: Node mapping customization (hostnames → logical IDs)
@@ -183,8 +186,8 @@ pub struct LocationInfo {
 /// NEW: Node tagging for capability-based assignment
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct NodeTags {
-    pub capabilities: Vec<String>,      // ["cpu_heavy", "memory_heavy", "storage"]
-    pub role: Option<String>,          // ["worker", "compute", "storage", "manager"]
+    pub capabilities: Vec<String>, // ["cpu_heavy", "memory_heavy", "storage"]
+    pub role: Option<String>,      // ["worker", "compute", "storage", "manager"]
     pub workload_type: Option<String>, // ["batch", "interactive", "ml_training"]
 }
 
@@ -193,12 +196,12 @@ impl QueueConfig {
     pub fn from_file(path: &str) -> Result<Self, ConfigError> {
         let content = fs::read_to_string(path)?;
         let config: QueueConfig = toml::from_str(&content)?;
-        
+
         // NEW: Validate AutoQueue config if present
         if let Some(ref aq_config) = config.autoqueues {
             Self::validate_autoqueue_config(aq_config)?;
         }
-        
+
         Ok(config)
     }
 
@@ -235,37 +238,47 @@ impl QueueConfig {
 
     /// NEW: Check if auto-assignment is enabled
     pub fn is_auto_assignment_enabled(&self) -> bool {
-        self.autoqueues.as_ref().map(|aq| aq.auto_assignment).unwrap_or(true)
+        self.autoqueues
+            .as_ref()
+            .map(|aq| aq.auto_assignment)
+            .unwrap_or(true)
     }
 
     /// NEW: Get assignment strategy
     pub fn get_assignment_strategy(&self) -> AssignmentStrategy {
-        self.autoqueues.as_ref().map(|aq| aq.assignment_strategy.clone()).unwrap_or_default()
+        self.autoqueues
+            .as_ref()
+            .map(|aq| aq.assignment_strategy.clone())
+            .unwrap_or_default()
     }
 
     /// NEW: Get derived metrics configuration
     pub fn get_derived_metrics(&self) -> HashMap<String, DerivedMetricConfig> {
-        self.autoqueues.as_ref()
+        self.autoqueues
+            .as_ref()
             .map(|aq| aq.derived_metrics.clone())
             .unwrap_or_default()
     }
 
     /// NEW: Get derived metric by name
     pub fn get_derived_metric(&self, name: &str) -> Option<&DerivedMetricConfig> {
-        self.autoqueues.as_ref()
+        self.autoqueues
+            .as_ref()
             .and_then(|aq| aq.derived_metrics.get(name))
     }
 
     /// NEW: Get node scores (hostname → score)
     pub fn get_node_scores(&self) -> HashMap<String, f64> {
-        self.autoqueues.as_ref()
+        self.autoqueues
+            .as_ref()
             .map(|aq| aq.node_scores.clone())
             .unwrap_or_default()
     }
 
     /// NEW: Get node order (for hostname → node_id mapping)
     pub fn get_node_order(&self) -> &[String] {
-        self.autoqueues.as_ref()
+        self.autoqueues
+            .as_ref()
             .map(|aq| aq.node_order.as_slice())
             .unwrap_or(&[])
     }
@@ -273,10 +286,11 @@ impl QueueConfig {
     /// NEW: Convert hostname to node_id using node_order
     /// Returns 0 if hostname not found
     pub fn hostname_to_node_id(&self, hostname: &str) -> u64 {
-        self.get_node_order().iter()
+        self.get_node_order()
+            .iter()
             .position(|h| h == hostname)
-            .map(|i| (i + 1) as u64)  // 1-indexed
-            .unwrap_or(0)  // 0 = not found
+            .map(|i| (i + 1) as u64) // 1-indexed
+            .unwrap_or(0) // 0 = not found
     }
 
     /// NEW: Get node_id for this node (from hostname in node_order)
@@ -293,9 +307,15 @@ impl QueueConfig {
     /// NEW: Get AIMD intervals from bootstrap config
     pub fn get_aimd_intervals(&self) -> (u64, u64) {
         if let Some(aq) = self.autoqueues.as_ref() {
-            (aq.bootstrap.aimd_min_interval_ms, aq.bootstrap.aimd_max_interval_ms)
+            (
+                aq.bootstrap.aimd_min_interval_ms,
+                aq.bootstrap.aimd_max_interval_ms,
+            )
         } else {
-            (100, 5000)  // defaults
+            (
+                constants::time::AIMD_MIN_INTERVAL_MS,
+                constants::time::AIMD_MAX_INTERVAL_MS,
+            ) // defaults
         }
     }
 
@@ -307,21 +327,24 @@ impl QueueConfig {
 
     /// NEW: Get coordination port
     pub fn get_coordination_port(&self) -> u16 {
-        self.autoqueues.as_ref()
+        self.autoqueues
+            .as_ref()
             .map(|aq| aq.bootstrap.coordination_port)
-            .unwrap_or(6968)
+            .unwrap_or(constants::network::DEFAULT_COORDINATION_PORT)
     }
 
     /// NEW: Get data port
     pub fn get_data_port(&self) -> u16 {
-        self.autoqueues.as_ref()
+        self.autoqueues
+            .as_ref()
             .map(|aq| aq.bootstrap.data_port)
-            .unwrap_or(6967)
+            .unwrap_or(constants::network::DEFAULT_QUIC_PORT)
     }
 
     /// NEW: Get cluster nodes for distributed operation
     pub fn get_cluster_nodes(&self) -> &[String] {
-        self.autoqueues.as_ref()
+        self.autoqueues
+            .as_ref()
             .map(|aq| aq.cluster_nodes.as_slice())
             .unwrap_or(&[])
     }
@@ -333,9 +356,10 @@ impl QueueConfig {
 
     /// NEW: Get query port (for leader REQ/REP)
     pub fn get_query_port(&self) -> u16 {
-        self.autoqueues.as_ref()
+        self.autoqueues
+            .as_ref()
             .map(|aq| aq.bootstrap.query_port)
-            .unwrap_or(6969)
+            .unwrap_or(constants::network::DEFAULT_QUERY_PORT)
     }
 
     /// NEW: Validate AutoQueue configuration
@@ -346,7 +370,8 @@ impl QueueConfig {
             for node_id in &leader_config.node_group {
                 if !all_node_ids.insert(node_id) {
                     return Err(ConfigError::ValidationError(format!(
-                        "Node {} appears in multiple coordinator groups", node_id
+                        "Node {} appears in multiple coordinator groups",
+                        node_id
                     )));
                 }
             }
@@ -355,11 +380,13 @@ impl QueueConfig {
         // Validate derived metrics
         for (metric_name, metric_config) in &aq_config.derived_metrics {
             match metric_config.aggregation.as_str() {
-                "sum" | "average" | "max" | "min" => {},
-                _ => return Err(ConfigError::ValidationError(format!(
-                    "Invalid aggregation type '{}' for metric {}",
-                    metric_config.aggregation, metric_name
-                ))),
+                "sum" | "average" | "max" | "min" => {}
+                _ => {
+                    return Err(ConfigError::ValidationError(format!(
+                        "Invalid aggregation type '{}' for metric {}",
+                        metric_config.aggregation, metric_name
+                    )));
+                }
             }
 
             // Validate sources reference local metrics
@@ -455,4 +482,6 @@ autoqueues_port = 6942
 
 // Suppress dead code warning
 #[allow(dead_code)]
-const fn default_true() -> bool { true }
+const fn default_true() -> bool {
+    true
+}

@@ -3,10 +3,11 @@
 //! Provides standard port configuration across all transport implementations.
 //! Default AutoQueues port: 69420
 
+use crate::constants;
 use std::net::SocketAddr;
 
 /// Standard AutoQueues port configuration
-pub const AUTOQUEUES_DEFAULT_PORT: u16 = 6967;
+pub const AUTOQUEUES_DEFAULT_PORT: u16 = constants::network::DEFAULT_QUIC_PORT;
 
 /// Transport protocol types
 #[derive(Debug, Clone, PartialEq)]

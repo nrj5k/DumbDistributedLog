@@ -6,9 +6,10 @@
 //!
 //! Also provides MetricPublisher for sending atomic metrics to the cluster.
 
+use crate::constants;
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::net::SocketAddr;
+use std::time::{SystemTime, UNIX_EPOCH};
 use sysinfo::{Disks, System};
 use zmq::{Context, Socket, SocketType};
 
@@ -83,7 +84,9 @@ impl MetricsCollector {
     /// Calculate CPU usage percentage across all cores
     pub fn get_cpu_usage(&mut self) -> f32 {
         self.system.refresh_cpu_all();
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(std::time::Duration::from_millis(
+            constants::time::SHORT_SLEEP_INTERVAL_MS,
+        ));
         self.system.refresh_cpu_all();
 
         self.system.global_cpu_usage()
@@ -239,7 +242,7 @@ impl Default for PublisherConfig {
     fn default() -> Self {
         Self {
             node_id: 1,
-            publish_port: 6966,
+            publish_port: constants::network::DEFAULT_DATA_PORT,
             bind_addr: "0.0.0.0".to_string(),
             peers: Vec::new(),
         }
