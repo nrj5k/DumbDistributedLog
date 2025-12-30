@@ -19,7 +19,7 @@ use crate::{
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::interval;
@@ -85,7 +85,7 @@ pub struct QueueManager {
     /// System metrics cache
     system_metrics: Arc<RwLock<Option<SystemMetrics>>>,
     /// Running flag for graceful shutdown
-    running: Arc<RwLock<bool>>,
+    running: Arc<AtomicBool>,
     /// Update task handle
     update_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Cluster leaders for distributed metrics
@@ -171,7 +171,7 @@ impl QueueManager {
             next_queue_id: Arc::new(AtomicU32::new(1)),
             metrics: Arc::new(RwLock::new(MetricsCollector::new())),
             system_metrics: Arc::new(RwLock::new(None)),
-            running: Arc::new(RwLock::new(false)),
+            running: Arc::new(AtomicBool::new(false)),
             update_handle: Arc::new(Mutex::new(None)),
             cluster_leaders: Arc::new(RwLock::new(HashMap::new())),
         })
@@ -198,7 +198,7 @@ impl QueueManager {
         println!("Starting Queue Manager...");
 
         // Set running flag
-        *self.running.write().await = true;
+        self.running.store(true, Ordering::Release);
 
         // Build initial queues from configuration
         self.build_queues().await?;
@@ -217,7 +217,7 @@ impl QueueManager {
         println!("Stopping Queue Manager...");
 
         // Set running flag to false
-        *self.running.write().await = false;
+        self.running.store(false, Ordering::Release);
 
         // Stop update task
         self.stop_update_task().await?;
@@ -311,7 +311,7 @@ impl QueueManager {
         let handle = tokio::spawn(async move {
             let mut interval = interval(Duration::from_millis(update_interval));
 
-            while *running.read().await {
+            while running.load(Ordering::Acquire) {
                 tokio::select! {
                     _ = interval.tick() => {
                         // Update system metrics
@@ -525,7 +525,7 @@ impl QueueManager {
 
     /// Check if manager is running
     pub async fn is_running(&self) -> bool {
-        *self.running.read().await
+        self.running.load(Ordering::Acquire)
     }
 
     /// Query cluster variables from leaders (simplified for HPC core)
