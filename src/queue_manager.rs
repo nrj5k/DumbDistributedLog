@@ -14,11 +14,12 @@ use crate::{
     expression::{Expression, ExpressionError, ExpressionF64},
     metrics::{MetricsCollector, SystemMetrics},
     queue::{QueueError, SimpleQueue},
-    types::Timestamp,
+    types::{Timestamp, QueueId},
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::interval;
@@ -73,8 +74,12 @@ pub struct QueueManager {
     config: QueueManagerConfig,
     /// Loaded configuration
     queue_config: Arc<RwLock<QueueConfig>>,
-    /// Managed queues by name
-    queues: Arc<RwLock<HashMap<String, ManagedQueue>>>,
+    /// Managed queues by ID
+    queues: Arc<RwLock<HashMap<QueueId, ManagedQueue>>>,
+    /// Queue name to ID mapping
+    queue_names: Arc<RwLock<HashMap<String, QueueId>>>,
+    /// Next queue ID to assign
+    next_queue_id: Arc<AtomicU32>,
     /// Metrics collector (RwLock for concurrent read-heavy access)
     metrics: Arc<RwLock<MetricsCollector>>,
     /// System metrics cache
@@ -162,6 +167,8 @@ impl QueueManager {
             config,
             queue_config: Arc::new(RwLock::new(queue_config)),
             queues: Arc::new(RwLock::new(HashMap::new())),
+            queue_names: Arc::new(RwLock::new(HashMap::new())),
+            next_queue_id: Arc::new(AtomicU32::new(1)),
             metrics: Arc::new(RwLock::new(MetricsCollector::new())),
             system_metrics: Arc::new(RwLock::new(None)),
             running: Arc::new(RwLock::new(false)),
@@ -226,10 +233,13 @@ impl QueueManager {
     async fn build_queues(&self) -> Result<(), QueueManagerError> {
         let config = self.queue_config.read().await;
         let mut queues = self.queues.write().await;
+        let mut queue_names = self.queue_names.write().await;
 
         // Build base metric queues
         for base_metric in config.get_base_metrics() {
             let queue_name = format!("base.{}", base_metric);
+            let queue_id = self.next_queue_id.fetch_add(1, Ordering::AcqRel);
+            
             let queue = SimpleQueue::new();
 
             let managed_queue = ManagedQueue {
@@ -241,12 +251,14 @@ impl QueueManager {
                 is_derived: false,
             };
 
-            queues.insert(queue_name, managed_queue);
+            queues.insert(queue_id, managed_queue);
+            queue_names.insert(queue_name, queue_id);
         }
 
         // Build derived queues with expressions
         for (derived_name, formula) in config.get_derived_formulas() {
             let queue_name = format!("derived.{}", derived_name);
+            let queue_id = self.next_queue_id.fetch_add(1, Ordering::AcqRel);
 
             // Create and validate expression
             let expression = ExpressionF64::new(formula)?;
@@ -262,7 +274,8 @@ impl QueueManager {
                 is_derived: true,
             };
 
-            queues.insert(queue_name, managed_queue);
+            queues.insert(queue_id, managed_queue);
+            queue_names.insert(queue_name, queue_id);
         }
 
         Ok(())
@@ -342,7 +355,7 @@ impl QueueManager {
 
     /// Update derived queues with current system metrics
     async fn update_derived_queues(
-        queues: &HashMap<String, ManagedQueue>,
+        queues: &HashMap<QueueId, ManagedQueue>,
         metrics: &SystemMetrics,
         cluster_vars: &HashMap<String, f64>,
     ) {
@@ -395,12 +408,16 @@ impl QueueManager {
 
     /// Get queue by name
     pub async fn get_queue(&self, name: &str) -> Option<ManagedQueue> {
-        self.queues.read().await.get(name).cloned()
+        let queue_names = self.queue_names.read().await;
+        let queue_id = queue_names.get(name)?;
+        let queues = self.queues.read().await;
+        queues.get(queue_id).cloned()
     }
 
     /// Get all queue names
     pub async fn get_queue_names(&self) -> Vec<String> {
-        self.queues.read().await.keys().cloned().collect()
+        let queue_names = self.queue_names.read().await;
+        queue_names.keys().cloned().collect()
     }
 
     /// Get current system metrics
@@ -410,9 +427,19 @@ impl QueueManager {
 
     /// Publish data to a specific queue
     pub async fn publish(&self, queue_name: &str, data: f64) -> Result<(), QueueManagerError> {
+        // Get the queue ID from the name mapping
+        let queue_names = self.queue_names.read().await;
+        let queue_id = match queue_names.get(queue_name) {
+            Some(id) => *id,
+            None => return Err(QueueManagerError::ValidationError(format!(
+                "Queue '{}' not found",
+                queue_name
+            ))),
+        };
+        
+        // Get the queue using the ID
         let queues = self.queues.read().await;
-
-        if let Some(managed_queue) = queues.get(queue_name) {
+        if let Some(managed_queue) = queues.get(&queue_id) {
             if let Ok(mut queue_guard) = managed_queue.queue.try_lock() {
                 // Use the Queue trait method
                 queue_guard.publish(data)?;
@@ -435,9 +462,19 @@ impl QueueManager {
         &self,
         queue_name: &str,
     ) -> Result<Option<(Timestamp, f64)>, QueueManagerError> {
+        // Get the queue ID from the name mapping
+        let queue_names = self.queue_names.read().await;
+        let queue_id = match queue_names.get(queue_name) {
+            Some(id) => *id,
+            None => return Err(QueueManagerError::ValidationError(format!(
+                "Queue '{}' not found",
+                queue_name
+            ))),
+        };
+        
+        // Get the queue using the ID
         let queues = self.queues.read().await;
-
-        if let Some(managed_queue) = queues.get(queue_name) {
+        if let Some(managed_queue) = queues.get(&queue_id) {
             if let Ok(queue_guard) = managed_queue.queue.try_lock() {
                 // Use the Queue trait method
                 Ok(queue_guard.get_latest())
@@ -457,19 +494,29 @@ impl QueueManager {
     /// Get queue statistics
     pub async fn get_queue_stats(&self) -> Result<HashMap<String, QueueStats>, QueueManagerError> {
         let queues = self.queues.read().await;
+        let queue_names = self.queue_names.read().await;
         let mut stats = HashMap::new();
 
-        for (name, managed_queue) in queues.iter() {
+        // Create a reverse mapping from ID to name for lookup
+        let id_to_name: HashMap<QueueId, String> = queue_names
+            .iter()
+            .map(|(name, id)| (*id, name.clone()))
+            .collect();
+
+        for (queue_id, managed_queue) in queues.iter() {
             if let Ok(queue_guard) = managed_queue.queue.try_lock() {
                 let queue_stats = QueueStats {
-                    name: name.clone(),
+                    name: managed_queue.name.clone(),
                     size: queue_guard.get_size(),
                     is_derived: managed_queue.is_derived,
                     has_expression: managed_queue.expression.is_some(),
                     last_value: managed_queue.last_value,
                     last_update: managed_queue.last_update,
                 };
-                stats.insert(name.clone(), queue_stats);
+                // Get the queue name from the ID
+                if let Some(queue_name) = id_to_name.get(queue_id) {
+                    stats.insert(queue_name.clone(), queue_stats);
+                }
             }
         }
 
