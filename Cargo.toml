@@ -2,6 +2,11 @@
 name = "autoqueues"
 version = "0.1.0"
 edition = "2024"
+description = "AutoQueues - High-Performance Distributed Queue System with two clean APIs: Server Mode (Redis-like) and Programmatic Mode"
+repository = "https://github.com/yourusername/autoqueues"
+license = "MIT OR Apache-2.0"
+keywords = ["queue", "distributed", "async", "metrics", "pubsub"]
+categories = ["asynchronous", "data-structures", "network-programming"]
 
 # Disable doctests due to system rustdoc issue
 [lib]
@@ -32,6 +37,12 @@ async-trait = "0.1.89"
 openraft = { version = "0.9.21", features = ["serde", "serde_json"] }
 rand = "0.9.2"
 evalexpr = { version = "13.1.0", features = ["regex", "serde"] }
+dashmap = "6.0"
 
 [dev-dependencies]
 criterion = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

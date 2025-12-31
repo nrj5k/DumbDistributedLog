@@ -8,10 +8,10 @@
 pub struct ClusterConfig {
     /// Node identifier
     pub node_id: u64,
-    
+
     /// Peer addresses
     pub peers: Vec<String>,
-    
+
     /// Communication timeout in milliseconds
     pub timeout_ms: u64,
 }
@@ -37,14 +37,17 @@ impl RaftNode {
     pub fn new(config: ClusterConfig) -> Self {
         Self { config }
     }
-    
+
     /// Start node (simplified for HPC)
     pub async fn start(&self) -> Result<(), Box<dyn std::error::Error>> {
-        println!("Starting HPC node {} with {} peers", 
-                 self.config.node_id, self.config.peers.len());
+        println!(
+            "Starting HPC node {} with {} peers",
+            self.config.node_id,
+            self.config.peers.len()
+        );
         Ok(())
     }
-    
+
     /// Stop node
     pub async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
         println!("Stopping HPC node {}", self.config.node_id);

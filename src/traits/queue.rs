@@ -1,6 +1,5 @@
 //! Queue trait definitions for AutoQueues
 //!
-//! Provides ultra-minimal trait interfaces following KISS principle.
 //! Each trait has 3-4 methods maximum for maximum flexibility.
 
 use crate::queue::{QueueError, QueueServerHandle};

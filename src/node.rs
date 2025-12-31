@@ -33,7 +33,7 @@ impl AutoQueuesNode {
     /// Run the node
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
         println!("Starting AutoQueues HPC node...");
-        
+
         // Set running flag
         *self.running.write().await = true;
 
@@ -43,7 +43,7 @@ impl AutoQueuesNode {
         // Wait for shutdown signal (simplified)
         tokio::signal::ctrl_c().await?;
         *self.running.write().await = false;
-        
+
         println!("AutoQueues HPC node stopped");
         Ok(())
     }
@@ -54,11 +54,12 @@ impl AutoQueuesNode {
         let metrics = self.metrics.clone();
 
         tokio::spawn(async move {
-            let mut interval = interval(Duration::from_millis(constants::time::METRICS_INTERVAL_MS));
-            
+            let mut interval =
+                interval(Duration::from_millis(constants::time::METRICS_INTERVAL_MS));
+
             while *running.read().await {
                 interval.tick().await;
-                
+
                 // Update metrics (simplified)
                 let mut metrics_guard = metrics.write().await;
                 metrics_guard.insert("cpu_percent".to_string(), 42.0);

@@ -116,7 +116,7 @@ pub mod memory {
     ///
     /// INCREASING: More buffering, higher memory usage
     /// DECREASING: Earlier backpressure, lower memory usage
-    pub const MAX_QUEUE_DEPTH: usize = 1000;
+    pub const MAX_QUEUE_DEPTH: usize = 1024;
 
     /// Channel buffer size for metrics
     /// Default: 100

@@ -1,4 +1,4 @@
-//! Unified Configuration System - KISS Simplified
+//! Unified Configuration System
 
 use crate::constants;
 use serde::{Deserialize, Serialize};
@@ -164,7 +164,7 @@ fn default_aimd_min_interval() -> u64 {
 }
 
 fn default_aimd_max_interval() -> u64 {
-    constants::time::AIMD_MAX_INTERVAL_MS // 5000ms maximum interval (for freshness timeout detection)
+    constants::time::AIMD_MAX_INTERVAL_MS // 5000ms maximum interval (for freshness timeout)
 }
 
 /// NEW: Node mapping customization (hostnames → logical IDs)

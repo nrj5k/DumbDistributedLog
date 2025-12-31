@@ -1,4 +1,4 @@
-//! Queue trait definition following KISS principle
+//! QueueServer  definition
 //!
 //! Ultra-minimal trait with 4 essential methods for maximum flexibility.
 

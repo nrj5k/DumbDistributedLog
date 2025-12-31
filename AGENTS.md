@@ -1,6 +1,83 @@
 # AutoQueues Agent Instructions
 
-## KISS PRINCIPLES (Keep It Simple, Stupid)
+## NEW API: TWO-FORM AUTOQUEUES
+
+AutoQueues now provides two clean, simple APIs for different use cases:
+
+### FORM 1: SERVER MODE (Redis-like)
+
+Simple server where users push data in and subscribe to results out. Like Redis but with expression processing.
+
+```rust
+// Usage:
+AutoQueuesServer::from_file("config.toml").await?.run().await;
+
+// Or with minimal config:
+AutoQueuesServer::minimal()
+    .port(6969)
+    .push_topic("metrics.cpu")
+    .subscribe_topic("alerts.*")
+    .build()
+    .run()
+    .await;
+```
+
+Features:
+- Simple start/stop API
+- Config file support (TOML)
+- Push data to topics
+- Subscribe to topics
+- Expression processing on data
+- Health score endpoints
+
+### FORM 2: PROGRAMMATIC MODE (Library)
+
+Building on AutoQueues programmatically, adding queues and expressions.
+
+```rust
+// Usage:
+let autoqueues = AutoQueues::new()
+    .queue("my_queue", Some("atomic.cpu_percent > 80"))
+    .expect("Failed to create queue");
+
+autoqueues.push("data").await?;
+let result = autoqueues.pop::<f64>().await?;
+```
+
+Features:
+- Simple creation API
+- Queue creation and management
+- Expression attachment
+- Pub/sub integration
+- Metrics collection
+- Cluster coordination
+
+## NEW MODULES AND EXPORTS
+
+The following new modules and exports have been added:
+
+### src/server.rs - Server Mode Implementation
+- `AutoQueuesServer` struct for server mode
+- `AutoQueuesServerBuilder` for configuration
+- Redis-like API with push/subscribe operations
+
+### src/autoqueues.rs - Programmatic Mode Implementation  
+- `AutoQueues` struct for programmatic mode
+- Simple API for creating queues with expressions
+- Push/pop operations with type safety
+
+### Updated src/lib.rs
+- Exports for `AutoQueuesServer` and `AutoQueues`
+- Error types for both modes
+
+## KISS PRINCIPLES FOR NEW APIS
+
+Both new APIs follow KISS principles:
+- Simple interfaces wrapping powerful backends
+- Consistent naming (atomic.*, cluster.*)
+- Minimal boilerplate
+- Good defaults with override capability
+- Clear documentation
 
 ### Core KISS Philosophy
 
@@ -34,7 +111,7 @@
 
 **✅ Consistent Syntax and Conventions**
 - Expression syntax matches topic syntax exactly
-- `local.cpu_percent` in expressions → `local.cpu_percent` in topics
+- `atomic.cpu` in expressions → `atomic.cpu` in topics
 - No confusing conversions between different naming conventions
 - Simple, predictable behavior throughout the system
 
@@ -48,6 +125,23 @@
 - One comprehensive example instead of scattered demos
 - Show the system working as intended
 - Reduce cognitive load for users
+
+#### NEW: TWO-FORM API DESIGN
+
+**✅ Simple Interfaces, Powerful Backends**
+- Server Mode API wraps powerful pub/sub and expression engines
+- Programmatic Mode API provides clean builder patterns
+- Both APIs hide complex internals behind simple interfaces
+
+**✅ Consistent Naming Conventions**
+- Both APIs use consistent `atomic.*` and `cluster.*` variable naming
+- Expression syntax matches across both forms
+- No conversion needed between topic names and expression variables
+
+**✅ Minimal Boilerplate**
+- Server Mode: One-liner to start a full server
+- Programmatic Mode: Fluent builder API with method chaining
+- Both follow Rust idioms and best practices
 
 #### What KISS Does NOT Mean
 

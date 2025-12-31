@@ -1,7 +1,5 @@
 //! Transport trait definitions for AutoQueues
 //!
-//! Provides simple networking interface following KISS principle.
-//! Ultra-minimal trait with 3 methods for future distributed features.
 
 use async_trait::async_trait;
 use std::net::SocketAddr;
