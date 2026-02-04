@@ -20,7 +20,7 @@ pub mod time {
     /// Default: 1000ms (1 second)
     pub const METRICS_INTERVAL_MS: u64 = 1000;
 
-    /// Interval for health check in milliseconds  
+    /// Interval for health check in milliseconds
     /// Default: 5000ms (5 seconds)
     pub const HEALTH_CHECK_INTERVAL_MS: u64 = 5000;
 
@@ -112,7 +112,7 @@ pub mod memory {
     pub const VEC_DEFAULT_CAPACITY: usize = 32;
 
     /// Maximum queue depth before backpressure
-    /// Default: 1000
+    /// Default: 1024
     ///
     /// INCREASING: More buffering, higher memory usage
     /// DECREASING: Earlier backpressure, lower memory usage
@@ -164,21 +164,35 @@ pub mod network {
     /// Default: 5000ms
     pub const PEER_DISCOVERY_TIMEOUT_MS: u64 = 5_000;
 
-    /// Default data plane port
-    /// Default: 6966
-    pub const DEFAULT_DATA_PORT: u16 = 6966;
+    /// Node communication port for ZMQ PUB/SUB
+    /// Used for:
+    ///   - Publishing metrics to other nodes
+    ///   - Receiving metrics from other nodes
+    ///   - Cluster coordination messages
+    /// Default: 6967
+    pub const DEFAULT_NODE_COMMUNICATION_PORT: u16 = 6967;
 
-    /// Default coordination port
-    /// Default: 6968
-    pub const DEFAULT_COORDINATION_PORT: u16 = 6968;
-
-    /// Default query port
+    /// Query port for REQ/REP communication
+    /// Used for:
+    ///   - External clients requesting current metric values
+    ///   - Dashboard/API queries
     /// Default: 6969
     pub const DEFAULT_QUERY_PORT: u16 = 6969;
 
-    /// Default QUIC port
-    /// Default: 6967
-    pub const DEFAULT_QUIC_PORT: u16 = 6967;
+    /// Raft coordination port for leader election
+    /// Used for:
+    ///   - Raft consensus protocol
+    ///   - Meta-leader election
+    /// Default: 6970
+    pub const DEFAULT_COORDINATION_PORT: u16 = 6970;
+
+    /// Pub/Sub port for metric distribution
+    /// Used for:
+    ///   - Publishing local metrics to cluster
+    ///   - Subscribing to metrics from other nodes
+    ///   - Real-time metric broadcasting
+    /// Default: 6971
+    pub const DEFAULT_PUBSUB_PORT: u16 = 6971;
 
     /// Receive timeout for ZMQ sockets
     /// Default: 1000ms
@@ -259,4 +273,30 @@ pub mod system {
     /// Consensus count for leader queries
     /// Default: 3
     pub const CONSENSUS_COUNT: usize = 3;
+}
+
+pub mod config {
+    //! Configuration defaults
+    //!
+    //! These values can be overridden via config file
+
+    /// Default queue capacity
+    /// Default: 1024
+    pub const DEFAULT_CAPACITY: usize = 1024;
+
+    /// Default collection interval in milliseconds
+    /// Default: 1000ms
+    pub const DEFAULT_INTERVAL_MS: u64 = 1000;
+
+    /// Default number of shards for registry
+    /// Default: 16
+    pub const DEFAULT_REGISTRY_SHARDS: usize = 16;
+
+    /// Number of shards for sharded registry
+    /// Must be power of 2 for fast modulo
+    pub const REGISTRY_SHARD_COUNT: usize = 16;
+
+    /// Shard mask for sharded registry (REGISTRY_SHARD_COUNT - 1)
+    /// Used for fast modulo: index & SHARD_MASK
+    pub const REGISTRY_SHARD_MASK: usize = REGISTRY_SHARD_COUNT - 1;
 }

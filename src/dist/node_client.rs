@@ -1,8 +1,9 @@
 //! Node client for distributed AutoQueues
 //!
-//! Handles communication between cluster nodes for distributed aggregations.
+//! Handles communication between cluster nodes using ZMQ transport.
 
-use crate::networking::{TransportError, TransportType};
+use crate::network::pubsub::zmq::transport::ZmqTransport;
+use crate::traits::transport::Transport;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -11,14 +12,14 @@ use std::time::Duration;
 #[derive(Debug, thiserror::Error)]
 pub enum NodeClientError {
     #[error("Transport error: {0}")]
-    Transport(#[from] TransportError),
-    
+    Transport(String),
+
     #[error("Serialization error: {0}")]
     Serialization(String),
-    
+
     #[error("Timeout error")]
     Timeout,
-    
+
     #[error("Invalid node address: {0}")]
     InvalidAddress(String),
 }
@@ -28,67 +29,75 @@ pub enum NodeClientError {
 pub enum NodeMessage {
     /// Request a value from a specific queue
     RequestValue { queue_name: String },
-    
+
     /// Response with a value from a queue
-    ValueResponse { queue_name: String, value: Option<f64> },
-    
+    ValueResponse {
+        queue_name: String,
+        value: Option<f64>,
+    },
+
+    /// Request an expression evaluation
+    RequestExpression { sources: Vec<String> },
+
+    /// Response with expression evaluation result
+    ExpressionResponse {
+        sources: Vec<String>,
+        score: Option<f64>,
+    },
+
     /// Request an aggregation operation
-    RequestAggregation { 
-        queue_name: String, 
+    RequestAggregation {
+        queue_name: String,
         operation: String,
         args: Vec<String>,
     },
-    
+
     /// Response with aggregation result
     AggregationResponse { result: f64 },
-    
+
     /// Broadcast a value to all nodes
     BroadcastValue { queue_name: String, value: f64 },
 }
 
 /// Node client for communicating with other nodes in the cluster
+#[derive(Clone)]
 pub struct NodeClient {
     _node_id: String,
-    nodes: Vec<SocketAddr>,
-    transport_type: TransportType,
-    timeout_duration: Duration,
+    nodes: Vec<String>,
+    timeout: Duration,
 }
 
 impl NodeClient {
     /// Create a new node client
     pub fn new(node_id: String, nodes: Vec<SocketAddr>) -> Self {
+        let node_addrs: Vec<String> = nodes.iter().map(|addr| format!("tcp://{}", addr)).collect();
+
         Self {
             _node_id: node_id,
-            nodes,
-            transport_type: TransportType::Tcp, // Default to TCP for compatibility
-            timeout_duration: Duration::from_secs(5),
+            nodes: node_addrs,
+            timeout: Duration::from_secs(5),
         }
     }
-    
-    /// Set the transport type
-    pub fn with_transport_type(mut self, transport_type: TransportType) -> Self {
-        self.transport_type = transport_type;
-        self
-    }
-    
+
     /// Set the timeout duration
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout_duration = timeout;
+        self.timeout = timeout;
         self
     }
-    
+
     /// Request a value from a specific node and queue
     pub async fn request_value(
         &self,
         node: &SocketAddr,
         queue_name: &str,
     ) -> Result<Option<f64>, NodeClientError> {
+        let addr = format!("tcp://{}", node);
         let message = NodeMessage::RequestValue {
             queue_name: queue_name.to_string(),
         };
-        
-        let response = self.send_request(node, message).await?;
-        
+
+        let response = self.send_request(&addr, message).await?;
+
         match response {
             NodeMessage::ValueResponse { value, .. } => Ok(value),
             _ => Err(NodeClientError::Serialization(
@@ -96,7 +105,7 @@ impl NodeClient {
             )),
         }
     }
-    
+
     /// Request an aggregation operation from a specific node
     pub async fn request_aggregation(
         &self,
@@ -105,14 +114,15 @@ impl NodeClient {
         operation: &str,
         args: Vec<String>,
     ) -> Result<f64, NodeClientError> {
+        let addr = format!("tcp://{}", node);
         let message = NodeMessage::RequestAggregation {
             queue_name: queue_name.to_string(),
             operation: operation.to_string(),
             args,
         };
-        
-        let response = self.send_request(node, message).await?;
-        
+
+        let response = self.send_request(&addr, message).await?;
+
         match response {
             NodeMessage::AggregationResponse { result } => Ok(result),
             _ => Err(NodeClientError::Serialization(
@@ -120,7 +130,7 @@ impl NodeClient {
             )),
         }
     }
-    
+
     /// Broadcast a value to all nodes
     pub async fn broadcast_value(
         &self,
@@ -131,99 +141,188 @@ impl NodeClient {
             queue_name: queue_name.to_string(),
             value,
         };
-        
+
         // Send to all nodes concurrently
-        let mut tasks = Vec::new();
-        for node in &self.nodes {
-            let message_clone = message.clone();
-            let node_clone = *node;
-            let task = tokio::spawn(async move {
-                // In a real implementation, we would send the message to each node
-                // For now, we'll just simulate successful sends
-                println!("Broadcasting to node: {} - {:?}", node_clone, message_clone);
-                Ok::<(), NodeClientError>(())
-            });
-            tasks.push(task);
+        let mut handles = Vec::new();
+        for addr in &self.nodes {
+            let msg = message.clone();
+            let addr_clone = addr.clone();
+            handles.push(tokio::spawn(async move {
+                send_message(&addr_clone, &msg).await
+            }));
         }
-        
-        // Wait for all broadcasts to complete
-        for task in tasks {
-            task.await.map_err(|_| NodeClientError::Transport(
-                TransportError::NetworkUnreachable
-            ))??;
+
+        for handle in handles {
+            handle
+                .await
+                .map_err(|_| NodeClientError::Transport("Task cancelled".to_string()))??;
         }
-        
+
         Ok(())
     }
-    
+
     /// Collect values from all nodes for a specific queue
-    pub async fn collect_all_values(
-        &self,
-        queue_name: &str,
-    ) -> Result<Vec<f64>, NodeClientError> {
+    pub async fn collect_all_values(&self, queue_name: &str) -> Result<Vec<f64>, NodeClientError> {
         let mut values = Vec::new();
-        
+
         // Collect from all nodes concurrently
-        let mut tasks = Vec::new();
-        for node in &self.nodes {
-            let node_clone = *node;
-            let queue_name_clone = queue_name.to_string();
-            let task = tokio::spawn(async move {
-                // In a real implementation, we would actually make the request
-                // For now, we'll simulate some values
-                println!("Collecting from node: {} for queue: {}", node_clone, queue_name_clone);
-                // Simulated value for demonstration
-                Ok::<Option<f64>, NodeClientError>(Some(80.0 + (node_clone.port() as f64 % 20.0)))
-            });
-            tasks.push(task);
+        let mut handles = Vec::new();
+        for addr in &self.nodes {
+            let queue_name = queue_name.to_string();
+            let addr_clone = addr.clone();
+            handles.push(tokio::spawn(async move {
+                request_value(&addr_clone, &queue_name).await
+            }));
         }
-        
-        // Wait for all responses and collect values
-        for task in tasks {
-            if let Ok(Ok(Some(value))) = task.await {
+
+        for handle in handles {
+            if let Ok(Ok(Some(value))) = handle.await {
                 values.push(value);
             }
         }
-        
+
         Ok(values)
     }
-    
-    /// Send a request to a node and wait for response
+
+    /// Collect expression scores from all nodes
+    ///
+    /// Each node computes the expression with its local values
+    /// and returns the computed score.
+    pub async fn collect_all_expression(
+        &self,
+        _expression: &str,
+        sources: Vec<String>,
+    ) -> Result<Vec<f64>, NodeClientError> {
+        let mut scores = Vec::new();
+
+        // Collect from all nodes concurrently
+        let mut handles = Vec::new();
+        for addr in &self.nodes {
+            let addr_clone = addr.clone();
+            let sources_clone = sources.clone();
+            handles.push(tokio::spawn(async move {
+                request_expression_score(&addr_clone, &sources_clone).await
+            }));
+        }
+
+        for handle in handles {
+            if let Ok(Ok(Some(score))) = handle.await {
+                scores.push(score);
+            }
+        }
+
+        Ok(scores)
+    }
+
+    /// Send a message and get response
     async fn send_request(
         &self,
-        _node: &SocketAddr,
+        addr: &str,
         message: NodeMessage,
     ) -> Result<NodeMessage, NodeClientError> {
-        // In a real implementation, we would:
-        // 1. Establish a connection to the node
-        // 2. Serialize and send the message
-        // 3. Wait for and deserialize the response
-        // 4. Handle timeouts and errors
-        
-        // For demonstration, we'll return a simulated response
-        match message {
-            NodeMessage::RequestValue { queue_name } => {
-                // Simulate a response with a value
-                Ok(NodeMessage::ValueResponse {
-                    queue_name,
-                    value: Some(85.5),
-                })
-            }
-            NodeMessage::RequestAggregation { operation, .. } => {
-                // Simulate an aggregation response
-                let result = match operation.as_str() {
-                    "avg" => 82.5,
-                    "max" => 95.0,
-                    "min" => 70.0,
-                    "sum" => 330.0,
-                    _ => 0.0,
-                };
-                Ok(NodeMessage::AggregationResponse { result })
-            }
-            _ => Ok(NodeMessage::ValueResponse {
-                queue_name: "default".to_string(),
-                value: Some(0.0),
-            }),
-        }
+        let _data = serde_json::to_vec(&message)
+            .map_err(|e| NodeClientError::Serialization(e.to_string()))?;
+
+        send_message(addr, &message).await?;
+        receive_message(addr).await
     }
+}
+
+/// Create a transport and connect to address
+async fn create_transport(addr: &str) -> Result<ZmqTransport, NodeClientError> {
+    let addr_without_prefix = addr.trim_start_matches("tcp://");
+    let transport = ZmqTransport::new().map_err(|e| NodeClientError::Transport(e.to_string()))?;
+
+    transport
+        .connect(addr_without_prefix)
+        .await
+        .map_err(|e| NodeClientError::Transport(e.to_string()))?;
+
+    Ok(transport)
+}
+
+/// Send a message to an address
+async fn send_message(addr: &str, message: &NodeMessage) -> Result<(), NodeClientError> {
+    let transport = create_transport(addr).await?;
+    let data =
+        serde_json::to_vec(message).map_err(|e| NodeClientError::Serialization(e.to_string()))?;
+
+    Transport::send(&transport, &data)
+        .await
+        .map_err(|e| NodeClientError::Transport(e.to_string()))?;
+
+    Ok(())
+}
+
+/// Request a value from an address
+async fn request_value(addr: &str, queue_name: &str) -> Result<Option<f64>, NodeClientError> {
+    let message = NodeMessage::RequestValue {
+        queue_name: queue_name.to_string(),
+    };
+
+    let transport = create_transport(addr).await?;
+    let _data =
+        serde_json::to_vec(&message).map_err(|e| NodeClientError::Serialization(e.to_string()))?;
+
+    Transport::send(&transport, &_data)
+        .await
+        .map_err(|e| NodeClientError::Transport(e.to_string()))?;
+
+    let response = transport
+        .receive()
+        .await
+        .map_err(|e| NodeClientError::Transport(e.to_string()))?;
+
+    let response_msg: NodeMessage = serde_json::from_slice(&response)
+        .map_err(|e| NodeClientError::Serialization(e.to_string()))?;
+
+    match response_msg {
+        NodeMessage::ValueResponse { value, .. } => Ok(value),
+        _ => Err(NodeClientError::Serialization(
+            "Unexpected response".to_string(),
+        )),
+    }
+}
+
+/// Request an expression score from an address
+async fn request_expression_score(
+    addr: &str,
+    sources: &[String],
+) -> Result<Option<f64>, NodeClientError> {
+    // Create a request for expression evaluation
+    let message = NodeMessage::RequestExpression {
+        sources: sources.to_vec(),
+    };
+
+    let transport = create_transport(addr).await?;
+    let data =
+        serde_json::to_vec(&message).map_err(|e| NodeClientError::Serialization(e.to_string()))?;
+
+    Transport::send(&transport, &data)
+        .await
+        .map_err(|e| NodeClientError::Transport(e.to_string()))?;
+
+    let response = transport
+        .receive()
+        .await
+        .map_err(|e| NodeClientError::Transport(e.to_string()))?;
+
+    let response_msg: NodeMessage = serde_json::from_slice(&response)
+        .map_err(|e| NodeClientError::Serialization(e.to_string()))?;
+
+    match response_msg {
+        NodeMessage::ExpressionResponse { score, .. } => Ok(score),
+        _ => Err(NodeClientError::Serialization(
+            "Unexpected response".to_string(),
+        )),
+    }
+}
+
+/// Receive a message from an address
+async fn receive_message(_addr: &str) -> Result<NodeMessage, NodeClientError> {
+    // In a real implementation, this would receive from a specific transport
+    // For now, return an error since we don't persist transports
+    Err(NodeClientError::Transport(
+        "Receive not yet implemented - need persistent transport".to_string(),
+    ))
 }

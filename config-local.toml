@@ -1,0 +1,60 @@
+# AutoQueues Configuration - Local Testing (3 Nodes)
+#
+# Run 3 instances:
+#   NODE_ID=1 cargo run --example local_node
+#   NODE_ID=2 cargo run --example local_node
+#   NODE_ID=3 cargo run --example local_node
+
+[node1]
+host = "127.0.0.1"
+communication_port = 7067
+query_port = 7069
+coordination_port = 7070
+pubsub_port = 7071
+
+[node2]
+host = "127.0.0.1"
+communication_port = 7167
+query_port = 7169
+coordination_port = 7170
+pubsub_port = 7171
+
+[node3]
+host = "127.0.0.1"
+communication_port = 7267
+query_port = 7269
+coordination_port = 7270
+pubsub_port = 7271
+
+[local]
+cpu = "function:cpu"
+memory = "function:memory"
+memory_free = "function:memory_free"
+temperature = "function:sensor_temp"
+vibration = "function:vibration"
+
+[global]
+[global.cpu_avg]
+aggregation = "avg"
+sources = ["cpu"]
+interval_ms = 1000
+
+[global.temperature_max]
+aggregation = "max"
+sources = ["temperature"]
+interval_ms = 2000
+
+[global.vibration_p95]
+aggregation = "p95"
+sources = ["vibration"]
+interval_ms = 500
+
+[global.node_health_score]
+expression = "(100 - cpu) + memory_free"
+sources = ["cpu", "memory_free"]
+aggregation = "avg"
+interval_ms = 1000
+
+[debug]
+simulate_sensors = true
+verbose = true

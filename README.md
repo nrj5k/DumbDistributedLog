@@ -2,47 +2,28 @@
 
 AutoQueues is a high-performance distributed queue system designed for HPC environments.
 
-## Two APIs
-
-### Server Mode (Redis-like)
+## Programmatic Mode (Library)
 
 ```rust
-use autoqueues::AutoQueuesServer;
+use autoqueues::config::ConfigGenerator;
+use autoqueues::AutoQueues;
 
-// From configuration file
-let server = AutoQueuesServer::from_file("config.toml").await?;
+let config = ConfigGenerator::local_test(1, 6967);
+let queues = AutoQueues::new(config);
 
-// Or with minimal configuration
-let server = AutoQueuesServer::minimal()
-    .port(6969)
-    .push_topic("metrics.cpu")
-    .subscribe_topic("alerts.*")
-    .build()?;
+queues.add_queue_fn::<f64, _>("cpu", || 42.0)?;
+queues.start();
 
-server.run().await;
-```
-
-### Programmatic Mode (Library)
-
-```rust
-let queues: AutoQueues<f64> = AutoQueues::new()
-    .queue("metrics", Some("atomic.cpu_percent > 80"))?
-    .build()
-    .await?;
-
-queues.push("metrics", 85.5).await?;
-let value = queues.pop("metrics").await?;
+let value = queues.try_pop::<f64>("cpu")?;
 ```
 
 ## Performance
 
 | Operation | Latency |
 |-----------|----------|
-| LockFreeQueue push | ~0.05μs |
-| LockFreeQueue pop | ~0.04μs |
-| AutoQueues try_push | ~0.5μs |
-| AutoQueues try_pop | ~0.5μs |
-| Async push/pop | ~0.8μs |
+| SPMCLockFreeQueue push | ~0.05μs |
+| SPMCLockFreeQueue pop | ~0.04μs |
+| ShardedRingBuffer push/pop | ~0.5μs |
 
 ## Installation
 
@@ -57,8 +38,8 @@ autoqueues = "0.1"
 
 AutoQueues provides several queue implementations:
 
-- **SimpleQueue**: Basic queue with circular buffer
-- **LockFreeQueue**: Lock-free queue using atomic operations
+- **ShardedRingBuffer**: Lock-free queue using atomic operations with pre-allocated ring buffer
+- **SPMCLockFreeQueue**: Single-Producer, Multiple-Consumer lock-free queue
 
 ### Queue Operations
 
@@ -78,10 +59,10 @@ Expressions support mathematical operations on metrics:
 
 ```rust
 // Queue with expression filter
-let queues = AutoQueues::new()
+let queues = AutoQueues::new(config)
     .add_queue_expr(
         "health_score", 
-        "(local.cpu + local.memory) / 2.0",
+        "(cpu + memory) / 2.0",
         "system_metrics",
         true,  // trigger_on_push
         Some(1000)  // evaluate every 1000ms
@@ -118,21 +99,18 @@ while let Some(msg) = queues.receive(sub).await {
 
 ```
 src/
-├── autoqueues.rs      # Main programmatic API
-├── server.rs          # Server mode implementation
-├── config.rs          # Configuration handling
-├── expression/        # Expression engine
-│   ├── types.rs       # AST node definitions
-│   ├── parser.rs      # Expression parser
-│   └── evaluator.rs   # Expression evaluator
-├── pubsub.rs         # Publish/subscribe system
+├── autoqueues.rs          # Main programmatic API
+├── config.rs              # Configuration handling
+├── expression/mod.rs      # Expression engine (single file)
+├── network/
+│   └── pubsub/
+│       └── zmq.rs         # ZMQ-based pub/sub
 ├── queue/
-│   ├── implementation.rs  # SimpleQueue
-│   ├── lockfree.rs       # LockFreeQueue
-│   └── registry.rs       # Sharded registry
-├── queue_manager.rs  # Queue management
-├── traits/           # Trait definitions
-└── types.rs          # Core types
+│   ├── lockfree.rs            # ShardedRingBuffer
+│   ├── spmc_lockfree_queue.rs # SPMCLockFreeQueue (true lock-free)
+│   └── registry.rs            # Queue registry
+├── node.rs                # Node management
+└── types.rs               # Core types
 ```
 
 ### Design Principles
@@ -157,17 +135,17 @@ src/
 base = ["cpu_usage", "memory_usage"]
 
 [queues.derived.health_score]
-formula = "(atomic.cpu_usage + atomic.memory_usage) / 2.0"
+formula = "(cpu_usage + memory_usage) / 2.0"
 ```
 
 ## Examples
 
 See the `examples/` directory:
 
-- `programmatic_mode.rs` - Main API usage
-- `server_mode.rs` - Server mode example
-- `lockfree_queue_example.rs` - Lock-free queue demo
-- `performance_benchmark.rs` - Performance benchmarks
+- `01_basic.rs` - Basic API usage
+- `01_basic_usage.rs` - Simple function-based queues
+- `local_node.rs` - Running a distributed node
+- `config_test.rs` - Configuration testing
 
 ## Testing
 

@@ -242,7 +242,7 @@ impl Default for PublisherConfig {
     fn default() -> Self {
         Self {
             node_id: 1,
-            publish_port: constants::network::DEFAULT_DATA_PORT,
+            publish_port: constants::network::DEFAULT_NODE_COMMUNICATION_PORT,
             bind_addr: "0.0.0.0".to_string(),
             peers: Vec::new(),
         }
@@ -335,7 +335,7 @@ mod publisher_tests {
     fn test_publisher_config_default() {
         let config = PublisherConfig::default();
         assert_eq!(config.node_id, 1);
-        assert_eq!(config.publish_port, 6966);
-        assert_eq!(config.zmq_bind_addr(), "tcp://0.0.0.0:6966");
+        assert_eq!(config.publish_port, 6967);
+        assert_eq!(config.zmq_bind_addr(), "tcp://0.0.0.0:6967");
     }
 }

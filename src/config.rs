@@ -1,487 +1,711 @@
-//! Unified Configuration System
+//! Configuration for AutoQueues
+//!
+//! Provides builder pattern for configuring AutoQueues instances.
+//! Supports TOML config file parsing and programmatic configuration.
+//!
+//! # Config File Format
+//!
+//! ```toml
+//! [node1]
+//! host = "127.0.0.1"
+//! communication_port = 7067
+//! query_port = 7069
+//! coordination_port = 7070
+//!
+//! [node2]
+//! host = "127.0.0.1"
+//! communication_port = 7167
+//! query_port = 7169
+//! coordination_port = 7170
+//!
+//! [local]
+//! cpu = "function:cpu"
+//! memory = "function:memory"
+//!
+//! [global.cpu_avg]
+//! aggregation = "avg"
+//! sources = ["cpu"]
+//! interval_ms = 1000
+//! ```
 
 use crate::constants;
+use crate::queue::persistence::PersistenceConfig;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::env;
 use std::fs;
+use std::net::SocketAddr;
+use std::path::Path;
+use thiserror::Error;
 
 /// Configuration errors
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum ConfigError {
-    FileNotFound(String),
-    ParseError(String),
-    ValidationError(String),
-    SectionNotFound(String),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("TOML parse error: {0}")]
+    Parse(#[from] toml::de::Error),
+
+    #[error("TOML serialize error: {0}")]
+    Serialize(#[from] toml::ser::Error),
+
+    #[error("Environment variable error: {0}")]
+    Env(#[from] std::env::VarError),
+
+    #[error("Invalid value: {0}")]
+    InvalidValue(String),
+
+    #[error("Node not found: {0}")]
+    NodeNotFound(String),
+
+    #[error("Invalid source format: {0}")]
+    InvalidSource(String),
+
+    #[error("Missing required field: {0}")]
+    MissingField(String),
 }
 
-impl std::fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ConfigError::FileNotFound(path) => write!(f, "Config file not found: {}", path),
-            ConfigError::ParseError(msg) => write!(f, "TOML parse error: {}", msg),
-            ConfigError::ValidationError(msg) => write!(f, "Config validation error: {}", msg),
-            ConfigError::SectionNotFound(section) => {
-                write!(f, "Config section not found: {}", section)
-            }
-        }
-    }
-}
+// ============================================================================
+// Source Types
+// ============================================================================
 
-impl std::error::Error for ConfigError {}
-
-impl From<std::io::Error> for ConfigError {
-    fn from(err: std::io::Error) -> Self {
-        ConfigError::FileNotFound(err.to_string())
-    }
-}
-
-impl From<toml::de::Error> for ConfigError {
-    fn from(err: toml::de::Error) -> Self {
-        ConfigError::ParseError(err.to_string())
-    }
-}
-
-/// Main configuration structure - EXTENDED with AutoQueue coordination
-#[derive(Debug, Deserialize, Serialize)]
-pub struct QueueConfig {
-    pub queues: QueuesSection,
-    /// NEW: AutoQueue coordination sections for distributed cluster
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub autoqueues: Option<AutoQueuesConfig>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct QueuesSection {
-    pub base: Vec<String>,
-    pub derived: HashMap<String, DerivedFormula>,
-}
-
+/// Source type for local metrics
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DerivedFormula {
-    pub formula: String,
+pub enum SourceType {
+    /// System function (cpu, memory, memory_free, disk)
+    Function(String),
+    /// Expression using local variable names
+    Expression(String),
 }
 
-/// NEW: AutoQueue distributed coordination configuration
-#[derive(Debug, Deserialize, Serialize)]
-pub struct AutoQueuesConfig {
-    /// Cluster node addresses for distributed operation
-    /// Format: "hostname:port" e.g., ["server1:6966", "server2:6966", "server3:6966"]
+impl SourceType {
+    /// Parse a source string (e.g., "function:cpu" or "expression:x * 2")
+    pub fn parse(s: &str) -> Result<Self, ConfigError> {
+        if let Some(name) = s.strip_prefix("function:") {
+            Ok(Self::Function(name.to_string()))
+        } else if let Some(expr) = s.strip_prefix("expression:") {
+            Ok(Self::Expression(expr.to_string()))
+        } else {
+            // Default to function
+            Ok(Self::Function(s.to_string()))
+        }
+    }
+
+    /// Get the variable name(s) used by this source
+    pub fn variables(&self) -> Vec<String> {
+        match self {
+            Self::Function(name) => vec![name.clone()],
+            Self::Expression(expr) => Self::extract_variables(expr),
+        }
+    }
+
+    /// Extract variable names from an expression
+    fn extract_variables(expr: &str) -> Vec<String> {
+        let mut vars = Vec::new();
+        let mut current = String::new();
+        let mut in_var = false;
+
+        for c in expr.chars() {
+            if c.is_alphanumeric() || c == '_' {
+                current.push(c);
+                in_var = true;
+            } else if in_var {
+                if !current.is_empty() && current != "true" && current != "false" {
+                    vars.push(current.clone());
+                }
+                current.clear();
+                in_var = false;
+            }
+        }
+
+        if in_var && !current.is_empty() {
+            vars.push(current);
+        }
+
+        vars
+    }
+}
+
+/// Aggregation type for global metrics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AggregationType {
+    #[serde(rename = "avg")]
+    Avg,
+    #[serde(rename = "max")]
+    Max,
+    #[serde(rename = "min")]
+    Min,
+    #[serde(rename = "sum")]
+    Sum,
+    #[serde(rename = "stddev")]
+    Stddev,
+    #[serde(rename = "count")]
+    Count(String),
+    #[serde(rename = "p50")]
+    Percentile50,
+    #[serde(rename = "p95")]
+    Percentile95,
+    #[serde(rename = "p99")]
+    Percentile99,
+}
+
+impl AggregationType {
+    /// Parse aggregation type from string
+    pub fn from_str(s: &str) -> Result<Self, ConfigError> {
+        match s {
+            "avg" => Ok(Self::Avg),
+            "max" => Ok(Self::Max),
+            "min" => Ok(Self::Min),
+            "sum" => Ok(Self::Sum),
+            "stddev" => Ok(Self::Stddev),
+            "median" | "p50" => Ok(Self::Percentile50),
+            "p95" => Ok(Self::Percentile95),
+            "p99" => Ok(Self::Percentile99),
+            s if s.starts_with("count:") => {
+                let pred = s[6..].to_string();
+                Ok(Self::Count(pred))
+            }
+            _ => Err(ConfigError::InvalidValue(format!(
+                "Unknown aggregation type: {}",
+                s
+            ))),
+        }
+    }
+}
+
+// ============================================================================
+// Node Configuration
+// ============================================================================
+
+/// Configuration for a single node
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeConfig {
+    pub host: String,
+    pub communication_port: u16,
+    pub query_port: u16,
+    pub coordination_port: u16,
+    pub pubsub_port: u16,
+}
+
+impl NodeConfig {
+    /// Get the socket address for node communication
+    pub fn communication_addr(&self) -> SocketAddr {
+        format!("{}:{}", self.host, self.communication_port)
+            .parse()
+            .unwrap()
+    }
+
+    /// Get the query address
+    pub fn query_addr(&self) -> SocketAddr {
+        format!("{}:{}", self.host, self.query_port)
+            .parse()
+            .unwrap()
+    }
+
+    /// Get the coordination address
+    pub fn coordination_addr(&self) -> SocketAddr {
+        format!("{}:{}", self.host, self.coordination_port)
+            .parse()
+            .unwrap()
+    }
+
+    /// Get the pub/sub address for metric distribution
+    pub fn pubsub_addr(&self) -> SocketAddr {
+        format!("{}:{}", self.host, self.pubsub_port)
+            .parse()
+            .unwrap()
+    }
+}
+
+/// Raw node table from TOML (table-per-node format)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NodeTable {
+    #[serde(flatten)]
+    pub nodes: HashMap<String, NodeConfig>,
+}
+
+impl NodeTable {
+    /// Collect all configured nodes into a vector
+    pub fn collect_nodes(&self) -> Vec<(String, NodeConfig)> {
+        self.nodes
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+}
+
+// ============================================================================
+// Local and Global Metric Configurations
+// ============================================================================
+
+/// Configuration for a local metric source
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalMetricConfig {
+    pub source: SourceType,
+}
+
+impl LocalMetricConfig {
+    /// Parse from "function:cpu" or "expression:x" format
+    pub fn parse(s: &str) -> Result<Self, ConfigError> {
+        Ok(Self {
+            source: SourceType::parse(s)?,
+        })
+    }
+}
+
+/// Configuration for a global aggregation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GlobalMetricConfig {
+    /// Aggregation function (avg, max, min, sum, p95, etc.)
+    pub aggregation: String,
+    /// Source queue names to aggregate
+    pub sources: Vec<String>,
+    /// How often to compute in milliseconds
+    #[serde(default = "global_default_interval")]
+    pub interval_ms: u64,
+    /// Expression for expression-based aggregation
     #[serde(default)]
-    pub cluster_nodes: Vec<String>,
-    /// Node assignment strategy - automatic vs manual control
+    pub expression: Option<String>,
+}
+
+fn global_default_interval() -> u64 {
+    constants::config::DEFAULT_INTERVAL_MS
+}
+
+/// Debug configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DebugConfig {
     #[serde(default)]
-    pub assignment_strategy: AssignmentStrategy,
-    /// Auto-assignment settings (default: true)
-    #[serde(default = "default_true")]
-    pub auto_assignment: bool,
-    /// Auto-discovery settings
-    #[serde(default = "default_true")]
-    pub auto_discovery: bool,
-    /// Derived metrics configuration (aggregations of local metrics)
+    pub verbose: bool,
     #[serde(default)]
-    pub derived_metrics: HashMap<String, DerivedMetricConfig>,
-    /// Node scores for weighted leader assignment
+    pub simulate_sensors: bool,
+}
+
+impl Default for DebugConfig {
+    fn default() -> Self {
+        Self {
+            verbose: false,
+            simulate_sensors: false,
+        }
+    }
+}
+
+// ============================================================================
+// Main Config Structure
+// ============================================================================
+
+/// Main configuration structure for AutoQueues
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    /// Node table (table-per-node format)
     #[serde(default)]
-    pub node_scores: HashMap<String, f64>, // hostname → score
-    /// Node order for hostname → node_id mapping
+    pub nodes: NodeTable,
+
+    /// Local metric sources
     #[serde(default)]
-    pub node_order: Vec<String>, // hostnames in order
-    /// Per-metric leader assignment (optional override)
+    pub local: HashMap<String, String>,
+
+    /// Global aggregations
     #[serde(default)]
-    pub leaders: HashMap<u64, LeaderGroupConfig>,
-    /// Bootstrap and discovery configuration
-    pub bootstrap: BootstrapConfig,
-    /// Node mapping customization (optional)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub node_mapping: Option<NodeMappingConfig>,
+    pub global: HashMap<String, GlobalMetricConfig>,
+
+    /// Queue settings
+    #[serde(default)]
+    pub queue: QueueConfig,
+
+    /// Debug settings
+    #[serde(default)]
+    pub debug: DebugConfig,
+
+    /// Persistence settings
+    #[serde(default)]
+    pub persistence: Option<PersistenceConfig>,
 }
 
-/// NEW: Assignment strategy for node-to-coordinator mapping
-#[derive(Debug, Default, Clone, Deserialize, Serialize, PartialEq)]
-pub enum AssignmentStrategy {
-    #[default]
-    Automatic, // System handles everything
-    HostnameMapping, // User provides specific mappings
-    TagBased,        // Map by node capabilities/roles
-    LocationBased,   // Map by physical location
-    RoundRobin,      // Simple distribution
+/// Queue-specific configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueueConfig {
+    #[serde(default = "queue_default_capacity")]
+    pub capacity: usize,
+    #[serde(default = "queue_default_interval")]
+    pub default_interval: u64,
 }
 
-/// NEW: Derived metric configuration (aggregations of local metrics)
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct DerivedMetricConfig {
-    pub aggregation: String,  // sum, average, max, min
-    pub sources: Vec<String>, // local metric sources
-    #[serde(default = "default_true")]
-    pub auto_aggregate: bool, // Enable automatic calculation
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub required_nodes: Option<usize>, // Minimum nodes for reliable aggregate
+fn queue_default_capacity() -> usize {
+    constants::config::DEFAULT_CAPACITY
 }
 
-/// NEW: Per-metric leader configuration
-#[derive(Debug, Deserialize, Serialize)]
-pub struct LeaderGroupConfig {
-    pub node_group: Vec<u64>,        // Logical node IDs for this coordinator
-    pub leader_metrics: Vec<String>, // Metrics this coordinator calculates
-    pub election_timeout_ms: u32,
-    pub heartbeat_interval_ms: u32,
+fn queue_default_interval() -> u64 {
+    constants::config::DEFAULT_INTERVAL_MS
 }
 
-/// NEW: Bootstrap and discovery configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct BootstrapConfig {
-    pub anchor_nodes: Vec<u64>, // Logical node IDs for anchor points
-    pub discovery_port: u16,
-    pub autoqueues_port: u16, // Standard AutoQueues coordination port
-    #[serde(default = "default_coordination_port")]
-    pub coordination_port: u16, // Separate port for Raft coordination (default: 6968)
-    #[serde(default = "default_data_port")]
-    pub data_port: u16, // Data plane port (default: 6966)
-    #[serde(default = "default_query_port")]
-    pub query_port: u16, // Leader REQ/REP port (default: 6969)
-    #[serde(default = "default_aimd_min_interval")]
-    pub aimd_min_interval_ms: u64, // AIMD minimum interval in ms
-    #[serde(default = "default_aimd_max_interval")]
-    pub aimd_max_interval_ms: u64, // AIMD maximum interval in ms (for freshness timeout)
-    #[serde(default = "default_true")]
-    pub enable_multicast: bool, // UDP multicast discovery
+impl Default for QueueConfig {
+    fn default() -> Self {
+        Self {
+            capacity: queue_default_capacity(),
+            default_interval: queue_default_interval(),
+        }
+    }
 }
 
-fn default_coordination_port() -> u16 {
-    constants::network::DEFAULT_COORDINATION_PORT // One port higher than data port
+// ============================================================================
+// Builder Pattern
+// ============================================================================
+
+/// Builder for Config
+#[derive(Debug)]
+pub struct ConfigBuilder {
+    config: Config,
 }
 
-fn default_data_port() -> u16 {
-    constants::network::DEFAULT_DATA_PORT // Default data plane port
+impl Default for ConfigBuilder {
+    fn default() -> Self {
+        Self {
+            config: Config::default(),
+        }
+    }
 }
 
-fn default_query_port() -> u16 {
-    constants::network::DEFAULT_QUERY_PORT // Default query port for REQ/REP
+impl ConfigBuilder {
+    /// Create a new builder
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a node
+    pub fn add_node(
+        mut self,
+        name: &str,
+        host: &str,
+        communication_port: u16,
+        query_port: u16,
+        coordination_port: u16,
+        pubsub_port: u16,
+    ) -> Self {
+        let node_config = NodeConfig {
+            host: host.to_string(),
+            communication_port,
+            query_port,
+            coordination_port,
+            pubsub_port,
+        };
+
+        self.config
+            .nodes
+            .nodes
+            .insert(name.to_string(), node_config);
+
+        self
+    }
+
+    /// Add a local metric source
+    pub fn add_local_metric(mut self, name: &str, source: &str) -> Self {
+        self.config
+            .local
+            .insert(name.to_string(), source.to_string());
+        self
+    }
+
+    /// Add a global aggregation
+    pub fn add_global_aggregation(
+        mut self,
+        name: &str,
+        aggregation: &str,
+        sources: &[&str],
+        interval_ms: u64,
+    ) -> Self {
+        self.config.global.insert(
+            name.to_string(),
+            GlobalMetricConfig {
+                aggregation: aggregation.to_string(),
+                sources: sources.iter().map(|s| s.to_string()).collect(),
+                interval_ms,
+                expression: None,
+            },
+        );
+        self
+    }
+
+    /// Add an expression-based aggregation
+    pub fn add_expression_aggregation(
+        mut self,
+        name: &str,
+        expression: &str,
+        aggregation: &str,
+        sources: &[&str],
+        interval_ms: u64,
+    ) -> Self {
+        self.config.global.insert(
+            name.to_string(),
+            GlobalMetricConfig {
+                aggregation: aggregation.to_string(),
+                sources: sources.iter().map(|s| s.to_string()).collect(),
+                interval_ms,
+                expression: Some(expression.to_string()),
+            },
+        );
+        self
+    }
+
+    /// Set queue capacity
+    pub fn capacity(mut self, capacity: usize) -> Self {
+        self.config.queue.capacity = capacity;
+        self
+    }
+
+    /// Set default interval
+    pub fn default_interval(mut self, interval_ms: u64) -> Self {
+        self.config.queue.default_interval = interval_ms;
+        self
+    }
+
+    /// Enable sensor simulation
+    pub fn simulate_sensors(mut self, enabled: bool) -> Self {
+        self.config.debug.simulate_sensors = enabled;
+        self
+    }
+
+    /// Enable verbose mode
+    pub fn verbose(mut self, enabled: bool) -> Self {
+        self.config.debug.verbose = enabled;
+        self
+    }
+
+    /// Set persistence configuration
+    pub fn persistence(mut self, config: PersistenceConfig) -> Self {
+        self.config.persistence = Some(config);
+        self
+    }
+
+    /// Build the configuration
+    pub fn build(self) -> Config {
+        self.config
+    }
 }
 
-fn default_aimd_min_interval() -> u64 {
-    constants::time::AIMD_MIN_INTERVAL_MS // 100ms minimum interval
-}
+impl Config {
+    /// Create a new config with defaults
+    pub fn new() -> Self {
+        Self::default()
+    }
 
-fn default_aimd_max_interval() -> u64 {
-    constants::time::AIMD_MAX_INTERVAL_MS // 5000ms maximum interval (for freshness timeout)
-}
+    /// Create a builder
+    pub fn builder() -> ConfigBuilder {
+        ConfigBuilder::new()
+    }
 
-/// NEW: Node mapping customization (hostnames → logical IDs)
-#[derive(Debug, Deserialize, Serialize)]
-pub struct NodeMappingConfig {
-    pub mappings: HashMap<String, u64>, // hostname → logical_id mapping
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub location_mappings: Option<HashMap<String, LocationInfo>>,
-}
-
-/// NEW: Physical location information for location-based assignment
-#[derive(Debug, Deserialize, Serialize)]
-pub struct LocationInfo {
-    pub rack: String,
-    pub datacenter: String,
-    pub zone: String,
-}
-
-/// NEW: Node tagging for capability-based assignment
-#[derive(Debug, Default, Deserialize, Serialize)]
-pub struct NodeTags {
-    pub capabilities: Vec<String>, // ["cpu_heavy", "memory_heavy", "storage"]
-    pub role: Option<String>,      // ["worker", "compute", "storage", "manager"]
-    pub workload_type: Option<String>, // ["batch", "interactive", "ml_training"]
-}
-
-impl QueueConfig {
-    /// Load configuration from TOML file
-    pub fn from_file(path: &str) -> Result<Self, ConfigError> {
+    /// Load configuration from a TOML file
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
         let content = fs::read_to_string(path)?;
-        let config: QueueConfig = toml::from_str(&content)?;
-
-        // NEW: Validate AutoQueue config if present
-        if let Some(ref aq_config) = config.autoqueues {
-            Self::validate_autoqueue_config(aq_config)?;
-        }
-
-        Ok(config)
+        Ok(toml::from_str(&content)?)
     }
 
-    /// Create configuration from TOML string
-    pub fn from_str(toml_content: &str) -> Result<Self, ConfigError> {
-        Ok(toml::from_str(toml_content)?)
-    }
-
-    /// Get base metrics
-    pub fn get_base_metrics(&self) -> &[String] {
-        &self.queues.base
-    }
-
-    /// Get derived formulas
-    pub fn get_derived_formulas(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.queues
-            .derived
-            .iter()
-            .map(|(name, formula)| (name.as_str(), formula.formula.as_str()))
-    }
-
-    /// Get specific derived formula
-    pub fn get_derived_formula(&self, name: &str) -> Option<&str> {
-        self.queues
-            .derived
-            .get(name)
-            .map(|formula| formula.formula.as_str())
-    }
-
-    /// NEW: Get AutoQueue coordination config
-    pub fn get_autoqueue_config(&self) -> Option<&AutoQueuesConfig> {
-        self.autoqueues.as_ref()
-    }
-
-    /// NEW: Check if auto-assignment is enabled
-    pub fn is_auto_assignment_enabled(&self) -> bool {
-        self.autoqueues
-            .as_ref()
-            .map(|aq| aq.auto_assignment)
-            .unwrap_or(true)
-    }
-
-    /// NEW: Get assignment strategy
-    pub fn get_assignment_strategy(&self) -> AssignmentStrategy {
-        self.autoqueues
-            .as_ref()
-            .map(|aq| aq.assignment_strategy.clone())
-            .unwrap_or_default()
-    }
-
-    /// NEW: Get derived metrics configuration
-    pub fn get_derived_metrics(&self) -> HashMap<String, DerivedMetricConfig> {
-        self.autoqueues
-            .as_ref()
-            .map(|aq| aq.derived_metrics.clone())
-            .unwrap_or_default()
-    }
-
-    /// NEW: Get derived metric by name
-    pub fn get_derived_metric(&self, name: &str) -> Option<&DerivedMetricConfig> {
-        self.autoqueues
-            .as_ref()
-            .and_then(|aq| aq.derived_metrics.get(name))
-    }
-
-    /// NEW: Get node scores (hostname → score)
-    pub fn get_node_scores(&self) -> HashMap<String, f64> {
-        self.autoqueues
-            .as_ref()
-            .map(|aq| aq.node_scores.clone())
-            .unwrap_or_default()
-    }
-
-    /// NEW: Get node order (for hostname → node_id mapping)
-    pub fn get_node_order(&self) -> &[String] {
-        self.autoqueues
-            .as_ref()
-            .map(|aq| aq.node_order.as_slice())
-            .unwrap_or(&[])
-    }
-
-    /// NEW: Convert hostname to node_id using node_order
-    /// Returns 0 if hostname not found
-    pub fn hostname_to_node_id(&self, hostname: &str) -> u64 {
-        self.get_node_order()
-            .iter()
-            .position(|h| h == hostname)
-            .map(|i| (i + 1) as u64) // 1-indexed
-            .unwrap_or(0) // 0 = not found
-    }
-
-    /// NEW: Get node_id for this node (from hostname in node_order)
-    pub fn get_local_node_id(&self) -> u64 {
-        // Get hostname from system
-        if let Ok(hostname) = std::env::var("HOSTNAME") {
-            self.hostname_to_node_id(&hostname)
-        } else {
-            // Fallback: use first node in order as this node
-            1
-        }
-    }
-
-    /// NEW: Get AIMD intervals from bootstrap config
-    pub fn get_aimd_intervals(&self) -> (u64, u64) {
-        if let Some(aq) = self.autoqueues.as_ref() {
-            (
-                aq.bootstrap.aimd_min_interval_ms,
-                aq.bootstrap.aimd_max_interval_ms,
-            )
-        } else {
-            (
-                constants::time::AIMD_MIN_INTERVAL_MS,
-                constants::time::AIMD_MAX_INTERVAL_MS,
-            ) // defaults
-        }
-    }
-
-    /// NEW: Get freshness timeout (2 × AIMD max interval)
-    pub fn get_freshness_timeout_ms(&self) -> u64 {
-        let (_, max_interval) = self.get_aimd_intervals();
-        max_interval * 2
-    }
-
-    /// NEW: Get coordination port
-    pub fn get_coordination_port(&self) -> u16 {
-        self.autoqueues
-            .as_ref()
-            .map(|aq| aq.bootstrap.coordination_port)
-            .unwrap_or(constants::network::DEFAULT_COORDINATION_PORT)
-    }
-
-    /// NEW: Get data port
-    pub fn get_data_port(&self) -> u16 {
-        self.autoqueues
-            .as_ref()
-            .map(|aq| aq.bootstrap.data_port)
-            .unwrap_or(constants::network::DEFAULT_QUIC_PORT)
-    }
-
-    /// NEW: Get cluster nodes for distributed operation
-    pub fn get_cluster_nodes(&self) -> &[String] {
-        self.autoqueues
-            .as_ref()
-            .map(|aq| aq.cluster_nodes.as_slice())
-            .unwrap_or(&[])
-    }
-
-    /// NEW: Check if running in distributed mode
-    pub fn is_distributed(&self) -> bool {
-        !self.get_cluster_nodes().is_empty()
-    }
-
-    /// NEW: Get query port (for leader REQ/REP)
-    pub fn get_query_port(&self) -> u16 {
-        self.autoqueues
-            .as_ref()
-            .map(|aq| aq.bootstrap.query_port)
-            .unwrap_or(constants::network::DEFAULT_QUERY_PORT)
-    }
-
-    /// NEW: Validate AutoQueue configuration
-    fn validate_autoqueue_config(aq_config: &AutoQueuesConfig) -> Result<(), ConfigError> {
-        // Validate logical ID uniqueness in node groups
-        let mut all_node_ids = HashSet::new();
-        for leader_config in aq_config.leaders.values() {
-            for node_id in &leader_config.node_group {
-                if !all_node_ids.insert(node_id) {
-                    return Err(ConfigError::ValidationError(format!(
-                        "Node {} appears in multiple coordinator groups",
-                        node_id
-                    )));
-                }
-            }
-        }
-
-        // Validate derived metrics
-        for (metric_name, metric_config) in &aq_config.derived_metrics {
-            match metric_config.aggregation.as_str() {
-                "sum" | "average" | "max" | "min" => {}
-                _ => {
-                    return Err(ConfigError::ValidationError(format!(
-                        "Invalid aggregation type '{}' for metric {}",
-                        metric_config.aggregation, metric_name
-                    )));
-                }
-            }
-
-            // Validate sources reference local metrics
-            for source in &metric_config.sources {
-                if !source.starts_with("local.") {
-                    return Err(ConfigError::ValidationError(format!(
-                        "Derived metric '{}' source '{}' must start with 'local.'",
-                        metric_name, source
-                    )));
-                }
-            }
-        }
-
-        // Validate node_scores hostnames match node_order
-        if !aq_config.node_order.is_empty() {
-            for hostname in aq_config.node_scores.keys() {
-                if !aq_config.node_order.contains(hostname) {
-                    return Err(ConfigError::ValidationError(format!(
-                        "Node score hostname '{}' not found in node_order",
-                        hostname
-                    )));
-                }
-            }
-        }
-
+    /// Save configuration to a TOML file
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<(), ConfigError> {
+        let content = toml::to_string_pretty(self)?;
+        fs::write(path, content)?;
         Ok(())
     }
 
-    /// Create standard configuration (extended)
-    pub fn create_standard() -> Self {
-        let toml_str = r#"
-[queues]
-base = ["cpu_percent", "memory_percent", "drive_percent"]
-
-[queues.derived.health_score]
-formula = "(local.cpu_percent + local.memory_percent + local.drive_percent) / 3.0"
-
-[queues.derived.weighted_health]
-formula = "(local.cpu_percent * 0.4) + (local.memory_percent * 0.3) + (local.drive_percent * 0.3)"
-
-[autoqueues]
-# Simple distributed coordination with auto-assignment
-assignment_strategy = "Automatic"
-auto_assignment = true
-auto_discovery = true
-
-[autoqueues.bootstrap]
-anchor_nodes = [1, 2, 3, 4]  # Bootstrap with first 4 logical nodes
-discovery_port = 5353
-autoqueues_port = 6942
-
-[autoqueues.global.cpu_usage]
-aggregation = "average"
-auto_aggregate = true
-required_nodes = 4
-
-[autoqueues.global.memory_usage]
-aggregation = "sum"
-auto_aggregate = true
-required_nodes = 4
-
-[autoqueues.leaders.1]
-node_group = [1, 2, 3, 4] # Logical node IDs
-leader_metrics = ["cpu_usage", "memory_usage"]
-election_timeout_ms = 200
-heartbeat_interval_ms = 50
-"#;
-        Self::from_str(toml_str).expect("Standard AutoQueue config should be valid")
+    /// Get my node configuration based on NODE_ID environment variable
+    pub fn my_node(&self, node_id: u64) -> Result<NodeConfig, ConfigError> {
+        let node_name = format!("node{}", node_id);
+        self.nodes
+            .nodes
+            .get(&node_name)
+            .cloned()
+            .ok_or_else(|| ConfigError::NodeNotFound(node_name))
     }
 
-    /// Create minimal configuration
-    pub fn create_minimal() -> Self {
-        let toml_str = r#"
-[queues]
-base = ["cpu_percent", "memory_percent"]
+    /// Get all other nodes (excluding self)
+    pub fn other_nodes(&self, node_id: u64) -> Vec<(String, NodeConfig)> {
+        self.nodes
+            .collect_nodes()
+            .into_iter()
+            .filter(|(name, _)| name != &format!("node{}", node_id))
+            .collect()
+    }
 
-[queues.derived.simple_average]
-formula = "(local.cpu_percent + local.memory_percent) / 2.0"
+    /// Get all nodes
+    pub fn all_nodes(&self) -> Vec<(String, NodeConfig)> {
+        self.nodes.collect_nodes()
+    }
 
-[autoqueues]
-# Ultra-minimal distributed config
-auto_assignment = true
-auto_discovery = true
+    /// Detect node ID from environment or hostname
+    pub fn detect_node_id(&self) -> Result<u64, ConfigError> {
+        // First check NODE_ID environment variable
+        if let Ok(id) = env::var("NODE_ID") {
+            return id
+                .parse()
+                .map_err(|_| ConfigError::InvalidValue("Invalid NODE_ID".to_string()));
+        }
 
-[autoqueues.bootstrap]
-anchor_nodes = [1, 2]
-discovery_port = 5353
-autoqueues_port = 6942
-"#;
-        Self::from_str(toml_str).expect("Minimal AutoQueue config should be valid")
+        // Otherwise use hostname lookup
+        let hostname = env::var("HOSTNAME")
+            .or_else(|_| env::var("HOST"))
+            .map_err(|_| ConfigError::InvalidValue("Cannot determine hostname".to_string()))?;
+
+        for (i, (name, _)) in self.all_nodes().iter().enumerate() {
+            // Simple case-insensitive match
+            if name.to_lowercase() == hostname.to_lowercase() {
+                return Ok((i + 1) as u64);
+            }
+            // Also check if hostname matches the host field
+            if let Some(config) = self.my_node((i + 1) as u64).ok() {
+                if config.host == hostname {
+                    return Ok((i + 1) as u64);
+                }
+            }
+        }
+
+        Err(ConfigError::InvalidValue(format!(
+            "Hostname '{}' not found in node list",
+            hostname
+        )))
+    }
+
+    /// Get local metric source
+    pub fn local_source(&self, name: &str) -> Option<SourceType> {
+        self.local.get(name).map(|s| SourceType::parse(s).unwrap())
+    }
+
+    /// Get global metric configuration
+    pub fn global_metric(&self, name: &str) -> Option<&GlobalMetricConfig> {
+        self.global.get(name)
     }
 }
 
-// Suppress dead code warning
-#[allow(dead_code)]
-const fn default_true() -> bool {
-    true
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            nodes: NodeTable::default(),
+            local: HashMap::new(),
+            global: HashMap::new(),
+            queue: QueueConfig::default(),
+            debug: DebugConfig::default(),
+            persistence: None,
+        }
+    }
+}
+
+// ============================================================================
+// Config Generator
+// ============================================================================
+
+/// Helper to generate example configurations
+pub struct ConfigGenerator;
+
+impl ConfigGenerator {
+    /// Generate a local test config with 3 nodes on localhost
+    pub fn local_test(num_nodes: u64, base_port: u16) -> Config {
+        let mut config = Config::new();
+        let port_offset = 100;
+
+        for i in 1..=num_nodes {
+            let name = format!("node{}", i);
+            let port = base_port + (i as u16 * port_offset);
+
+            config.nodes.nodes.insert(
+                name,
+                NodeConfig {
+                    host: "127.0.0.1".to_string(),
+                    communication_port: port,
+                    query_port: port + 2,
+                    coordination_port: port + 3,
+                    pubsub_port: port + 4,
+                },
+            );
+        }
+
+        // Add common local metrics
+        config
+            .local
+            .insert("cpu".to_string(), "function:cpu".to_string());
+        config
+            .local
+            .insert("memory".to_string(), "function:memory".to_string());
+        config.local.insert(
+            "memory_free".to_string(),
+            "function:memory_free".to_string(),
+        );
+        config.local.insert(
+            "temperature".to_string(),
+            "function:sensor_temp".to_string(),
+        );
+
+        // Add global aggregations
+        config.global.insert(
+            "cpu_avg".to_string(),
+            GlobalMetricConfig {
+                aggregation: "avg".to_string(),
+                sources: vec!["cpu".to_string()],
+                interval_ms: 1000,
+                expression: None,
+            },
+        );
+
+        config.global.insert(
+            "temperature_max".to_string(),
+            GlobalMetricConfig {
+                aggregation: "max".to_string(),
+                sources: vec!["temperature".to_string()],
+                interval_ms: 2000,
+                expression: None,
+            },
+        );
+
+        config.global.insert(
+            "node_health_score".to_string(),
+            GlobalMetricConfig {
+                aggregation: "avg".to_string(),
+                sources: vec!["cpu".to_string(), "memory_free".to_string()],
+                interval_ms: 1000,
+                expression: Some("(100 - cpu) + memory_free".to_string()),
+            },
+        );
+
+        // Debug settings for testing
+        config.debug.simulate_sensors = true;
+        config.debug.verbose = true;
+
+        config
+    }
+
+    /// Generate a production config with the given nodes
+    pub fn production(nodes: &[(&str, &str)]) -> Config
+    where
+        for<'a> &'a str: std::fmt::Display,
+    {
+        let mut config = Config::new();
+
+        for (i, (name, host)) in nodes.iter().enumerate() {
+            let port = 6967 + (i as u16 * 100);
+
+            config.nodes.nodes.insert(
+                name.to_string(),
+                NodeConfig {
+                    host: host.to_string(),
+                    communication_port: port,
+                    query_port: port + 2,
+                    coordination_port: port + 3,
+                    pubsub_port: port + 4,
+                },
+            );
+        }
+
+        // Add default local metrics
+        config
+            .local
+            .insert("cpu".to_string(), "function:cpu".to_string());
+        config
+            .local
+            .insert("memory".to_string(), "function:memory".to_string());
+        config.local.insert(
+            "memory_free".to_string(),
+            "function:memory_free".to_string(),
+        );
+
+        config
+    }
 }

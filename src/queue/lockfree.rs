@@ -1,6 +1,6 @@
-//! Lock-free queue implementation using atomic operations
+//! Sharded ring buffer implementation using atomic operations
 //!
-//! This implementation uses atomic operations to provide a lock-free ring buffer
+//! This implementation uses atomic operations to provide a ring-buffer ring buffer
 //! that can handle concurrent producers and consumers without mutexes.
 //! Target performance: sub-5μs operations.
 
@@ -11,11 +11,11 @@ use crate::queue::{QueueError, QueueServerHandle};
 use crate::traits::queue::QueueTrait;
 use crate::types::{QueueData, Timestamp};
 
-/// Lock-free queue using atomic operations
+/// Sharded ring buffer using atomic operations
 ///
 /// This queue implementation uses atomic operations to provide
-/// lock-free access for both producers and consumers.
-pub struct LockFreeQueue<T, const N: usize>
+/// ring-buffer access for both producers and consumers.
+pub struct ShardedRingBuffer<T, const N: usize>
 where
     T: Clone + Send + Sync + 'static,
 {
@@ -29,8 +29,8 @@ where
     tail: AtomicUsize,
 }
 
-impl<T: Clone + Send + Sync + 'static, const N: usize> LockFreeQueue<T, N> {
-    /// Create a new lock-free queue
+impl<T: Clone + Send + Sync + 'static, const N: usize> ShardedRingBuffer<T, N> {
+    /// Create a new ring-buffer queue
     pub fn new() -> Self {
         // Ensure N is a power of 2 for efficient masking
         assert!(N.is_power_of_two(), "Queue capacity must be a power of 2");
@@ -73,13 +73,13 @@ impl<T: Clone + Send + Sync + 'static, const N: usize> LockFreeQueue<T, N> {
     }
 }
 
-impl<T: Clone + Send + Sync + 'static, const N: usize> Default for LockFreeQueue<T, N> {
+impl<T: Clone + Send + Sync + 'static, const N: usize> Default for ShardedRingBuffer<T, N> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: Clone + Send + Sync + 'static, const N: usize> QueueTrait for LockFreeQueue<T, N> {
+impl<T: Clone + Send + Sync + 'static, const N: usize> QueueTrait for ShardedRingBuffer<T, N> {
     type Data = T;
 
     /// Publish data to the queue
@@ -118,7 +118,7 @@ impl<T: Clone + Send + Sync + 'static, const N: usize> QueueTrait for LockFreeQu
                     }
 
                     // Update stats
-                    // Note: In a truly lock-free implementation, we might want to use atomic counters
+                    // Note: In a truly ring-buffer implementation, we might want to use atomic counters
                     // For now, we'll just increment the stats without locks
                     // self.stats.total_published += 1;
                     // self.stats.last_updated = timestamp;
@@ -187,13 +187,13 @@ impl<T: Clone + Send + Sync + 'static, const N: usize> QueueTrait for LockFreeQu
 
     /// Start autonomous server
     fn start_server(self) -> Result<QueueServerHandle, QueueError> {
-        // For lock-free implementation, we don't need a server
+        // For ring-buffer implementation, we don't need a server
         // but we need to maintain API compatibility
         use tokio::sync::oneshot;
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
         let join_handle = tokio::spawn(async move {
-            // The lock-free queue doesn't need a background task
+            // The ring-buffer queue doesn't need a background task
             // but we wait for shutdown signal for API compatibility
             let _ = shutdown_rx.await;
         });
@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn test_lockfree_queue_creation() {
-        let queue: LockFreeQueue<i32, 8> = LockFreeQueue::new();
+        let queue: ShardedRingBuffer<i32, 8> = ShardedRingBuffer::new();
         assert_eq!(queue.get_size(), 0);
         assert_eq!(queue.capacity(), 8);
         assert!(queue.is_empty());
@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn test_queue_publish_and_retrieve() {
-        let mut queue: LockFreeQueue<String, 8> = LockFreeQueue::new();
+        let mut queue: ShardedRingBuffer<String, 8> = ShardedRingBuffer::new();
 
         queue.publish("test1".to_string()).unwrap();
         queue.publish("test2".to_string()).unwrap();
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn test_queue_full_behavior() {
-        let mut queue: LockFreeQueue<i32, 4> = LockFreeQueue::new();
+        let mut queue: ShardedRingBuffer<i32, 4> = ShardedRingBuffer::new();
 
         // Fill the queue
         for i in 0..3 {
@@ -255,7 +255,7 @@ mod tests {
 
     #[test]
     fn test_queue_wraparound() {
-        let mut queue: LockFreeQueue<i32, 8> = LockFreeQueue::new();
+        let mut queue: ShardedRingBuffer<i32, 8> = ShardedRingBuffer::new();
 
         // Fill the queue (capacity is 7 due to ring buffer design)
         for i in 0..7 {

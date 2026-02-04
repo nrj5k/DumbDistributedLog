@@ -1,5 +1,6 @@
 //! Basic usage example for the AutoQueues API
 
+use autoqueues::config::ConfigGenerator;
 use autoqueues::AutoQueues;
 
 fn get_cpu_usage() -> f64 {
@@ -13,12 +14,8 @@ fn get_memory_usage() -> f64 {
 }
 
 fn main() {
-    // Configure AutoQueues
-    let config = AutoQueues::configure()
-        .nodes(&["node1:6969", "node2:6969"])
-        .discovery(autoqueues::autoqueues_config::DiscoveryMethod::Static)
-        .capacity(1024)
-        .default_interval(1000);
+    // Generate a local test config with 3 nodes
+    let config = ConfigGenerator::local_test(3, 6967);
 
     // Create AutoQueues instance
     let autoqueues = AutoQueues::new(config);

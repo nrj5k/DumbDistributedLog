@@ -1,59 +1,127 @@
-# AutoQueues Configuration File
-# This file demonstrates the queue manager configuration system
+# =============================================================================
+# AutoQueues Configuration
+# =============================================================================
+#
+# For local testing with 3 nodes on localhost:
+#   NODE_ID=1 cargo run --example local_node -- --config config.toml
+#   NODE_ID=2 cargo run --example local_node -- --config config.toml
+#   NODE_ID=3 cargo run --example local_node -- --config config.toml
+#
+# =============================================================================
 
-[queues]
-# Base metrics that will be collected from the system
-base = ["cpu_percent", "memory_percent", "disk_percent", "network_io", "process_count"]
+# =============================================================================
+# SECTION 1: CLUSTER NODES
+# =============================================================================
+# Each node has dedicated ports for different purposes
 
-# Derived expressions that calculate values from base metrics
-[queues.derived.health_score]
-formula = "(local.cpu_percent + local.memory_percent + local.disk_percent) / 3.0"
-description = "Overall system health score (0-100)"
+[node1]
+host = "127.0.0.1"
+communication_port = 7067
+query_port = 7069
+coordination_port = 7070
+pubsub_port = 7071
 
-[queues.derived.system_load]
-formula = "(local.cpu_percent * 0.5) + (local.memory_percent * 0.3) + (local.disk_percent * 0.2)"
-description = "Weighted system load index"
+[node2]
+host = "127.0.0.1"
+communication_port = 7167
+query_port = 7169
+coordination_port = 7170
+pubsub_port = 7171
 
-[queues.derived.performance_index]
-formula = "100.0 - local.health_score"
-description = "System performance index (higher is better)"
+[node3]
+host = "127.0.0.1"
+communication_port = 7267
+query_port = 7269
+coordination_port = 7270
+pubsub_port = 7271
 
-[queues.derived.alert_threshold]
-formula = "max(local.cpu_percent, local.memory_percent) > 80.0 ? 1.0 : 0.0"
-description = "Alert trigger (1.0 = alert, 0.0 = normal)"
+# =============================================================================
+# SECTION 2: LOCAL METRIC SOURCES
+# =============================================================================
+# Metrics collected by THIS node.
+#
+# Format: queue_name = source_type:source_name
+#
+# Source Types:
+#   - function:xxx  -> calls system/custom function
+#   - expression:x  -> evaluates expression using local metric names
+#
+# Available System Functions:
+#   - function:cpu         -> CPU usage percentage (0-100)
+#   - function:memory      -> Memory usage percentage (0-100)
+#   - function:memory_free -> Free memory in GB
+#   - function:disk        -> Disk usage percentage (0-100)
+#   - function:sensor_xxx  -> Custom sensor functions
 
-[queues.derived.resource_efficiency]
-formula = "(local.cpu_percent < 50.0 && local.memory_percent < 70.0) ? 85.0 : 65.0"
-description = "Resource efficiency score"
+[local]
+# System metrics
+cpu = "function:cpu"
+memory = "function:memory"
+memory_free = "function:memory_free"
 
-[queues.derived.predicted_load]
-formula = "local.cpu_percent * 1.1 + local.memory_percent * 0.1"
-description = "Predicted load based on current trends"
+# Sensor metrics
+temperature = "function:sensor_temp"
+vibration = "function:vibration"
 
-# Advanced monitoring expressions
-[queues.derived.thermal_stress]
-formula = "(local.cpu_percent > 75.0 || local.memory_percent > 85.0) ? 90.0 : 30.0"
-description = "System thermal stress indicator"
+# Computed metrics
+load_avg = "expression:(cpu + memory) / 2"
 
-[queues.derived.optimization_needed]
-formula = "(local.health_score > 70.0) ? 0.0 : 1.0"
-description = "Indicates if system optimization is needed"
+# =============================================================================
+# SECTION 3: GLOBAL METRICS (AGGREGATED ACROSS ALL NODES)
+# =============================================================================
+# Each global metric is computed by aggregating values from all nodes.
+#
+# Aggregation Types:
+#   - avg              -> arithmetic mean
+#   - max              -> maximum value
+#   - min              -> minimum value
+#   - sum              -> sum of all values
+#   - p50, p95, p99    -> percentiles
+#   - stddev           -> standard deviation
+#   - count:pred       -> count matching predicate
+#
+# For expression aggregations:
+#   - expression = "(formula using source names)"
+#   - sources = ["list", "of", "source", "names"]
+#   - aggregation = "how to aggregate the computed scores"
 
-# Network and I/O monitoring
-[queues.derived.io_pressure]
-formula = "local.network_io / 1000.0"
-description = "Network I/O pressure indicator"
+[global]
 
-[queues.derived.congestion_level]
-formula = "local.process_count > 200 ? 80.0 : 40.0"
-description = "System congestion level"
+# Basic aggregations
+[global.cpu_avg]
+aggregation = "avg"
+sources = ["cpu"]
+interval_ms = 1000
 
-# Server Mode Configuration
-[server]
-port = 6969
-push_topics = ["metrics.cpu", "metrics.memory", "metrics.disk"]
-subscribe_topics = ["alerts.*", "health.*"]
+[global.temperature_max]
+aggregation = "max"
+sources = ["temperature"]
+interval_ms = 2000
 
-# Programmatic Mode Configuration
-[programmatic]
-default_queues = ["cpu_monitor", "memory_monitor", "health_calculator"]
+[global.vibration_p95]
+aggregation = "p95"
+sources = ["vibration"]
+interval_ms = 500
+
+# Expression-based aggregations
+[global.node_health_score]
+expression = "(100 - cpu) + memory_free"
+sources = ["cpu", "memory_free"]
+aggregation = "avg"
+interval_ms = 1000
+
+# =============================================================================
+# SECTION 4: QUEUE SETTINGS
+# =============================================================================
+
+[queue]
+capacity = 1024
+default_interval = 1000
+
+# =============================================================================
+# SECTION 5: DEBUG SETTINGS
+# =============================================================================
+
+[debug]
+verbose = true
+simulate_sensors = true

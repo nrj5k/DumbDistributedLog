@@ -2,9 +2,11 @@
 //!
 //! Provides the QueueSource trait and implementations for different queue data sources.
 
-use crate::autoqueues_config::Config;
+use crate::config::Config;
 use crate::dist::aggregator::DistributedAggregator;
-use crate::queue::simple_queue::SimpleQueue;
+use crate::queue::interval::IntervalConfig;
+use crate::queue::persistence::QueuePersistence;
+use crate::queue::spmc_lockfree_queue::SPMCLockFreeQueue as SimpleQueue;
 use crate::queue::QueueError;
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
@@ -14,28 +16,34 @@ use std::sync::{Arc, RwLock};
 pub enum AutoQueuesError {
     #[error("Queue error: {0}")]
     QueueError(#[from] QueueError),
-    
+
     #[error("Configuration error: {0}")]
     ConfigError(String),
-    
+
     #[error("Source error: {0}")]
     SourceError(String),
-    
+
     #[error("Expression error: {0}")]
     ExpressionError(String),
 }
 
 /// Trait for queue data sources
 pub trait QueueSource<T: Clone + Send + Sync + 'static>: Send {
-    /// Start the queue source
-    fn start(&self, queue: Arc<RwLock<SimpleQueue<T>>>, config: &Config);
-    
+    /// Start the queue source with interval configuration and optional persistence
+    fn start(
+        &self,
+        queue: Arc<RwLock<SimpleQueue<T>>>,
+        config: &Config,
+        interval: IntervalConfig,
+        persistence: Option<Arc<QueuePersistence>>,
+    );
+
     /// Pause the queue source
     fn pause(&self);
-    
+
     /// Resume the queue source
     fn resume(&self);
-    
+
     /// Remove the queue source
     fn remove(&self);
 }
@@ -46,21 +54,28 @@ where
     F: Fn() -> T + Send + Sync + 'static,
     T: Clone + Send + Sync + 'static,
 {
-    fn start(&self, queue: Arc<RwLock<SimpleQueue<T>>>, _config: &Config) {
+    fn start(
+        &self,
+        queue: Arc<RwLock<SimpleQueue<T>>>,
+        _config: &Config,
+        _interval: IntervalConfig,
+        _persistence: Option<Arc<QueuePersistence>>,
+    ) {
         // In a real implementation, this would start a background task
         // For now, we'll just store the queue reference
         let _queue = queue;
         // TODO: Implement background task that calls the function periodically
+        // TODO: Implement persistence handling for the data generated
     }
-    
+
     fn pause(&self) {
         // TODO: Implement pause functionality
     }
-    
+
     fn resume(&self) {
         // TODO: Implement resume functionality
     }
-    
+
     fn remove(&self) {
         // TODO: Implement remove functionality
     }
@@ -92,19 +107,26 @@ impl ExpressionSource {
 }
 
 impl<T: Clone + Send + Sync + 'static> QueueSource<T> for ExpressionSource {
-    fn start(&self, queue: Arc<RwLock<SimpleQueue<T>>>, _config: &Config) {
+    fn start(
+        &self,
+        queue: Arc<RwLock<SimpleQueue<T>>>,
+        _config: &Config,
+        _interval: IntervalConfig,
+        _persistence: Option<Arc<QueuePersistence>>,
+    ) {
         let _queue = queue;
         // TODO: Implement expression evaluation
+        // TODO: Implement persistence handling for expression results
     }
-    
+
     fn pause(&self) {
         // TODO: Implement pause functionality
     }
-    
+
     fn resume(&self) {
         // TODO: Implement resume functionality
     }
-    
+
     fn remove(&self) {
         // TODO: Implement remove functionality
     }
@@ -113,8 +135,8 @@ impl<T: Clone + Send + Sync + 'static> QueueSource<T> for ExpressionSource {
 /// Source for distributed aggregation-based queues
 pub struct DistributedAggregationSource {
     pub queue_name: String,
-    pub operation: String,      // "avg", "max", "min", etc.
-    pub source_queues: Vec<String>,  // Source queues to aggregate
+    pub operation: String,          // "avg", "max", "min", etc.
+    pub source_queues: Vec<String>, // Source queues to aggregate
     pub aggregator: DistributedAggregator,
 }
 
@@ -128,7 +150,7 @@ impl DistributedAggregationSource {
     ) -> Self {
         let node_id = std::env::var("NODE_ID").unwrap_or_else(|_| "local".to_string());
         let aggregator = DistributedAggregator::new(node_id, nodes);
-        
+
         Self {
             queue_name,
             operation,
@@ -139,24 +161,43 @@ impl DistributedAggregationSource {
 }
 
 impl<T: Clone + Send + Sync + 'static> QueueSource<T> for DistributedAggregationSource {
-    fn start(&self, queue: Arc<RwLock<SimpleQueue<T>>>, _config: &Config) {
+    fn start(
+        &self,
+        queue: Arc<RwLock<SimpleQueue<T>>>,
+        _config: &Config,
+        _interval: IntervalConfig,
+        _persistence: Option<Arc<QueuePersistence>>,
+    ) {
         let _queue = queue;
         // TODO: Implement distributed aggregation background task
-        println!("Starting distributed aggregation source for queue: {}", self.queue_name);
+        println!(
+            "Starting distributed aggregation source for queue: {}",
+            self.queue_name
+        );
+        // TODO: Implement persistence handling for aggregated results
     }
-    
+
     fn pause(&self) {
         // TODO: Implement pause functionality
-        println!("Pausing distributed aggregation source for queue: {}", self.queue_name);
+        println!(
+            "Pausing distributed aggregation source for queue: {}",
+            self.queue_name
+        );
     }
-    
+
     fn resume(&self) {
         // TODO: Implement resume functionality
-        println!("Resuming distributed aggregation source for queue: {}", self.queue_name);
+        println!(
+            "Resuming distributed aggregation source for queue: {}",
+            self.queue_name
+        );
     }
-    
+
     fn remove(&self) {
         // TODO: Implement remove functionality
-        println!("Removing distributed aggregation source for queue: {}", self.queue_name);
+        println!(
+            "Removing distributed aggregation source for queue: {}",
+            self.queue_name
+        );
     }
 }
