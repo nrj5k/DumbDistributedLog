@@ -3,8 +3,10 @@
 //! Building on AutoQueues programmatically, adding queues and auto-population functions.
 //! Generic over type T for maximum flexibility.
 
-use crate::autoqueues_config::Config;
-use crate::pubsub::{PubSubBroker, SubscriptionId};
+use crate::config::Config;
+use crate::constants;
+use crate::network::pubsub::zmq::ZmqPubSubBroker;
+use crate::queue::interval::IntervalConfig;
 use crate::queue::registry::QueueRegistry;
 use crate::queue::source::{AutoQueuesError, QueueSource};
 use crate::traits::queue::QueueTrait;
@@ -16,14 +18,14 @@ use std::sync::Arc;
 pub struct AutoQueues {
     registry: Arc<QueueRegistry>,
     config: Config,
-    broker: Arc<PubSubBroker>,
+    broker: Arc<ZmqPubSubBroker>,
 }
 
 impl AutoQueues {
     /// Create a new AutoQueues instance with the given configuration
     pub fn new(config: Config) -> Self {
         let registry = Arc::new(QueueRegistry::new(config.clone()));
-        let broker = Arc::new(PubSubBroker::new(100));
+        let broker = Arc::new(ZmqPubSubBroker::new().expect("Failed to create ZMQ pubsub broker"));
 
         Self {
             registry,
@@ -49,6 +51,21 @@ impl AutoQueues {
         F: QueueSource<T> + 'static,
     {
         self.registry.add_queue(name, func)?;
+        Ok(self)
+    }
+
+    /// Add a queue with a function source and interval configuration
+    pub fn add_queue_fn_with_interval<T, F>(
+        &self,
+        name: &str,
+        func: F,
+        interval: IntervalConfig,
+    ) -> Result<&Self, AutoQueuesError>
+    where
+        T: Clone + Send + Sync + 'static,
+        F: QueueSource<T> + 'static,
+    {
+        self.registry.add_queue_with_interval(name, func, interval)?;
         Ok(self)
     }
 
@@ -78,12 +95,17 @@ impl AutoQueues {
         operation: &str,
         source_queues: Vec<String>,
     ) -> Result<&Self, AutoQueuesError> {
-        // Convert node strings to SocketAddr
+        // Convert node configurations to SocketAddr
         let nodes: Vec<SocketAddr> = self
             .config
             .nodes
+            .collect_nodes()
             .iter()
-            .filter_map(|node_str| node_str.parse().ok())
+            .filter_map(|(_name, node_config)| {
+                format!("{}:{}", node_config.host, node_config.communication_port)
+                    .parse()
+                    .ok()
+            })
             .collect();
 
         let source = crate::queue::source::DistributedAggregationSource::new(
@@ -153,14 +175,68 @@ impl AutoQueues {
     }
 
     /// Subscribe to a topic pattern
-    pub async fn subscribe<T>(&self, pattern: &str) -> Result<SubscriptionId, AutoQueuesError>
+    pub async fn subscribe<T>(&self, pattern: &str) -> Result<String, AutoQueuesError>
     where
         T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
     {
+        // Using localhost as default connect address for broker
+        let connect_addr = format!("tcp://localhost:{}", constants::network::DEFAULT_NODE_COMMUNICATION_PORT);
+        
         self.broker
-            .subscribe_exact(pattern.to_string())
+            .subscribe(pattern, &connect_addr)
             .await
             .map_err(|e| AutoQueuesError::SourceError(e.to_string()))
+    }
+    
+    /// Enable persistence for a queue
+    pub fn enable_persistence(&self, queue_name: &str) -> Result<&Self, AutoQueuesError> {
+        self.registry.enable_persistence(queue_name)?;
+        Ok(self)
+    }
+    
+    /// Add queue with function source and persistence enabled
+    pub fn add_queue_fn_with_persistence<T, F>(
+        &self,
+        name: &str,
+        func: F,
+        interval: IntervalConfig,
+    ) -> Result<&Self, AutoQueuesError>
+    where
+        T: Clone + Send + Sync + 'static,
+        F: QueueSource<T> + 'static,
+    {
+        self.registry.add_queue_with_interval_and_persistence(name, func, interval, true)?;
+        Ok(self)
+    }
+    
+    /// Add expression queue with persistence enabled
+    pub fn add_queue_expr_with_persistence(
+        &self,
+        name: &str,
+        expression: &str,
+        source_queue: &str,
+        trigger_on_push: bool,
+        trigger_interval_ms: Option<u64>,
+    ) -> Result<&Self, AutoQueuesError> {
+        self.registry.add_expression_queue_with_persistence(
+            name,
+            expression,
+            source_queue,
+            trigger_on_push,
+            trigger_interval_ms,
+            true,
+        )?;
+        Ok(self)
+    }
+    
+    /// Graceful shutdown - flushes all persistence data
+    pub fn shutdown(&self) {
+        println!("Shutting down AutoQueues...");
+        
+        // Flush all persistence handles
+        self.registry.shutdown_all_persistence();
+        
+        println!("All data flushed to disk.");
     }
 }
 
