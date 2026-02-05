@@ -70,6 +70,11 @@ impl AutoQueues {
         T: Clone + Send + Sync + 'static,
         F: QueueSource<T> + 'static,
     {
+        // Check if queue already exists
+        if self.registry.queue_exists(name) {
+            return Err(AutoQueuesError::QueueAlreadyExists(name.to_string()));
+        }
+        
         self.registry.add_queue_with_interval(name, func, interval)?;
         Ok(self)
     }
@@ -83,6 +88,11 @@ impl AutoQueues {
         trigger_on_push: bool,
         trigger_interval_ms: Option<u64>,
     ) -> Result<&Self, AutoQueuesError> {
+        // Check if queue already exists
+        if self.registry.queue_exists(name) {
+            return Err(AutoQueuesError::QueueAlreadyExists(name.to_string()));
+        }
+        
         self.registry.add_expression_queue(
             name,
             expression,
@@ -215,6 +225,11 @@ impl AutoQueues {
         T: Clone + Send + Sync + 'static,
         F: QueueSource<T> + 'static,
     {
+        // Check if queue already exists
+        if self.registry.queue_exists(name) {
+            return Err(AutoQueuesError::QueueAlreadyExists(name.to_string()));
+        }
+        
         self.registry.add_queue_with_interval_and_persistence(name, func, interval, true)?;
         Ok(self)
     }
@@ -228,6 +243,11 @@ impl AutoQueues {
         trigger_on_push: bool,
         trigger_interval_ms: Option<u64>,
     ) -> Result<&Self, AutoQueuesError> {
+        // Check if queue already exists
+        if self.registry.queue_exists(name) {
+            return Err(AutoQueuesError::QueueAlreadyExists(name.to_string()));
+        }
+        
         self.registry.add_expression_queue_with_persistence(
             name,
             expression,
@@ -299,6 +319,110 @@ mod integration_tests {
         let autoqueues = AutoQueues::default();
         autoqueues.add_queue_fn::<f64, _>("test_queue", || 42.0).unwrap();
         let result = autoqueues.add_queue_fn::<f64, _>("test_queue", || 100.0);
+        assert!(matches!(result, Err(AutoQueuesError::QueueAlreadyExists(_))));
+    }
+    
+    // T-020a: duplicate queue names with add_queue_fn_with_interval
+    #[test]
+    fn test_add_duplicate_queue_with_interval_returns_error() {
+        let autoqueues = AutoQueues::default();
+        use crate::queue::interval::IntervalConfig;
+        
+        // Create first queue with interval
+        autoqueues.add_queue_fn_with_interval::<f64, _>(
+            "test_queue", 
+            || 42.0, 
+            IntervalConfig::Constant(1000)
+        ).unwrap();
+        
+        // Try to create duplicate queue with interval
+        let result = autoqueues.add_queue_fn_with_interval::<f64, _>(
+            "test_queue", 
+            || 100.0, 
+            IntervalConfig::Constant(500)
+        );
+        
+        assert!(matches!(result, Err(AutoQueuesError::QueueAlreadyExists(_))));
+    }
+    
+    // T-020b: duplicate queue names with add_queue_fn_with_persistence
+    #[test]
+    fn test_add_duplicate_queue_with_persistence_returns_error() {
+        let autoqueues = AutoQueues::default();
+        use crate::queue::interval::IntervalConfig;
+        
+        // Create first queue with persistence
+        autoqueues.add_queue_fn_with_persistence::<f64, _>(
+            "test_queue", 
+            || 42.0, 
+            IntervalConfig::Constant(1000)
+        ).unwrap();
+        
+        // Try to create duplicate queue with persistence
+        let result = autoqueues.add_queue_fn_with_persistence::<f64, _>(
+            "test_queue", 
+            || 100.0, 
+            IntervalConfig::Constant(500)
+        );
+        
+        assert!(matches!(result, Err(AutoQueuesError::QueueAlreadyExists(_))));
+    }
+    
+    // T-020c: duplicate queue names with add_queue_expr
+    #[tokio::test]
+    async fn test_add_duplicate_queue_expr_returns_error() {
+        let autoqueues = AutoQueues::default();
+        
+        // Create source queue first
+        autoqueues.add_queue_fn::<f64, _>("source_queue", || 10.0).unwrap();
+        
+        // Create first expression queue
+        autoqueues.add_queue_expr(
+            "test_queue",
+            "source_queue * 2",
+            "source_queue",
+            true,
+            Some(1000)
+        ).unwrap();
+        
+        // Try to create duplicate expression queue
+        let result = autoqueues.add_queue_expr(
+            "test_queue",
+            "source_queue * 3",
+            "source_queue",
+            true,
+            Some(500)
+        );
+        
+        assert!(matches!(result, Err(AutoQueuesError::QueueAlreadyExists(_))));
+    }
+    
+    // T-020d: duplicate queue names with add_queue_expr_with_persistence
+    #[tokio::test]
+    async fn test_add_duplicate_queue_expr_with_persistence_returns_error() {
+        let autoqueues = AutoQueues::default();
+        
+        // Create source queue first
+        autoqueues.add_queue_fn::<f64, _>("source_queue", || 10.0).unwrap();
+        
+        // Create first expression queue with persistence
+        autoqueues.add_queue_expr_with_persistence(
+            "test_queue",
+            "source_queue * 2",
+            "source_queue",
+            true,
+            Some(1000)
+        ).unwrap();
+        
+        // Try to create duplicate expression queue with persistence
+        let result = autoqueues.add_queue_expr_with_persistence(
+            "test_queue",
+            "source_queue * 3",
+            "source_queue",
+            true,
+            Some(500)
+        );
+        
         assert!(matches!(result, Err(AutoQueuesError::QueueAlreadyExists(_))));
     }
 
