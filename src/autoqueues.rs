@@ -50,6 +50,11 @@ impl AutoQueues {
         T: Clone + Send + Sync + 'static,
         F: QueueSource<T> + 'static,
     {
+        // Check if queue already exists
+        if self.registry.queue_exists(name) {
+            return Err(AutoQueuesError::QueueAlreadyExists(name.to_string()));
+        }
+        
         self.registry.add_queue(name, func)?;
         Ok(self)
     }
@@ -190,6 +195,11 @@ impl AutoQueues {
     
     /// Enable persistence for a queue
     pub fn enable_persistence(&self, queue_name: &str) -> Result<&Self, AutoQueuesError> {
+        // Check if queue exists
+        if !self.registry.queue_exists(queue_name) {
+            return Err(AutoQueuesError::QueueNotFound(queue_name.to_string()));
+        }
+        
         self.registry.enable_persistence(queue_name)?;
         Ok(self)
     }
@@ -237,6 +247,59 @@ impl AutoQueues {
         self.registry.shutdown_all_persistence();
         
         println!("All data flushed to disk.");
+    }
+}
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use crate::config::Config;
+
+    #[test]
+    fn test_new_with_valid_config() {
+        let config = Config::default();
+        let autoqueues = AutoQueues::new(config);
+        
+        // Verify we can add a queue (proves broker and registry work)
+        let result = autoqueues.add_queue_fn::<f64, _>("test", || 42.0);
+        assert!(result.is_ok());
+        
+        // Verify queue exists
+        assert!(autoqueues.registry.queue_exists("test"));
+    }
+
+    #[test]
+    fn test_pop_nonexistent_queue_returns_error() {
+        let autoqueues = AutoQueues::default();
+        // Try to pop from queue that doesn't exist
+        let result = autoqueues.pop::<f64>("nonexistent_queue");
+        // Should return QueueNotFound error specifically
+        assert!(matches!(result, Err(AutoQueuesError::QueueNotFound(_))));
+    }
+
+    // T-017: try_pop on non-existent queue
+    #[test]
+    fn test_try_pop_nonexistent_queue_returns_error() {
+        let autoqueues = AutoQueues::default();
+        let result = autoqueues.try_pop::<f64>("nonexistent_queue");
+        assert!(matches!(result, Err(AutoQueuesError::QueueNotFound(_))));
+    }
+
+    // T-018: enable_persistence on non-existent queue
+    #[test]
+    fn test_enable_persistence_nonexistent_returns_error() {
+        let autoqueues = AutoQueues::default();
+        let result = autoqueues.enable_persistence("nonexistent_queue");
+        assert!(matches!(result, Err(AutoQueuesError::QueueNotFound(_))));
+    }
+
+    // T-020: duplicate queue names
+    #[test]
+    fn test_add_duplicate_queue_returns_error() {
+        let autoqueues = AutoQueues::default();
+        autoqueues.add_queue_fn::<f64, _>("test_queue", || 42.0).unwrap();
+        let result = autoqueues.add_queue_fn::<f64, _>("test_queue", || 100.0);
+        assert!(matches!(result, Err(AutoQueuesError::QueueAlreadyExists(_))));
     }
 }
 

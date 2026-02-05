@@ -263,12 +263,46 @@ mod tests {
     }
 
     #[test]
-    fn test_persistence_config_default() {
-        let config = PersistenceConfig::default();
-        assert_eq!(config.data_dir, PathBuf::from("data"));
-        assert_eq!(config.max_file_size, 100 * 1024 * 1024);
-        assert_eq!(config.flush_interval_ms, 1000);
-        assert_eq!(config.include_timestamp, true);
-        assert_eq!(config.compress_old, false);
+    fn test_persistence_config_works_in_practice() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let data_dir = temp_dir.path().join("test_data");
+
+        let config = PersistenceConfig {
+            data_dir: data_dir.clone(),
+            max_file_size: 1024, // Small size for testing
+            flush_interval_ms: 100,
+            include_timestamp: true,
+            compress_old: false,
+        };
+
+        // Create persistence handle
+        let persistence = QueuePersistence::new("test_queue", config);
+        assert!(persistence.is_ok());
+
+        let mut persistence = persistence.unwrap();
+
+        // Persist some data
+        persistence.persist(42.5);
+        persistence.persist(100.0);
+
+        // Shutdown to flush data
+        persistence.shutdown();
+
+        // Check that data was written
+        let log_file = data_dir.join("test_queue.log");
+        assert!(log_file.exists(), "Log file should exist");
+
+        let contents = fs::read_to_string(&log_file).expect("Failed to read log file");
+        assert!(
+            contents.contains("42.5"),
+            "Log should contain persisted data"
+        );
+        assert!(
+            contents.contains("100.0"),
+            "Log should contain persisted data"
+        );
     }
 }
