@@ -160,6 +160,11 @@ impl QueueRegistry {
         )
     }
 
+    /// Check if a queue exists in the registry
+    pub fn queue_exists(&self, name: &str) -> bool {
+        self.queues.contains_key(name)
+    }
+
     /// Get a queue from the registry
     pub fn get_queue<T: Clone + Send + Sync + 'static>(
         &self,
@@ -175,9 +180,7 @@ impl QueueRegistry {
                 )))
             }
         } else {
-            Err(AutoQueuesError::QueueError(QueueError::Other(
-                "Queue not found".to_string(),
-            )))
+            Err(AutoQueuesError::QueueNotFound(name.to_string()))
         }
     }
 

@@ -41,6 +41,8 @@ dashmap = "6.1"
 structopt = "0.3"
 rand_chacha = "0.9.0"
 openraft-macros = "0.9.21"
+log = "0.4"
+tempfile = { version = "3.24.0", default-features = false, features = ["nightly"] }
 
 [dev-dependencies]
 criterion = "0.8"
