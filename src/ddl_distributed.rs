@@ -166,11 +166,24 @@ impl DdlDistributed {
     }
     
     /// Get or create a topic queue
-    fn get_or_create_topic(&self, topic: &str) -> Arc<TopicQueue> {
-        self.topics
-            .entry(topic.to_string())
-            .or_insert_with(|| Arc::new(TopicQueue::new(self.config.buffer_size)))
-            .clone()
+    fn get_or_create_topic(&self, topic: &str) -> Result<Arc<TopicQueue>, DdlError> {
+        // Check if topic already exists (allowed)
+        if let Some(queue) = self.topics.get(topic) {
+            return Ok(queue.clone());
+        }
+        
+        // Check topic limit (0 means unlimited)
+        if self.config.max_topics > 0 && self.topics.len() >= self.config.max_topics {
+            return Err(DdlError::TopicLimitExceeded {
+                max: self.config.max_topics,
+                current: self.topics.len(),
+            });
+        }
+        
+        // Create new topic
+        let queue = Arc::new(TopicQueue::new(self.config.buffer_size));
+        self.topics.insert(topic.to_string(), queue.clone());
+        Ok(queue)
     }
     
     /// Shutdown the DDL instance and all associated tasks
@@ -188,7 +201,7 @@ impl DDL for DdlDistributed {
             return Err(DdlError::NotOwner(topic.to_string()));
         }
         
-        let queue = self.get_or_create_topic(topic);
+        let queue = self.get_or_create_topic(topic)?;
         let id = queue.push(topic.to_string(), payload)?;
         
         // Get entry to send to subscribers
@@ -246,8 +259,8 @@ impl DDL for DdlDistributed {
     }
     
     async fn subscribe(&self, topic: &str) -> Result<EntryStream, DdlError> {
-        // In a real implementation, we would check if the topic exists or can be created
-        // For now, we'll just create a channel and return a stream
+        // Ensure topic exists (create if needed)
+        self.get_or_create_topic(topic)?;
         
         let buffer_size = self.config.subscription_buffer_size;
         let (sender, receiver) = bounded(buffer_size);

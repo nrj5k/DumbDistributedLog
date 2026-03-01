@@ -117,6 +117,8 @@ pub struct DdlConfig {
     pub owned_topics: Vec<String>,
     /// Ring buffer size per topic
     pub buffer_size: usize,
+    /// Maximum number of topics allowed (0 = unlimited)
+    pub max_topics: usize,
     /// Whether to enable gossip discovery
     pub gossip_enabled: bool,
     /// Address to bind gossip to
@@ -140,6 +142,7 @@ impl Default for DdlConfig {
             peers: vec![],
             owned_topics: vec![],
             buffer_size: 1024 * 1024, // 1MB default
+            max_topics: 10000, // Default limit of 10,000 topics
             gossip_enabled: false,
             gossip_bind_addr: "0.0.0.0:0".to_string(),
             gossip_bootstrap: vec![],
@@ -165,6 +168,9 @@ pub enum DdlError {
     
     #[error("Buffer full for topic {0}")]  
     BufferFull(String),
+    
+    #[error("Topic limit exceeded: max {max}, current {current}")]
+    TopicLimitExceeded { max: usize, current: usize },
     
     #[error("Network error: {0}")]
     Network(String),
