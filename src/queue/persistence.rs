@@ -81,23 +81,34 @@ impl QueuePersistence {
             .unwrap()
             .as_millis() as u64;
 
-        // Send to background thread - don't block on failure
-        let _ = self.sender.send(PersistEvent::Data { timestamp, value });
+        // Send to background thread - log warning on failure
+        if let Err(e) = self.sender.send(PersistEvent::Data { timestamp, value }) {
+            log::warn!("Failed to send data to persistence thread: {}", e);
+        }
     }
 
     /// Request flush (best effort)
     pub fn flush(&self) {
-        let _ = self.sender.send(PersistEvent::Flush);
+        if let Err(e) = self.sender.send(PersistEvent::Flush) {
+            log::warn!("Failed to send flush request to persistence thread: {}", e);
+        }
     }
 
     /// Graceful shutdown with flush - call this before dropping
     pub fn shutdown(&mut self) {
         // Send shutdown signal
-        let _ = self.sender.send(PersistEvent::Shutdown);
+        if let Err(e) = self.sender.send(PersistEvent::Shutdown) {
+            log::error!(
+                "Failed to send shutdown signal to persistence thread: {}",
+                e
+            );
+        }
 
         // Wait for thread to finish (with timeout)
         if let Some(handle) = self.handle.take() {
-            let _ = handle.join(); // Wait for flush to complete
+            if let Err(e) = handle.join() {
+                log::error!("Failed to join persistence thread: {:?}", e);
+            }
         }
     }
 }
@@ -106,9 +117,13 @@ impl Drop for QueuePersistence {
     fn drop(&mut self) {
         // If not already shut down gracefully, do best effort
         if self.handle.is_some() {
-            let _ = self.sender.send(PersistEvent::Shutdown);
+            if let Err(e) = self.sender.send(PersistEvent::Shutdown) {
+                log::warn!("Failed to send shutdown signal in drop: {}", e);
+            }
             if let Some(handle) = self.handle.take() {
-                let _ = handle.join();
+                if let Err(e) = handle.join() {
+                    log::warn!("Failed to join persistence thread in drop: {:?}", e);
+                }
             }
         }
     }
