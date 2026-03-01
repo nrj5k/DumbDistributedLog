@@ -78,7 +78,7 @@ impl QueuePersistence {
     pub fn persist(&self, value: f64) {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_millis() as u64;
 
         // Send to background thread - log warning on failure
