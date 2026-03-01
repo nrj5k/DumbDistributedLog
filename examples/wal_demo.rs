@@ -4,6 +4,7 @@
 //! entries survive crashes by writing to disk before acknowledging.
 
 use ddl::{DdlWithWal, DdlConfig, DDLTrait, EntryStream}; // Import the trait for methods
+use ddl::traits::ddl::BackpressureMode;
 use tempfile::TempDir;
 
 #[tokio::main]
@@ -26,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         data_dir: data_dir.to_path_buf(),
         wal_enabled: true,
         subscription_buffer_size: 1000,
-        subscription_backpressure: ddl::BackpressureMode::DropOldest,
+        subscription_backpressure: BackpressureMode::DropOldest,
     };
     
     // Create DDL with WAL
