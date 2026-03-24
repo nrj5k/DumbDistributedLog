@@ -1,4 +1,4 @@
-use autoqueues::config::{Config, ConfigGenerator};
+use ddl::config::{Config, ConfigGenerator};
 
 fn main() {
     // Test the new flexible NodeTable

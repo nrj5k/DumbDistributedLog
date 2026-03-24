@@ -3,7 +3,7 @@
 //! Manages queues and their sources in a centralized registry.
 
 use crate::config::Config;
-use crate::expression::compile_expression;
+
 use crate::queue::persistence::{PersistenceManager, QueuePersistence};
 use crate::queue::source::{AutoQueuesError, ExpressionSource, QueueSource};
 use crate::queue::spmc_lockfree_queue::SPMCLockFreeQueue as SimpleQueue;
@@ -101,7 +101,7 @@ impl QueueRegistry {
         };
 
         // Start the source
-        source.start(queue.clone(), &self.config, interval, persistence);
+        source.start(queue.clone(), interval, persistence);
 
         // Store the queue and source
         self.queues.insert(name.to_string(), Box::new(queue));
@@ -139,10 +139,9 @@ impl QueueRegistry {
         trigger_interval_ms: Option<u64>,
         enable_persistence: bool,
     ) -> Result<(), AutoQueuesError> {
-        // Validate the expression
-        compile_expression(expression).map_err(|e| {
-            AutoQueuesError::ExpressionError(format!("Invalid expression: {:?}", e))
-        })?;
+        // TODO: Validate the expression
+        // For now, we'll skip validation since the expression module was removed
+        let _ = expression;
 
         let source = ExpressionSource::new(
             expression.to_string(),

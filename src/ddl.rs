@@ -17,13 +17,15 @@ struct SubscriberInfo {
 }
 
 /// Per-topic queue with ring buffer semantics
+/// Align to cache line boundary to prevent false sharing
+#[repr(align(64))]
 struct TopicQueue {
-    /// Entries stored in ring buffer
-    entries: Mutex<Vec<Option<Entry>>>,
-    /// Write position (monotonically increasing) - protected by entries mutex
+    /// Write position (monotonically increasing) - placed first for cache alignment
     write_pos: AtomicU64,
     /// Last acknowledged position
     ack_pos: AtomicU64,
+    /// Entries stored in ring buffer
+    entries: Mutex<Vec<Option<Entry>>>,
     /// Buffer size (power of 2 for efficient wrap-around)
     capacity: usize,
     /// Mask for efficient modulo operations
@@ -42,9 +44,9 @@ impl TopicQueue {
         }
         
         Self {
-            entries: Mutex::new(entries),
             write_pos: AtomicU64::new(0),
             ack_pos: AtomicU64::new(0),
+            entries: Mutex::new(entries),
             capacity,
             mask,
         }
@@ -52,17 +54,20 @@ impl TopicQueue {
     
     /// Append an entry, returns the entry ID
     fn push(&self, topic: String, payload: Vec<u8>) -> Result<u64, DdlError> {
+        // Convert Vec<u8> to Arc<[u8]> for zero-copy sharing
+        let payload_arc = Arc::from(payload);
+        
         // Lock entries first - this provides mutual exclusion for both
         // the write_pos increment and the entry write, ensuring atomicity
         let mut entries = self.entries.lock()
             .map_err(|_| DdlError::LockPoisoned(topic.clone()))?;
         
         // Get current position inside the lock
-        let id = self.write_pos.load(Ordering::SeqCst);
+        let id = self.write_pos.load(Ordering::Relaxed);
         let index = (id as usize) & self.mask;
         
         // Check if we're overwriting unacknowledged data
-        let ack = self.ack_pos.load(Ordering::SeqCst);
+        let ack = self.ack_pos.load(Ordering::Acquire);
         if id >= ack + self.capacity as u64 {
             return Err(DdlError::BufferFull(topic));
         }
@@ -74,18 +79,14 @@ impl TopicQueue {
                 .unwrap_or_default()
                 .as_nanos() as u64,
             topic,
-            payload,
+            payload: payload_arc,
         };
         
         // Store the entry BEFORE incrementing write_pos
         // This ensures readers can't see incomplete entries
         entries[index] = Some(entry);
         
-        // Memory barrier: ensure entry is written before making it visible
-        // The mutex unlock provides this barrier, but we also increment atomically
-        std::sync::atomic::fence(Ordering::Release);
-        
-        // Now make the entry visible by incrementing write_pos
+        // Now make the entry visible by incrementing write_pos with Release ordering
         self.write_pos.store(id + 1, Ordering::Release);
         
         Ok(id)
@@ -94,8 +95,13 @@ impl TopicQueue {
     /// Read entry at specific ID
     /// Uses Acquire ordering to ensure we see the complete entry
     fn read(&self, id: u64) -> Option<Entry> {
-        // Memory barrier to synchronize with Release in push
-        std::sync::atomic::fence(Ordering::Acquire);
+        // Load the write position with Acquire ordering to synchronize with Release in push
+        let write_pos = self.write_pos.load(Ordering::Acquire);
+        
+        // Check if this ID exists
+        if id >= write_pos {
+            return None;
+        }
         
         let index = (id as usize) & self.mask;
         if let Ok(entries) = self.entries.lock() {
@@ -107,22 +113,22 @@ impl TopicQueue {
     
     /// Acknowledge entries up to this ID
     fn ack(&self, id: u64) {
-        // Simple: just move ack_pos forward
+        // Simple: just move ack_pos forward with relaxed ordering
         // In production: handle out-of-order acks
-        let current = self.ack_pos.load(Ordering::SeqCst);
+        let current = self.ack_pos.load(Ordering::Acquire);
         if id > current {
-            self.ack_pos.store(id, Ordering::SeqCst);
+            self.ack_pos.store(id, Ordering::Release);
         }
     }
     
     /// Get current position (next ID to write)
     fn position(&self) -> u64 {
-        self.write_pos.load(Ordering::SeqCst)
+        self.write_pos.load(Ordering::Relaxed)
     }
 }
 
-/// Dumb Distributed Log - Core Implementation
-pub struct Ddl {
+/// In-memory DDL implementation - Core Implementation
+pub struct InMemoryDdl {
     config: DdlConfig,
     /// Map of topic_name -> TopicQueue
     topics: Arc<DashMap<String, Arc<TopicQueue>>>,
@@ -130,7 +136,7 @@ pub struct Ddl {
     subscribers: Arc<DashMap<String, Vec<SubscriberInfo>>>,
 }
 
-impl Ddl {
+impl InMemoryDdl {
     /// Create new DDL instance
     pub fn new(config: DdlConfig) -> Self {
         let topics = Arc::new(DashMap::new());
@@ -177,7 +183,7 @@ impl Ddl {
 }
 
 #[async_trait]
-impl DDL for Ddl {
+impl DDL for InMemoryDdl {
     async fn push(&self, topic: &str, payload: Vec<u8>) -> Result<u64, DdlError> {
         // Check ownership (for now, allow all topics)
         // In distributed version: check if we own this topic
@@ -240,6 +246,74 @@ impl DDL for Ddl {
         Ok(id)
     }
     
+    async fn push_batch(&self, topic: &str, payloads: Vec<Vec<u8>>) -> Result<u64, DdlError> {
+        if payloads.is_empty() {
+            return Err(DdlError::BufferFull(topic.to_string()));
+        }
+        
+        let queue = self.get_or_create_topic(topic)?;
+        let mut last_id = 0;
+        
+        // Collect all entries to send to subscribers
+        let mut entries = Vec::with_capacity(payloads.len());
+        
+        // Push all entries
+        for payload in payloads {
+            let id = queue.push(topic.to_string(), payload)?;
+            last_id = id;
+            
+            // Get entry to send to subscribers
+            if let Some(entry) = queue.read(id) {
+                entries.push(entry);
+            }
+        }
+        
+        // Notify subscribers with backpressure handling for all entries
+        if let Some(senders) = self.subscribers.get(topic) {
+            for entry in entries {
+                for info in senders.value().iter() {
+                    match self.config.subscription_backpressure {
+                        BackpressureMode::Block => {
+                            if let Err(e) = info.sender.send(entry.clone()) {
+                                log::debug!("Subscriber disconnected: {:?}", e);
+                            }
+                        }
+                        BackpressureMode::DropOldest => {
+                            match info.sender.try_send(entry.clone()) {
+                                Err(TrySendError::Full(_)) => {
+                                    log::debug!("Subscriber buffer full for topic {}, dropping message", topic);
+                                }
+                                Err(TrySendError::Disconnected(_)) => {
+                                    log::debug!("Subscriber disconnected for topic {}", topic);
+                                }
+                                Ok(_) => {}
+                            }
+                        }
+                        BackpressureMode::DropNewest => {
+                            if info.sender.is_full() {
+                                log::debug!("Subscriber buffer full for topic {}, dropping newest", topic);
+                                continue;
+                            }
+                            if let Err(e) = info.sender.try_send(entry.clone()) {
+                                log::debug!("Send error for topic {}: {:?}", topic, e);
+                            }
+                        }
+                        BackpressureMode::Error => {
+                            if info.sender.is_full() {
+                                return Err(DdlError::SubscriberBufferFull(topic.to_string()));
+                            }
+                            if let Err(e) = info.sender.try_send(entry.clone()) {
+                                log::debug!("Send error for topic {}: {:?}", topic, e);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        Ok(last_id)
+    }
+    
     async fn subscribe(&self, topic: &str) -> Result<EntryStream, DdlError> {
         // Ensure topic exists (create if needed)
         self.get_or_create_topic(topic)?;
@@ -293,7 +367,7 @@ mod tests {
     
     #[tokio::test]
     async fn test_push_and_subscribe() {
-        let ddl = Ddl::default();
+        let ddl = InMemoryDdl::default();
         
         // Subscribe first
         let mut stream = ddl.subscribe("test").await.unwrap();
@@ -305,12 +379,12 @@ mod tests {
         // Receive
         let entry = stream.next().unwrap();
         assert_eq!(entry.id, 0);
-        assert_eq!(entry.payload, vec![1, 2, 3]);
+        assert_eq!(&*entry.payload, &[1, 2, 3]);
     }
     
     #[tokio::test]
     async fn test_ack() {
-        let ddl = Ddl::default();
+        let ddl = InMemoryDdl::default();
         
         let id = ddl.push("test", vec![1]).await.unwrap();
         ddl.ack("test", id).await.unwrap();
@@ -327,7 +401,7 @@ mod tests {
         config.subscription_buffer_size = 2;
         config.subscription_backpressure = BackpressureMode::DropOldest;
         
-        let ddl = Ddl::new(config);
+        let ddl = InMemoryDdl::new(config);
         let stream = ddl.subscribe("test").await.unwrap();
         
         // Push more messages than buffer can hold
@@ -351,7 +425,7 @@ mod tests {
         config.subscription_buffer_size = 2;
         config.subscription_backpressure = BackpressureMode::Error;
         
-        let ddl = Ddl::new(config);
+        let ddl = InMemoryDdl::new(config);
         let _stream = ddl.subscribe("test").await.unwrap();
         
         // Fill the buffer
@@ -373,7 +447,7 @@ mod tests {
         config.subscription_buffer_size = 2;
         config.subscription_backpressure = BackpressureMode::DropNewest;
         
-        let ddl = Ddl::new(config);
+        let ddl = InMemoryDdl::new(config);
         let _stream = ddl.subscribe("test").await.unwrap();
         
         // Push messages - should succeed without errors
@@ -391,7 +465,7 @@ mod tests {
         config.subscription_buffer_size = 1;
         config.subscription_backpressure = BackpressureMode::Block;
         
-        let ddl = Arc::new(Ddl::new(config));
+        let ddl = Arc::new(InMemoryDdl::new(config));
         let stream = ddl.subscribe("test").await.unwrap();
         
         // Push one message - should succeed immediately
@@ -402,12 +476,12 @@ mod tests {
         // in a unit test without causing deadlock. We'll just verify the config works.
         
         let entry = stream.try_next().unwrap();
-        assert_eq!(entry.payload, vec![1]);
+        assert_eq!(&*entry.payload, &[1]);
     }
     
     #[tokio::test]
     async fn test_multiple_subscribers_same_topic() {
-        let ddl = Ddl::default();
+        let ddl = InMemoryDdl::default();
         
         let stream1 = ddl.subscribe("test").await.unwrap();
         let stream2 = ddl.subscribe("test").await.unwrap();
@@ -418,8 +492,8 @@ mod tests {
         let entry1 = stream1.try_next().unwrap();
         let entry2 = stream2.try_next().unwrap();
         
-        assert_eq!(entry1.payload, vec![42]);
-        assert_eq!(entry2.payload, vec![42]);
+        assert_eq!(&*entry1.payload, &[42]);
+        assert_eq!(&*entry2.payload, &[42]);
     }
     
     #[tokio::test]
@@ -427,7 +501,7 @@ mod tests {
         let mut config = DdlConfig::default();
         config.subscription_backpressure = BackpressureMode::Block;
         
-        let ddl = Ddl::new(config);
+        let ddl = InMemoryDdl::new(config);
         let stream = ddl.subscribe("test").await.unwrap();
         
         assert_eq!(stream.backpressure_mode(), BackpressureMode::Block);
@@ -435,7 +509,7 @@ mod tests {
         let mut config2 = DdlConfig::default();
         config2.subscription_backpressure = BackpressureMode::Error;
         
-        let ddl2 = Ddl::new(config2);
+        let ddl2 = InMemoryDdl::new(config2);
         let stream2 = ddl2.subscribe("test").await.unwrap();
         
         assert_eq!(stream2.backpressure_mode(), BackpressureMode::Error);

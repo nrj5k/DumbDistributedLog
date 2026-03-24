@@ -1,4 +1,4 @@
-# AutoQueues Product Requirements Document
+# DDL Product Requirements Document
 
 **Version:** 0.1.0
 **Status:** In Development
@@ -8,12 +8,14 @@
 
 ## Executive Summary
 
-AutoQueues is a **high-performance distributed queue system** designed for low-latency live telemetry collection and feedback systems. It provides two APIs:
+DDL (Dumb Distributed Log) is a **high-performance distributed log system** designed for low-latency live telemetry collection and feedback systems. It provides a simple trait-based API:
 
-1. **Server Mode** - Redis-like server for push/subscribe operations
-2. **Programmatic Mode** - Library API for building custom queue topologies
+1. **Core Trait** - `DDL` trait for push, subscribe, and ack operations
+2. **Multiple Implementations** - TCP transport, in-memory, mock for testing
 
 **Primary Use Case:** Live telemetry collection for real-time feedback loops in HPC/ML systems.
+
+**Core Philosophy:** Simple interfaces wrapping powerful, proven tools.
 
 ---
 
@@ -21,27 +23,46 @@ AutoQueues is a **high-performance distributed queue system** designed for low-l
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           AutoQueues Architecture                           │
+│                           DDL Architecture                                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│   ┌─────────────────────┐       ┌─────────────────────────────────────────┐ │
-│   │   atomic.* queues   │       │         cluster.* queues               │ │
-│   │   (SPMC per-metric) │       │     (Leader-published aggregations)    │ │
-│   │                     │       │                                         │ │
-│   │  Producer:          │       │  Leader:                                │ │
-│   │    Node collector   │       │    - Subscribes to atomic.*            │ │
-│   │                     │       │    - Computes aggregations             │ │
-│   │  Consumers:         │       │    - Publishes to cluster.* via ZMQ    │ │
-│   │    - Leader         │       │                                         │ │
-│   │    - Subscribers    │       │  Subscribers:                           │ │
-│   │    - Monitors       │       │    - Dashboards                         │ │
-│   └──────────┬──────────┘       │    - Alerting systems                   │ │
-│              │                  │    - Reporting                          │ │
-│              ▼                  └─────────────────┬───────────────────────┘ │
-│   ┌─────────────────────┐                            │                     │
-│   │  openraft Leader    │◄───────────────────────────┘                     │
-│   │  Election           │                                                  │
-│   └─────────────────────┘                                                  │
+│   ┌─────────────────────────────────────────────────────────────────────┐  │
+│   │                         DDL Cluster                                  │  │
+│   │                                                                       │  │
+│   │   ┌──────────────┐     ┌──────────────┐     ┌──────────────┐       │  │
+│   │   │   Node 1     │     │   Node 2     │     │   Node 3     │       │  │
+│   │   │              │     │              │     │              │       │  │
+│   │   │  ┌─────────┐ │     │  ┌─────────┐ │     │  ┌─────────┐ │       │  │
+│   │   │  │  Topic  │ │     │  │  Topic  │ │     │  │  Topic  │ │       │  │
+│   │   │  │ Shard 0 │ │◄───►│  │ Shard 1 │ │◄───►│  │ Shard 2 │ │       │  │
+│   │   │  └─────────┘ │     │  └─────────┘ │     │  └─────────┘ │       │  │
+│   │   │      │       │     │      │       │     │      │       │       │  │
+│   │   │      ▼       │     │      ▼       │     │      ▼       │       │  │
+│   │   │  ┌─────────┐ │     │  ┌─────────┐ │     │  ┌─────────┐ │       │  │
+│   │   │  │   Raft  │ │     │  │   Raft  │ │     │  │   Raft  │ │       │  │
+│   │   │  │  State  │ │     │  │  State  │ │     │  │  State  │ │       │  │
+│   │   │  └─────────┘ │     │  └─────────┘ │     │  └─────────┘ │       │  │
+│   │   └──────┬───────┘     └──────┬───────┘     └──────┬───────┘       │  │
+│   │          │                    │                    │                │  │
+│   │          └────────────────────┼────────────────────┘                │  │
+│   │                               │                                     │  │
+│   │                        Raft Consensus                               │  │
+│   │                   (Shard Assignment Only)                           │  │
+│   │                               │                                     │  │
+│   │                               ▼                                     │  │
+│   │                    ┌─────────────────────┐                          │  │
+│   │                    │   Shard Map         │                          │  │
+│   │                    │ (who owns what)     │                          │  │
+│   │                    └─────────────────────┘                          │  │
+│   └─────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│   Producers                    Consumers                                   │
+│      │                              │                                     │
+│      ▼                              ▼                                     │
+│   ┌─────────┐                  ┌─────────┐                               │
+│   │  push   │                  │subscribe│                               │
+│   │"topic"  │                  │"pattern"│                               │
+│   └─────────┘                  └─────────┘                               │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -50,68 +71,48 @@ AutoQueues is a **high-performance distributed queue system** designed for low-l
 
 ## Core Concepts
 
-### 1. atomic.* Queues (Single Producer, Multiple Consumer)
+### 1. Topics (Single Producer, Multiple Consumer)
 
 | Property | Value |
 |----------|-------|
 | Pattern | SPMC (Single Producer, Multiple Consumers) |
-| Scope | Local to node |
+| Scope | Distributed across cluster |
 | Overflow | Drop oldest (circular buffer behavior) |
 | Implementation | Lock-free (atomic indices), no mutex contention |
 | Latency Target | < 10μs per operation |
 
 #### Invariants
 
-- **Exactly one producer** per queue - the node's metric collector
+- **Exactly one producer** per topic or use external coordination
 - **Multiple consumers** can read without coordination
 - Each consumer tracks its own read position
 - Pre-allocated circular buffer (no heap allocation, no reallocation)
 
-#### Pattern
+#### Topic Naming
 
 ```
-atomic.cpu → CPU usage from this node (local-only)
-atomic.memory → Memory usage from this node
-atomic.temperature → Temperature sensor reading
-atomic.vibration → Vibration sensor reading
+metrics.cpu → CPU usage metrics
+metrics.memory → Memory usage metrics
+alerts.high → High-severity alerts
+events.* → All events (wildcard)
 ```
 
-### 2. cluster.* Queues (Leader-Published Aggregations)
+### 2. Shard Assignment (Raft)
 
 | Property | Value |
 |----------|-------|
-| Pattern | Leader-computed, ZMQ pub/sub published |
-| Scope | Cluster-wide (all nodes) |
-| Leader | Elected via openraft |
-| Subscribers | Many concurrent (dashboards, alerts, autoscaling) |
-| Latency Target | < 1ms for aggregation computation |
-
-#### Pattern
-
-```
-cluster.cpu_avg → Average CPU across all nodes
-cluster.temperature_max → Maximum temperature across cluster
-cluster.memory_p95 → 95th percentile memory usage
-```
-
-### 3. Leader Election (openraft)
-
-| Property | Value |
-|----------|-------|
-| Scope | One leader per cluster |
-| Responsibility | Manage all cluster.* aggregations |
+| Scope | One Raft group per cluster |
+| Responsibility | Assign topics to nodes |
 | Protocol | Raft consensus |
-| Storage | Durable state for aggregation configuration |
+| Storage | Shard map only (not data) |
 
 ---
 
-## Queue Implementation Options
-
-### Option A: SPMC Lock-Free Queue (Recommended)
+## Topic Implementation: SPMC Lock-Free Log
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    SPMC Lock-Free Queue                         │
+│                    SPMC Lock-Free Log                           │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │   Producer:                    Consumers:                       │
@@ -144,39 +145,34 @@ cluster.memory_p95 → 95th percentile memory usage
 - More complex implementation
 - Need to handle slow consumers (don't catch up indefinitely)
 
-### Option B: SPSC with Cloning
-
-**Single Producer, Single Consumer** where consumer clones data for multiple subscribers.
-
-**Advantages:**
-- Simplest implementation
-- Guaranteed ordering
-
-**Disadvantages:**
-- Must copy on every read
-- Latency increases with subscriber count
-
 ---
 
-## Expression Engine
+## Trait-Based API Design
 
-Per design decision: **Use evalexpr** instead of custom parser.
+DDL uses a trait-based design for maximum flexibility:
 
 ```rust
-// Expression examples using evalexpr
-let expr = evalexpr::build_expression("local.cpu_percent > 80");
-let context = hashmap!{
-    "local.cpu_percent" => Value::Float(85.0),
-};
-let result = expr.eval_with_context(&context)?;
+/// Core trait for DDL implementations
+#[async_trait]
+pub trait DDL {
+    /// Push data to a topic
+    async fn push(&self, topic: &str, payload: &[u8]) -> Result<u64, DdlError>;
+
+    /// Subscribe to topics matching a pattern
+    async fn subscribe(&self, pattern: &str) -> Result<Box<dyn SubscriptionStream>, DdlError>;
+
+    /// Acknowledge an entry
+    async fn ack(&self, topic: &str, entry_id: u64) -> Result<(), DdlError>;
+
+    /// Create a new topic
+    async fn create_topic(&self, topic: &str, capacity: usize) -> Result<(), DdlError>;
+}
 ```
 
-**Supported Operations:**
-- Arithmetic: `+`, `-`, `*`, `/`, `^`
-- Comparisons: `>`, `>=`, `<`, `<=`, `==`, `!=`
-- Logical: `&&`, `||`, `!`
-- Math functions: `abs`, `sqrt`, `pow`, `round`, `floor`, `ceil`
-- Trigonometric: `sin`, `cos`, `tan`
+**Implementations:**
+- `DdlTcp` - TCP transport for distributed deployment
+- `DdlInMemory` - In-memory for testing and single-node
+- `MockDDL` - For unit testing
 
 ---
 
@@ -184,12 +180,11 @@ let result = expr.eval_with_context(&context)?;
 
 | Metric | Target | Notes |
 |--------|--------|-------|
-| Queue push (atomic.*) | < 10μs | SPMC, lock-free |
-| Queue pop (atomic.*) | < 5μs | Per consumer |
-| Aggregation compute | < 1ms | Leader computes cluster.* |
-| Pub/sub publish | < 500μs | ZMQ publish |
-| Leader election | < 100ms | openraft fail-over |
-| Memory per queue | ~8KB | 1024 capacity, 8-byte values |
+| Topic push | < 10μs | SPMC, lock-free |
+| Topic subscribe | < 5μs | Per consumer |
+| Shard migration | < 50ms | Data transfer only |
+| Raft commit (shard map) | < 10ms | Rare operation |
+| Memory per topic | ~8KB | 1024 capacity, 8-byte values |
 
 ---
 

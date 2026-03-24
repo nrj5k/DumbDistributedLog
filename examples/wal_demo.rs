@@ -3,7 +3,7 @@
 //! This demonstrates the Write-Ahead Log feature that ensures
 //! entries survive crashes by writing to disk before acknowledging.
 
-use ddl::{DdlWithWal, DdlConfig, DDLTrait, EntryStream}; // Import the trait for methods
+use ddl::{DdlWithWal, DdlConfig, DDL, EntryStream};
 use ddl::traits::ddl::BackpressureMode;
 use tempfile::TempDir;
 

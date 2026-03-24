@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::queue::{QueueError, QueueServerHandle};
+use crate::queue::QueueError;
 use crate::traits::queue::QueueTrait;
 use crate::types::{QueueData, Timestamp};
 
@@ -183,22 +183,6 @@ impl<T: Clone + Send + Sync + 'static, const N: usize> QueueTrait for ShardedRin
     /// Get the current number of items in the queue
     fn get_size(&self) -> usize {
         self.get_size_internal()
-    }
-
-    /// Start autonomous server
-    fn start_server(self) -> Result<QueueServerHandle, QueueError> {
-        // For ring-buffer implementation, we don't need a server
-        // but we need to maintain API compatibility
-        use tokio::sync::oneshot;
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
-
-        let join_handle = tokio::spawn(async move {
-            // The ring-buffer queue doesn't need a background task
-            // but we wait for shutdown signal for API compatibility
-            let _ = shutdown_rx.await;
-        });
-
-        Ok(QueueServerHandle::new(shutdown_tx, join_handle))
     }
 }
 

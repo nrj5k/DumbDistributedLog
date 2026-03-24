@@ -1,71 +1,58 @@
 //! Aggregation Demo
 //!
 //! This example demonstrates how to use the distributed aggregation system
-//! in AutoQueues to compute global metrics across multiple nodes.
+//! in DDL to compute global metrics across multiple nodes.
 
-use autoqueues::autoqueues::AutoQueues;
-use autoqueues::config::Config;
+use ddl::ddl_distributed::DdlDistributed;
+use ddl::traits::ddl::{DDL, DdlConfig};
 use std::thread;
 use std::time::Duration;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting Aggregation Demo");
 
     // Create configuration
-    let config = Config::default();
+    let mut config = DdlConfig::default();
+    config.owned_topics = vec!["cpu_node1".to_string(), "memory_node1".to_string()];
+    config.gossip_enabled = true;
+    config.gossip_bind_addr = "127.0.0.1:0".to_string(); // Let OS assign port
 
-    // Create AutoQueues instance
-    let autoqueues = AutoQueues::new(config);
+    // Create DDL instance
+    let ddl = DdlDistributed::new(config).await?;
 
-    // Add local metric queues
-    autoqueues.add_queue_fn("cpu_node1", || {
-        // Simulate CPU usage data
-        let cpu = 20.0 + (rand::random::<f64>() * 60.0);
-        println!("Publishing CPU usage: {:.2}%", cpu);
-        cpu
-    })?;
+    // Push some sample data (simulate metrics)
+    let cpu_data = b"CPU usage: 45.2%".to_vec();
+    match ddl.push("cpu_node1", cpu_data).await {
+        Ok(id) => println!("Pushed CPU data with ID: {}", id),
+        Err(e) => println!("Error pushing CPU data: {}", e),
+    }
 
-    autoqueues.add_queue_fn("memory_node1", || {
-        // Simulate memory usage data
-        let memory = 30.0 + (rand::random::<f64>() * 50.0);
-        println!("Publishing Memory usage: {:.2}%", memory);
-        memory
-    })?;
+    let memory_data = b"Memory usage: 65.8%".to_vec();
+    match ddl.push("memory_node1", memory_data).await {
+        Ok(id) => println!("Pushed memory data with ID: {}", id),
+        Err(e) => println!("Error pushing memory data: {}", e),
+    }
 
-    // Add distributed aggregation queues (replaces add_global_aggregation)
-    autoqueues.add_distributed_queue("global_cpu_avg", "avg", vec!["cpu_node1".to_string()])?;
-    autoqueues.add_distributed_queue("global_cpu_max", "max", vec!["cpu_node1".to_string()])?;
-    autoqueues.add_distributed_queue("global_cpu_min", "min", vec!["cpu_node1".to_string()])?;
-
-    // Add an expression-based queue (alternative to add_global_expression_aggregation)
-    autoqueues.add_queue_expr(
-        "health_score",
-        "(100 - source1) + (100 - source2)",
-        "cpu_node1,memory_node1", // comma-separated source queues
-        true,                     // trigger on push
-        None,                     // no specific interval
-    )?;
-
-    // Start all queues
-    autoqueues.start();
+    // Subscribe and read data back
+    match ddl.subscribe("cpu_node1").await {
+        Ok(stream) => {
+            if let Some(entry) = stream.try_next() {
+                println!("Received CPU entry: {:?}", String::from_utf8_lossy(&entry.payload));
+                // Acknowledge the entry
+                match ddl.ack("cpu_node1", entry.id).await {
+                    Ok(_) => println!("Acknowledged CPU entry"),
+                    Err(e) => println!("Error acknowledging CPU entry: {}", e),
+                }
+            }
+        },
+        Err(e) => println!("Error subscribing to CPU: {}", e),
+    }
 
     println!("Queues started. Waiting for data...");
 
-    // Run for 10 seconds
-    thread::sleep(Duration::from_secs(10));
-
-    // Try to read some aggregated values
-    match autoqueues.pop::<f64>("global_cpu_avg") {
-        Ok(Some(avg_cpu)) => println!("Average CPU across cluster: {:.2}%", avg_cpu),
-        Ok(None) => println!("No aggregated CPU data yet"),
-        Err(e) => println!("Error reading CPU aggregation: {}", e),
-    }
-
-    match autoqueues.pop::<f64>("health_score") {
-        Ok(Some(health_score)) => println!("Health score: {:.2}", health_score),
-        Ok(None) => println!("No health score data yet"),
-        Err(e) => println!("Error reading health score: {}", e),
-    }
+    // Run for 2 seconds
+    thread::sleep(Duration::from_secs(2));
 
     println!("Demo completed.");
     Ok(())

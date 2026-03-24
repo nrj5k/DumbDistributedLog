@@ -1,30 +1,44 @@
-//! AutoQueues Basic Example
+//! DDL Basic Example
 
-use autoqueues::config::ConfigGenerator;
-use autoqueues::AutoQueues;
+use ddl::{InMemoryDdl, DDL, DdlConfig};
 
-fn main() {
-    println!("AutoQueues Example\n");
+#[tokio::main]
+async fn main() {
+    println!("DDL Example\n");
 
-    // Generate a local test config with 1 node
-    let config = ConfigGenerator::local_test(1, 6967);
+    // Create a basic config
+    let config = DdlConfig::default();
 
-    let queues = AutoQueues::new(config);
-    println!("Configured");
+    // Create DDL instance (in-memory implementation)
+    let ddl = InMemoryDdl::new(config);
+    println!("DDL configured");
 
-    // Function-based queue (auto-populates every 1000ms)
-    queues.add_queue_fn::<f64, _>("cpu", || 42.0);
-    println!("Created cpu queue");
+    // Push some data to a topic
+    let data = b"Hello, DDL!".to_vec();
+    match ddl.push("greeting", data).await {
+        Ok(id) => println!("Pushed entry with ID: {}", id),
+        Err(e) => println!("Error pushing: {}", e),
+    }
 
-    // Start queues
-    queues.start();
-    println!("Started");
-
-    // Pop data (synchronous)
-    match queues.try_pop::<f64>("cpu") {
-        Ok(Some(cpu)) => println!("CPU: {:.1}%", cpu),
-        Ok(None) => println!("CPU queue empty"),
-        Err(e) => println!("Error: {}", e),
+    // Subscribe to the topic
+    match ddl.subscribe("greeting").await {
+        Ok(stream) => {
+            // Try to receive data
+            if let Some(entry) = stream.try_next() {
+                println!("Received entry: ID={}, Topic={}, Payload={:?}", 
+                         entry.id, entry.topic, String::from_utf8_lossy(&entry.payload));
+                
+                // Acknowledge the entry
+                if let Err(e) = ddl.ack("greeting", entry.id).await {
+                    println!("Error acknowledging: {}", e);
+                } else {
+                    println!("Acknowledged entry");
+                }
+            } else {
+                println!("No data received");
+            }
+        },
+        Err(e) => println!("Error subscribing: {}", e),
     }
 
     println!("Done");

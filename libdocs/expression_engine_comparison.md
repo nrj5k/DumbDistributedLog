@@ -2,11 +2,13 @@
 
 ## Overview
 
-This document provides a detailed analysis of expression evaluation libraries available in Rust as of 2025. For the autoqueues project, which currently uses the abandoned `eval` crate, this analysis will help determine the best alternative based on features, performance, and suitability for the project's requirements.
+This document provides a detailed analysis of expression evaluation libraries available in Rust as of 2025. For the DDL project, which previously used the abandoned `eval` crate, this analysis will help determine the best alternative based on features, performance, and suitability for projects that build on DDL.
 
 ## Current State: The `eval` Crate
 
-The autoqueues project currently uses the `eval` crate, which has been abandoned since September 2020. The crate description explicitly states: "[ABANDONED] Expression evaluator for Rust."
+The DDL project previously used the `eval` crate, which has been abandoned since September 2020. The crate description explicitly states: "[ABANDONED] Expression evaluator for Rust."
+
+**Note:** DDL core no longer includes an expression engine. This document is for projects that build expression processing on top of DDL.
 
 ### Features of the `eval` Crate
 
@@ -291,12 +293,12 @@ According to benchmarks in the crate documentation:
 | Performance | Good | Excellent | Fair | Excellent | Unknown |
 | Dependencies | Yes | None | Yes | None | Yes |
 
-## AutoQueues Requirements Assessment
+## DDL-Based Project Requirements Assessment
 
-Based on the autoqueues project requirements:
+For projects building expression processing on top of DDL:
 
 1. **Fast evaluation of mathematical expressions**: All libraries meet this
-2. **Support for variables (local.*, global.*)**: Required by all alternatives except mexe
+2. **Support for variables**: Required by all alternatives except mexe
 3. **Custom function support**: Required by all alternatives except mexe
 4. **Error handling with meaningful messages**: All libraries provide this
 5. **Zero-copy or minimal allocation for performance**: fasteval and mexe excel here
@@ -306,11 +308,11 @@ Based on the autoqueues project requirements:
 
 ### Primary Recommendation: evalexpr
 
-For the autoqueues project, **evalexpr** is the recommended replacement for the abandoned `eval` crate because:
+For projects building on DDL, **evalexpr** is the recommended expression engine because:
 
 1. **Feature Compatibility**: It provides the closest match to the current `eval` crate's functionality
 2. **Active Development**: Unlike the abandoned `eval` crate, evalexpr is actively maintained
-3. **Variable Support**: Full support for local.* and global.* variable patterns
+3. **Variable Support**: Full support for variable patterns (similar to DDL topic names)
 4. **Custom Functions**: Complete support for user-defined functions matching sqrt, abs, pow, max, min requirements
 5. **Precompilation**: Offers performance optimization for repeated evaluations
 6. **Error Handling**: Comprehensive error types with meaningful messages
@@ -329,7 +331,7 @@ However, it would require more significant code changes to implement the full fe
 
 ### Not Recommended: meval and mexe
 
-- **meval**: Too limited in features for the autoqueues use case
+- **meval**: Too limited in features for DDL-based expression processing
 - **mexe**: Lacks required features like variables and custom functions
 
 ## Migration Considerations
@@ -367,8 +369,10 @@ However, it would require more significant code changes to implement the full fe
 
 ## Conclusion
 
-For the autoqueues project, **evalexpr** is the best choice for replacing the abandoned `eval` crate. It provides the most comprehensive feature set, maintains API similarities, and offers an active development community. The migration should be relatively straightforward, and it provides capabilities for future expansion.
+For DDL-based projects, **evalexpr** is the best choice for expression evaluation. It provides the most comprehensive feature set, maintains API similarities, and offers an active development community. The migration should be relatively straightforward, and it provides capabilities for future expansion.
 
 If performance becomes a critical bottleneck, **fasteval** would be the next best option, but it would require more significant implementation changes.
 
-Both **meval** and **mexe** are not suitable for the autoqueues project due to their limited feature sets that don't meet the requirements for variables and custom functions.
+Both **meval** and **mexe** are not suitable for DDL-based projects due to their limited feature sets that don't meet the requirements for variables and custom functions.
+
+**Note:** DDL core does not include expression evaluation. This is intentional - DDL provides a simple log foundation, and expression engines can be built on top as separate, optional components.

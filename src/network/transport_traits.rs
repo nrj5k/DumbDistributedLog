@@ -3,24 +3,10 @@
 //! Minimal traits for high-performance networking with sub-ms latency targets.
 //! Designed for RDMA compatibility and zero-copy operations.
 
-use std::net::SocketAddr;
 use std::time::Instant;
 
-/// Transport errors for HPC use cases
-#[derive(Debug, thiserror::Error)]
-pub enum TransportError {
-    #[error("Connection lost to {remote_addr}")]
-    ConnectionLost { remote_addr: SocketAddr },
-
-    #[error("Network unreachable")]
-    NetworkUnreachable,
-
-    #[error("Invalid message format")]
-    InvalidMessage,
-
-    #[error("Timeout")]
-    Timeout,
-}
+// Re-export the canonical TransportError from tcp.rs
+pub use crate::network::tcp::TransportError;
 
 /// Transport type enumeration
 #[derive(Debug, Clone, PartialEq)]

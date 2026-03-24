@@ -4,6 +4,7 @@
 //! All implementations (in-memory, with WAL, with gossip) must implement this.
 
 use async_trait::async_trait;
+use std::sync::Arc;
 
 /// A single entry in the distributed log
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -14,8 +15,8 @@ pub struct Entry {
     pub timestamp: u64,
     /// Which topic this entry belongs to
     pub topic: String,
-    /// The actual data
-    pub payload: Vec<u8>,
+    /// The actual data (shared ownership for zero-copy)
+    pub payload: Arc<[u8]>,
 }
 
 /// Stream of entries from a subscription
@@ -75,6 +76,18 @@ pub trait DDL: Send + Sync {
     /// 
     /// Returns the entry ID if successful
     async fn push(&self, topic: &str, payload: Vec<u8>) -> Result<u64, DdlError>;
+    
+    /// Push multiple entries to a topic in a batch
+    /// 
+    /// Returns the last entry ID if successful
+    async fn push_batch(&self, topic: &str, payloads: Vec<Vec<u8>>) -> Result<u64, DdlError> {
+        // Default implementation for backward compatibility
+        let mut last_id = 0;
+        for payload in payloads {
+            last_id = self.push(topic, payload).await?;
+        }
+        Ok(last_id)
+    }
     
     /// Subscribe to a topic (exact match only)
     ///

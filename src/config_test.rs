@@ -1,29 +1,29 @@
 #[cfg(test)]
 mod tests {
-    use autoqueues::config::{Config, ConfigGenerator, NodeConfig, NodeTable};
+    use ddl::config::{Config, ConfigGenerator, NodeConfig, NodeTable};
     use std::collections::HashMap;
 
     #[test]
     fn test_source_type_parse() {
-        let func = autoqueues::config::SourceType::parse("function:cpu").unwrap();
+        let func = ddl::config::SourceType::parse("function:cpu").unwrap();
         match func {
-            autoqueues::config::SourceType::Function(name) => assert_eq!(name, "cpu"),
+            ddl::config::SourceType::Function(name) => assert_eq!(name, "cpu"),
             _ => panic!("Expected Function variant"),
         }
 
-        let expr = autoqueues::config::SourceType::parse("expression:x * 2").unwrap();
+        let expr = ddl::config::SourceType::parse("expression:x * 2").unwrap();
         match expr {
-            autoqueues::config::SourceType::Expression(e) => assert_eq!(e, "x * 2"),
+            ddl::config::SourceType::Expression(e) => assert_eq!(e, "x * 2"),
             _ => panic!("Expected Expression variant"),
         }
     }
 
     #[test]
     fn test_source_type_variables() {
-        let func = autoqueues::config::SourceType::parse("function:cpu").unwrap();
+        let func = ddl::config::SourceType::parse("function:cpu").unwrap();
         assert_eq!(func.variables(), vec!["cpu"]);
 
-        let expr = autoqueues::config::SourceType::parse("expression:cpu + memory").unwrap();
+        let expr = ddl::config::SourceType::parse("expression:cpu + memory").unwrap();
         let vars = expr.variables();
         assert!(vars.contains(&"cpu".to_string()));
         assert!(vars.contains(&"memory".to_string()));

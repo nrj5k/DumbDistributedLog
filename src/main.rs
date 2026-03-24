@@ -1,3 +1,3 @@
 fn main() {
-    println!("Checking AutoQueues compilation...");
+    println!("Checking DDL compilation...");
 }

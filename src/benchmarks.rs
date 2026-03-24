@@ -5,13 +5,12 @@
 
 #[cfg(test)]
 mod benchmarks {
-    use std::collections::HashMap;
+    
     use std::sync::Arc;
     use std::thread;
     use std::time::Instant;
 
     use crate::{
-        expression::{compile_expression, evaluate_expression},
         queue::{lockfree::ShardedRingBuffer, spmc_lockfree_queue::SPMCLockFreeQueue},
         traits::queue::QueueTrait,
     };
@@ -77,56 +76,6 @@ mod benchmarks {
             min_ns,
             max_ns
         );
-    }
-
-    // ============ EXPRESSION BENCHMARKS ============
-
-    #[test]
-    fn bench_expression_compile() {
-        println!("\n=== EXPRESSION EVALUATION BENCHMARKS ===");
-        println!(
-            "{:28} | {:>8} | {:>8} | {:>8} | {:>8} | {:>17}",
-            "Benchmark", "Avg us", "p95 us", "Max us", "Min us", "Range ns"
-        );
-        println!("{}", "-".repeat(78));
-
-        benchmark_with_stats("compile_expression", RUNS, || {
-            let start = Instant::now();
-            let _ = compile_expression("a + b").unwrap();
-            start.elapsed().as_nanos()
-        });
-    }
-
-    #[test]
-    fn bench_expression_eval_simple() {
-        let vars: HashMap<String, f64> = vec![("a", 50.0), ("b", 30.0)]
-            .into_iter()
-            .map(|(k, v)| (k.to_string(), v))
-            .collect();
-
-        benchmark_with_stats("eval_simple (a+b)", RUNS, || {
-            let start = Instant::now();
-            let _ = evaluate_expression("a + b", &vars).unwrap();
-            start.elapsed().as_nanos()
-        });
-    }
-
-    #[test]
-    fn bench_expression_eval_10_vars() {
-        let mut vars = HashMap::new();
-        for i in 0..10 {
-            vars.insert(format!("v{}", i), i as f64 * 10.0);
-        }
-
-        benchmark_with_stats("eval_10_vars", RUNS, || {
-            let start = Instant::now();
-            let _ = evaluate_expression(
-                "(v0 + v1 + v2 + v3 + v4 + v5 + v6 + v7 + v8 + v9) / 10.0",
-                &vars,
-            )
-            .unwrap();
-            start.elapsed().as_nanos()
-        });
     }
 
     // ============ SEQUENTIAL QUEUE BENCHMARKS ============
@@ -215,7 +164,7 @@ mod benchmarks {
 
         for &num_consumers in CONSUMER_COUNTS {
             let name = format!("spmc_concurrent_{}pull", num_consumers);
-            let items_per_consumer = ITEMS / num_consumers;
+            let _items_per_consumer = ITEMS / num_consumers;
 
             // Collect timing samples manually instead of using benchmark_with_stats
             // to reduce stack pressure in debug builds with multiple thread spawns

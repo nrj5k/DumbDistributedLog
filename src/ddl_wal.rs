@@ -1,6 +1,6 @@
 //! DDL implementation with Write-Ahead Log durability
 
-use crate::ddl::Ddl;
+use crate::ddl::InMemoryDdl;
 use crate::wal::{WalManager, WalError};
 use crate::traits::ddl::{DDL, DdlConfig, DdlError, Entry, EntryStream};
 use async_trait::async_trait;
@@ -17,7 +17,7 @@ impl From<WalError> for DdlError {
 /// DDL with WAL durability
 pub struct DdlWithWal {
     /// In-memory DDL
-    inner: Ddl,
+    inner: InMemoryDdl,
     /// WAL manager
     wal: WalManager,
     /// Sync interval (every N entries)
@@ -29,7 +29,7 @@ pub struct DdlWithWal {
 impl DdlWithWal {
     /// Create new DDL with WAL
     pub fn new(config: DdlConfig, data_dir: &Path) -> Result<Self, DdlError> {
-        let inner = Ddl::new(config);
+        let inner = InMemoryDdl::new(config);
         let wal = WalManager::new(data_dir);
         
         Ok(Self {
@@ -55,7 +55,7 @@ impl DDL for DdlWithWal {
                 .unwrap_or_default()
                 .as_nanos() as u64,
             topic: topic.to_string(),
-            payload,
+            payload: payload.into(), // Convert Vec<u8> to Arc<[u8]>
         };
         
         // Append to WAL - propagate errors since data won't be persisted on crash

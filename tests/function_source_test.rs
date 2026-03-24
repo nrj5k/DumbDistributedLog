@@ -1,9 +1,7 @@
-use autoqueues::config::Config;
-use autoqueues::queue::interval::IntervalConfig;
-use autoqueues::queue::source::{FunctionSource, QueueSource};
-use autoqueues::queue::spmc_lockfree_queue::SPMCLockFreeQueue as SimpleQueue;
+use ddl::queue::interval::IntervalConfig;
+use ddl::queue::source::{FunctionSource, QueueSource};
+use ddl::queue::spmc_lockfree_queue::SPMCLockFreeQueue as SimpleQueue;
 use std::sync::{Arc, RwLock};
-use std::thread;
 use std::time::Duration;
 use tokio;
 
@@ -30,11 +28,10 @@ async fn test_function_source_pause_resume() {
         counter_clone.fetch_add(1, Ordering::Relaxed)
     });
     
-    let config = Config::default();
     let interval_config = IntervalConfig::Constant(50); // 50ms interval for testing (more stable)
     
     // Start source, verify it produces data
-    source.start(queue.clone(), &config, interval_config, None);
+    source.start(queue.clone(), interval_config, None);
     tokio::time::sleep(Duration::from_millis(100)).await;
     let count_before = counter.load(Ordering::Relaxed);
     assert!(count_before > 0, "Should have generated some data initially");
@@ -67,11 +64,10 @@ async fn test_function_source_remove() {
         counter_clone.fetch_add(1, Ordering::Relaxed)
     });
     
-    let config = Config::default();
     let interval_config = IntervalConfig::Constant(50); // 50ms interval for testing (more stable)
     
     // Start source, verify it produces data
-    source.start(queue.clone(), &config, interval_config, None);
+    source.start(queue.clone(), interval_config, None);
     tokio::time::sleep(Duration::from_millis(100)).await;
     let count_before = counter.load(Ordering::Relaxed);
     assert!(count_before > 0, "Should have generated some data initially");
@@ -102,9 +98,8 @@ async fn test_function_source_integration() {
     });
     
     // Start the source
-    let config = Config::default();
     let interval_config = IntervalConfig::Constant(5); // 5ms interval for fast testing
-    source.start(queue.clone(), &config, interval_config, None);
+    source.start(queue.clone(), interval_config, None);
     
     // Let it run for a bit to generate some data
     tokio::time::sleep(Duration::from_millis(30)).await;

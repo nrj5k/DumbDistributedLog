@@ -41,7 +41,7 @@
 //! | Cache misses | Minimal| Contiguous memory, predictable access        |
 
 use crate::constants::memory;
-use crate::queue::{QueueError, QueueServerHandle};
+use crate::queue::QueueError;
 use crate::traits::queue::QueueTrait;
 use crate::types::{QueueData, Timestamp};
 use circular_buffer::CircularBuffer;
@@ -68,16 +68,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// - The oldest entry is overwritten (circular buffer behavior)
 /// - Consumers may miss overwritten data if they haven't read it yet
 /// - This is the desired behavior for telemetry (latest data matters most)
+#[repr(align(64))]
 pub struct SPMCLockFreeQueue<T, const N: usize = { memory::MAX_QUEUE_DEPTH }>
 where
     T: Clone + Send + Sync + 'static,
 {
+    /// Current tail position (producer writes here)
+    /// Placed first for cache line alignment to prevent false sharing
+    tail: AtomicUsize,
     /// Internal buffer using circular-buffer crate
     /// Pre-allocated, contiguous memory, zero heap allocation after creation
     buffer: CircularBuffer<N, QueueData<T>>,
-    /// Current tail position (producer writes here)
-    /// Only modified by producer thread using atomic operations
-    tail: AtomicUsize,
     /// Bitmask for efficient wrap-around (N - 1, since N is power of 2)
     /// Computed once at creation for performance
     mask: usize,
@@ -142,7 +143,11 @@ where
     pub fn dropped_count(&self) -> usize {
         // For circular buffer, dropped count would be total pushes - capacity
         let tail = self.tail.load(Ordering::Acquire);
-        if tail > N { tail - N } else { 0 }
+        if tail > N {
+            tail - N
+        } else {
+            0
+        }
     }
 
     /// Create a new consumer for this queue
@@ -217,23 +222,14 @@ where
         let consumer = self.consumer();
         consumer.drain().into_iter().map(|(_, v)| v).collect()
     }
-
-    fn start_server(self) -> Result<QueueServerHandle, QueueError> {
-        use tokio::sync::oneshot;
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
-
-        let join_handle = tokio::spawn(async move {
-            let _ = shutdown_rx.await;
-        });
-
-        Ok(QueueServerHandle::new(shutdown_tx, join_handle))
-    }
 }
 
 /// SPMCConsumer - Consumer handle for SPMC Lock-Free Queue
 ///
-/// Each consumer tracks its own read position independently.
+/// Each consumer tracks its own read head position independently.
 /// Multiple consumers can read from the same queue without coordination.
+/// Aligned to cache line boundary to prevent false sharing.
+#[repr(align(64))]
 pub struct SPMCConsumer<'queue, T, const N: usize>
 where
     T: Clone + Send + Sync + 'static,
@@ -250,9 +246,15 @@ where
     _marker: PhantomData<&'queue ()>,
 }
 
-unsafe impl<'queue, T, const N: usize> Send for SPMCConsumer<'queue, T, N> where T: Clone + Send + Sync + 'static {}
+unsafe impl<'queue, T, const N: usize> Send for SPMCConsumer<'queue, T, N> where
+    T: Clone + Send + Sync + 'static
+{
+}
 
-unsafe impl<'queue, T, const N: usize> Sync for SPMCConsumer<'queue, T, N> where T: Clone + Send + Sync + 'static {}
+unsafe impl<'queue, T, const N: usize> Sync for SPMCConsumer<'queue, T, N> where
+    T: Clone + Send + Sync + 'static
+{
+}
 
 impl<'queue, T, const N: usize> SPMCConsumer<'queue, T, N>
 where

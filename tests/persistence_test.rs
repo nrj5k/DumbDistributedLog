@@ -1,7 +1,6 @@
 //! Test for the persistence functionality
 
-use autoqueues::config::Config;
-use autoqueues::queue::persistence::{PersistenceConfig, QueuePersistence};
+use ddl::queue::persistence::{PersistenceConfig, QueuePersistence};
 use std::fs;
 use std::path::Path;
 use std::thread;
@@ -54,7 +53,7 @@ fn test_persistence_basic() {
 
 #[test]
 fn test_persistence_manager() {
-    use autoqueues::queue::persistence::PersistenceManager;
+    use ddl::queue::persistence::PersistenceManager;
 
     // Create a temporary directory for testing
     let test_dir = "./test_data_manager";

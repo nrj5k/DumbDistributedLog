@@ -2,3 +2,4 @@
 
 pub mod queue;
 pub mod transport;
+pub mod ddl;

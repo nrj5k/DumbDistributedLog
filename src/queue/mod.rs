@@ -11,10 +11,9 @@ pub mod source;
 pub mod spmc_lockfree_queue;
 
 // Re-export main queue types
-pub use crate::traits::queue::QueueTrait;
 pub use interval::{AimdController, IntervalConfig};
 pub use lockfree::ShardedRingBuffer;
 pub use persistence::{PersistenceConfig, PersistenceManager, QueuePersistence};
 pub use queue_server::{QueueError, QueueServerHandle};
-pub use spmc_lockfree_queue::{SPMCConsumer, SPMCLockFreeQueue}; // NEW: Export SPMC queue
+pub use spmc_lockfree_queue::{SPMCConsumer, SPMCLockFreeQueue};
 

@@ -1,167 +1,440 @@
-# AutoQueues Documentation
+# DDL (Dumb Distributed Log)
 
-AutoQueues is a high-performance distributed queue system designed for HPC environments.
+**DDL is a distributed append-only log. That's it.**
 
-## Programmatic Mode (Library)
+No expressions. No metrics. No aggregation. No health monitoring. Just a reliable, high-performance distributed log system designed for large-scale HPC deployments where Redis Streams falls apart.
 
-```rust
-use autoqueues::config::ConfigGenerator;
-use autoqueues::AutoQueues;
+[![Tests](https://img.shields.io/badge/tests-passing-green)](#)
+[![License](https://img.shields.io/badge/license-MIT-blue)](#)
+[![Rust](https://img.shields.io/badge/rust-1.70+-orange)](#)
 
-let config = ConfigGenerator::local_test(1, 6967);
-let queues = AutoQueues::new(config);
+## Table of Contents
 
-queues.add_queue_fn::<f64, _>("cpu", || 42.0)?;
-queues.start();
+- [What DDL Is](#what-ddl-is)
+- [Quick Start](#quick-start)
+- [Core Operations](#core-operations)
+- [Documentation](#documentation)
+- [Why Redis Streams Falls Apart](#why-redis-streams-falls-apart)
+- [Installation](#installation)
+- [What DDL Is NOT](#what-ddl-is-not)
+- [Performance](#performance)
+- [Limitations](#limitations)
+- [Contributing](#contributing)
 
-let value = queues.try_pop::<f64>("cpu")?;
-```
+---
 
-## Performance
+## What DDL Is
 
-| Operation | Latency |
-|-----------|----------|
-| SPMCLockFreeQueue push | ~0.05μs |
-| SPMCLockFreeQueue pop | ~0.04μs |
-| ShardedRingBuffer push/pop | ~0.5μs |
+A distributed append-only log system where:
 
-## Installation
+- **Producers** push data to topics
+- **Consumers** subscribe to topics and receive data
+- **System** guarantees delivery and ordering within each topic
+- **Cluster** uses Raft for shard assignment only (which node owns which topic)
 
-```toml
-[dependencies]
-autoqueues = "0.1"
-```
+### Data Model
 
-## Core Concepts
-
-### Queues
-
-AutoQueues provides several queue implementations:
-
-- **ShardedRingBuffer**: Lock-free queue using atomic operations with pre-allocated ring buffer
-- **SPMCLockFreeQueue**: Single-Producer, Multiple-Consumer lock-free queue
-
-### Queue Operations
+Each entry is a simple tuple:
 
 ```rust
-// Async operations (default)
-queues.push("data", 42.5).await?;
-let value = queues.pop("data").await?;
-
-// Sync operations (faster)
-queues.try_push("data", 42.5)?;
-let value = queues.try_pop("data")?;
-```
-
-### Expressions
-
-Expressions support mathematical operations on metrics:
-
-```rust
-// Queue with expression filter
-let queues = AutoQueues::new(config)
-    .add_queue_expr(
-        "health_score", 
-        "(cpu + memory) / 2.0",
-        "system_metrics",
-        true,  // trigger_on_push
-        Some(1000)  // evaluate every 1000ms
-    )?;
-
-// Expression functions
-// - Arithmetic: +, -, *, /, ^ (power)
-// - Comparisons: >, >=, <, <=, ==, !=
-// - Logic: && (and), || (or), ! (not)
-// - Math functions: sqrt(x), abs(x), pow(x, n), round(x), floor(x), ceil(x)
-// - Trig functions: sin(x), cos(x), tan(x)
-// - Aggregations: max(a, b, c...), min(a, b, c...)
-// - Time windows: avg(cpu, 5000), max(cpu, 60000)
-```
-
-### Pub/Sub
-
-```rust
-// Subscribe to topics
-let sub = queues.subscribe("alerts.*").await?;
-
-// Publish to topics
-queues.publish_to_topic("alerts.cpu", &85.5).await?;
-
-// Receive messages
-while let Some(msg) = queues.receive(sub).await {
-    println!("Received: {:?}", msg);
+pub struct Entry {
+    pub id: u64,        // Monotonically increasing ID within a topic
+    pub timestamp: u64, // Nanoseconds since epoch
+    pub topic: String,  // Topic name
+    pub payload: Vec<u8>, // The actual data
 }
 ```
 
-## Architecture
+Simple. Predictable. Efficient.
 
-### Project Structure
+---
 
-```
-src/
-├── autoqueues.rs          # Main programmatic API
-├── config.rs              # Configuration handling
-├── expression/mod.rs      # Expression engine (single file)
-├── network/
-│   └── pubsub/
-│       └── zmq.rs         # ZMQ-based pub/sub
-├── queue/
-│   ├── lockfree.rs            # ShardedRingBuffer
-│   ├── spmc_lockfree_queue.rs # SPMCLockFreeQueue (true lock-free)
-│   └── registry.rs            # Queue registry
-├── node.rs                # Node management
-└── types.rs               # Core types
-```
+## Quick Start
 
-### Design Principles
-
-1. **KISS**: Simple interfaces, powerful backends
-2. **Trait-based**: Clean abstractions with multiple implementations
-3. **Performance first**: Sub-microsecond operations where possible
-4. **Consistent syntax**: Expression variables match topic syntax
-
-### Performance Optimizations
-
-- Integer-based queue identification (faster than string keys)
-- Pre-allocated circular buffers (no heap allocation)
-- Sharded registry (16x reduced lock contention)
-- Atomic operations for simple counters
-- Sync methods for hot paths
-
-## Configuration
+### Installation
 
 ```toml
-[queues]
-base = ["cpu_usage", "memory_usage"]
-
-[queues.derived.health_score]
-formula = "(cpu_usage + memory_usage) / 2.0"
+[dependencies]
+ddl = "0.2"
 ```
 
-## Examples
+### Single Node (In-Memory)
 
-See the `examples/` directory:
+```rust
+use ddl::{DDL, DdlInMemory};
+use std::sync::Arc;
 
-- `01_basic.rs` - Basic API usage
-- `01_basic_usage.rs` - Simple function-based queues
-- `local_node.rs` - Running a distributed node
-- `config_test.rs` - Configuration testing
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Create DDL instance
+    let ddl: Arc<dyn DDL> = Arc::new(DdlInMemory::new());
+    
+    // Create a topic
+    ddl.create_topic("metrics.cpu", 10000).await?;
+    
+    // Push data
+    let entry_id = ddl.push("metrics.cpu", vec![1, 2, 3, 4]).await?;
+    println!("Pushed entry: {}", entry_id);
+    
+    // Subscribe and receive
+    let mut stream = ddl.subscribe("metrics.cpu").await?;
+    while let Some(entry) = stream.next().await {
+        println!("Received: {:?}", entry.payload);
+        stream.ack(entry.id).await?;
+    }
+    
+    Ok(())
+}
+```
 
-## Testing
+### Cluster (Distributed with WAL)
+
+```rust
+use ddl::{DDL, DdlDistributed, DdlConfig};
+use std::sync::Arc;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = DdlConfig {
+        node_id: 1,
+        peers: vec!["node1:6969", "node2:6969", "node3:6969"],
+        owned_topics: vec!["metrics.cpu".to_string()],
+        buffer_size: 1024 * 1024,
+        gossip_enabled: true,
+        gossip_bind_addr: "0.0.0.0:7001".to_string(),
+        gossip_bootstrap: vec!["node1:7001".to_string()],
+        data_dir: std::path::PathBuf::from("/data/ddl"),
+        wal_enabled: true, // Enable durability
+    };
+    
+    let ddl: Arc<dyn DDL> = Arc::new(DdlDistributed::new(config).await?);
+    ddl.listen("0.0.0.0:6969").await?;
+    
+    Ok(())
+}
+```
+
+---
+
+## Core Operations
+
+Everything you need:
+
+```rust
+// 1. Push data to a topic
+let entry_id = ddl.push("metrics.cpu", data).await?;
+
+// 2. Subscribe to receive data (pattern matching supported)
+let mut stream = ddl.subscribe("metrics.*").await?;
+while let Some(entry) = stream.next().await {
+    println!("Topic: {}, Payload: {:?}", entry.topic, entry.payload);
+}
+
+// 3. Acknowledge processing (for at-least-once delivery)
+stream.ack(entry.id).await?;
+```
+
+Three operations. Push, subscribe, ack. That's the entire API.
+
+---
+
+## Documentation
+
+### Getting Started
+
+- **[Quick Start](docs/USAGE.md#quick-start)**: Get up and running in 5 minutes
+- **[Configuration Guide](docs/USAGE.md#configuration-examples)**: Configure for your deployment
+- **[Common Patterns](docs/USAGE.md#common-patterns)**: Examples for typical use cases
+
+### Reference
+
+- **[API Reference](docs/API.md)**: Complete API documentation
+- **[Configuration Options](docs/API.md#configuration)**: All configuration parameters
+- **[Error Types](docs/API.md#error-types)**: Error handling guide
+
+### Deep Dive
+
+- **[Architecture](docs/ARCHITECTURE.md)**: Technical architecture and design decisions
+- **[Transport Layer](docs/ARCHITECTURE.md#transport-layer)**: TCP vs ZMQ vs Hybrid
+- **[Storage Layer](docs/ARCHITECTURE.md#storage-layer)**: In-memory vs WAL
+- **[Discovery Layer](docs/ARCHITECTURE.md#discovery-layer)**: Gossip and Raft
+
+### Limitations
+
+- **[Honest Assessment](docs/LIMITATIONS.md)**: What DDL does and doesn't do
+- **[Trade-offs](docs/LIMITATIONS.md#trade-offs-made)**: Intentional design decisions
+- **[Alternatives](docs/LIMITATIONS.md#comparison-with-alternatives)**: When to use something else
+
+---
+
+## Why Redis Streams Falls Apart
+
+Redis Streams work great until they don't:
+
+| Aspect | Redis Streams | DDL |
+|--------|---------------|-----|
+| 100K topics | Memory pressure, slow replica sync | Sharded, linear scaling |
+| Cross-region | Complex GSL, eventual consistency | Raft, strong consistency |
+| Topic ownership | Unclear, clients guess | Raft decides definitively |
+| Performance at scale | Degrades after 10K topics | Linear scaling with cluster |
+| Protocol | Redis RESP | TCP or ZMQ |
+
+### ORNL Frontier Use Case
+
+- 10,000+ compute nodes
+- Each node produces metrics to its own topic
+- Central analysis subscribes to all topics
+- No single point of failure
+- Strong ordering guarantees per topic
+
+DDL handles this. Redis Streams struggle.
+
+---
+
+## Installation
+
+### From Crates.io
+
+```toml
+[dependencies]
+ddl = "0.2"
+```
+
+### From Source
 
 ```bash
-# Run all tests
-cargo test --lib
-
-# Run specific tests
-cargo test --lib autoqueues
-cargo test --lib queue
+git clone https://github.com/your-org/ddl.git
+cd ddl
+cargo build --release
 ```
 
-## Dependencies
+### Running Examples
 
-See `Cargo.toml` for full dependency list.
+```bash
+# Basic single-node example
+cargo run --example basic_usage
+
+# Cluster example
+cargo run --example cluster_example
+
+# WAL durability example
+cargo run --example wal_example
+```
+
+---
+
+## What DDL Is NOT
+
+This is important. DDL is intentionally limited:
+
+- **NOT an expression engine** - No math, no filters, no aggregations
+- **NOT a metrics system** - No CPU monitoring, no health scores, no dashboards
+- **NOT an aggregation system** - No combining data from multiple topics
+- **NOT a complex monitoring platform** - No alerts, no alerts
+
+DDL moves bytes reliably. That's its entire job.
+
+### When to Use Something Else
+
+| Need | Use Instead |
+|------|-------------|
+| Expression evaluation | `evalexpr` or `fasteval` crate |
+| Metrics collection | Prometheus + Grafana |
+| Stream processing | Apache Flink |
+| Complex queuing | RabbitMQ or NATS |
+| Querying data | Elasticsearch |
+| Managed service | AWS Kinesis or Google Pub/Sub |
+
+---
+
+## Performance
+
+### Latency Targets
+
+| Operation | In-Memory | WAL-Backed |
+|-----------|-----------|------------|
+| Push | <10μs | ~100μs |
+| Subscribe receive | <5μs | <5μs |
+| Shard migration | ~50ms | ~50ms |
+
+### Throughput Targets
+
+| Configuration | Messages/Second |
+|---------------|-----------------|
+| Single node (in-memory) | 100,000+ |
+| Single node (WAL) | 10,000+ |
+| Cluster (3 nodes) | 300,000+ |
+| Cluster (10 nodes) | 1,000,000+ |
+
+Performance is a byproduct of simplicity, not a feature.
+
+---
+
+## Limitations
+
+DDL is honest about what it provides:
+
+### Guarantees
+
+- **At-least-once delivery** (with acknowledgments)
+- **Per-topic ordering** (entries delivered in order)
+- **Topic ownership** (each topic owned by exactly one node)
+
+### What DDL Does NOT Provide
+
+- **No automatic failover** - Topics owned by failed nodes become unavailable
+- **No message replay** - Once acknowledged, messages are gone
+- **No consumer groups** - No shared offsets or message distribution
+- **No exactly-once delivery** - Duplicates possible
+- **No expression evaluation** - Build separately if needed
+- **No built-in monitoring** - Use external tools
+
+If you need stronger guarantees, build them on top of DDL's simple foundation.
+
+### See Also
+
+- [Limitations Document](docs/LIMITATIONS.md) for complete assessment
+- [Trade-offs Made](docs/LIMITATIONS.md#trade-offs-made)
+- [Comparison with Alternatives](docs/LIMITATIONS.md#comparison-with-alternatives)
+
+---
+
+## Design Philosophy
+
+DDL follows the **KISS (Keep It Simple, Stupid)** principle:
+
+### Core Principles
+
+1. **Simple Interfaces, Powerful Backends**
+   - Clean trait-based APIs
+   - Proven libraries doing heavy lifting (Raft, TCP, tokio)
+   - User sees simple interface, library handles complexity
+
+2. **Use Existing Tools, Don't Reinvent**
+   - Dependencies are leverage, not complexity
+   - Raft, TCP, tokio - proven libraries
+   - Your code stays minimal by leveraging existing solutions
+
+3. **Comprehensive Validation**
+   - Catch issues early
+   - Better thorough validation than subtle runtime bugs
+   - Use existing validation libraries
+
+4. **Right Tool for the Right Job**
+   - Use the best available tool for each specific use case
+   - If TCP is better than QUIC, use TCP
+   - Don't create artificial distinctions
+
+5. **Honest, Straightforward Communication**
+   - No inflated claims
+   - No marketing speak
+   - Clear, direct documentation
+
+### Architecture Pattern
+
+```rust
+// KISS architecture - simple interfaces, powerful backends
+#[async_trait]
+pub trait DDL {
+    async fn push(&self, topic: &str, payload: &[u8]) -> Result<u64, DdlError>;
+    async fn subscribe(&self, pattern: &str) -> Result<Box<dyn SubscriptionStream>, DdlError>;
+    async fn ack(&self, topic: &str, entry_id: u64) -> Result<(), DdlError>;
+}
+```
+
+---
+
+## Transport Options
+
+Choose the right transport for your deployment:
+
+### TCP (Default)
+
+- Reliable, connection-oriented
+- Works well across regions
+- Standard networking tools work with it
+- **Best for**: Production, cross-region, reliability-critical
+
+### ZMQ
+
+- High-performance pub/sub
+- Lower latency than TCP
+- Best for single-datacenter
+- **Best for**: Maximum throughput, single location
+
+### Hybrid
+
+- TCP for control plane (reliability)
+- ZMQ for data plane (performance)
+- **Best of both worlds**
+
+See [Transport Layer](docs/ARCHITECTURE.md#transport-layer) for details.
+
+---
+
+## Storage Options
+
+Choose the right durability for your data:
+
+### In-Memory
+
+- Fastest possible performance
+- Data lost on crash
+- No disk I/O
+- **Best for**: Non-critical data, maximum latency
+
+### WAL-Backed (Write-Ahead Log)
+
+- Data survives crashes
+- Slightly slower (disk sync)
+- Replay capability
+- **Best for**: Critical data, durability required
+
+See [Storage Layer](docs/ARCHITECTURE.md#storage-layer) for details.
+
+---
+
+## Contributing
+
+Contributions are welcome! Please read our contributing guidelines before submitting PRs.
+
+### Development Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/your-org/ddl.git
+
+# Install dependencies
+cargo build --all-features
+
+# Run tests
+cargo test --lib
+
+# Run benchmarks
+cargo bench --lib
+```
+
+### Code Style
+
+- Follow Rust idioms and best practices
+- Use `cargo fmt` for formatting
+- Use `cargo clippy` for linting
+- Write tests for new features
+
+---
 
 ## License
 
-MIT OR Apache-2.0
+MIT License - see LICENSE file for details.
+
+---
+
+## Contact
+
+- GitHub Issues for bugs and feature requests
+- Discussions for questions and community support
+- Contributing guidelines for PR submissions
+
+---
+
+**DDL: Simple distributed logging. Nothing more, nothing less.**

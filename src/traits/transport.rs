@@ -2,28 +2,9 @@
 //!
 
 use async_trait::async_trait;
-use std::net::SocketAddr;
 
-/// Transport errors
-#[derive(Debug, thiserror::Error)]
-pub enum TransportError {
-    #[error("Connection lost to {remote_addr}")]
-    ConnectionLost { remote_addr: SocketAddr },
-
-    #[error("Network unreachable")]
-    NetworkUnreachable,
-
-    #[error("Transport shutdown")]
-    TransportShutdown,
-
-    #[error("Serialization error: {source}")]
-    SerializationError {
-        source: Box<dyn std::error::Error + Send + Sync>,
-    },
-
-    #[error("Timeout after {duration:?}")]
-    Timeout { duration: std::time::Duration },
-}
+// Re-export the canonical TransportError from tcp.rs
+pub use crate::network::tcp::TransportError;
 
 /// Connection information
 #[derive(Debug, Clone)]

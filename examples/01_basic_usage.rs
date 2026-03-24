@@ -1,37 +1,44 @@
-//! Basic usage example for the AutoQueues API
+//! Basic usage example for the DDL API
 
-use autoqueues::config::ConfigGenerator;
-use autoqueues::AutoQueues;
+use ddl::{InMemoryDdl, DDL, DdlConfig};
 
-fn get_cpu_usage() -> f64 {
-    // In a real implementation, this would get actual CPU usage
-    42.0
-}
+#[tokio::main]
+async fn main() {
+    // Create a basic config
+    let config = DdlConfig::default();
 
-fn get_memory_usage() -> f64 {
-    // In a real implementation, this would get actual memory usage
-    60.0
-}
+    // Create DDL instance (in-memory implementation)
+    let ddl = InMemoryDdl::new(config);
 
-fn main() {
-    // Generate a local test config with 3 nodes
-    let config = ConfigGenerator::local_test(3, 6967);
+    // Push some data to CPU topic
+    let cpu_data = b"CPU usage: 42%".to_vec();
+    match ddl.push("cpu", cpu_data).await {
+        Ok(id) => println!("Pushed CPU data with ID: {}", id),
+        Err(e) => println!("Error pushing CPU data: {}", e),
+    }
 
-    // Create AutoQueues instance
-    let autoqueues = AutoQueues::new(config);
+    // Push some data to memory topic
+    let mem_data = b"Memory usage: 60%".to_vec();
+    match ddl.push("memory", mem_data).await {
+        Ok(id) => println!("Pushed memory data with ID: {}", id),
+        Err(e) => println!("Error pushing memory data: {}", e),
+    }
 
-    // Add a simple function-based queue for CPU
-    autoqueues
-        .add_queue_fn::<f64, _>("cpu", get_cpu_usage)
-        .expect("Failed to add CPU queue");
+    // Subscribe to CPU topic and read data
+    match ddl.subscribe("cpu").await {
+        Ok(stream) => {
+            if let Some(entry) = stream.try_next() {
+                println!("Received CPU entry: {:?}", String::from_utf8_lossy(&entry.payload));
+                // Acknowledge the entry
+                if let Err(e) = ddl.ack("cpu", entry.id).await {
+                    println!("Error acknowledging CPU entry: {}", e);
+                } else {
+                    println!("Acknowledged CPU entry");
+                }
+            }
+        },
+        Err(e) => println!("Error subscribing to CPU: {}", e),
+    }
 
-    // Add a function-based queue for memory
-    autoqueues
-        .add_queue_fn::<f64, _>("memory", get_memory_usage)
-        .expect("Failed to add memory queue");
-
-    // Start all queues
-    autoqueues.start();
-
-    println!("AutoQueues initialized successfully!");
+    println!("DDL initialized successfully!");
 }

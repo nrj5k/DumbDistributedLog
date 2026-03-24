@@ -1,80 +1,88 @@
-# AutoQueues Agent Instructions
+# DDL Agent Instructions
 
-## NEW API: TWO-FORM AUTOQUEUES
+## DDL API: Trait-Based Design
 
-AutoQueues now provides two clean, simple APIs for different use cases:
+DDL provides a clean, simple trait-based API for distributed log operations.
 
-### FORM 1: SERVER MODE (Redis-like)
-
-Simple server where users push data in and subscribe to results out. Like Redis but with expression processing.
+### DDL Trait (Core Interface)
 
 ```rust
-// Usage:
-AutoQueuesServer::from_file("config.toml").await?.run().await;
+use ddl::DDL;
 
-// Or with minimal config:
-AutoQueuesServer::minimal()
-    .port(6969)
-    .push_topic("metrics.cpu")
-    .subscribe_topic("alerts.*")
-    .build()
-    .run()
-    .await;
+let ddl: Arc<dyn DDL> = Arc::new(DdlTcp::new(config));
+
+// Push data to a topic
+ddl.push("metrics.cpu", &data).await?;
+
+// Subscribe to topics matching a pattern
+let stream = ddl.subscribe("metrics.*").await?;
+
+// Acknowledge processing for at-least-once delivery
+ddl.ack("metrics.cpu", entry_id).await?;
 ```
 
 Features:
-- Simple start/stop API
-- Config file support (TOML)
-- Push data to topics
-- Subscribe to topics
-- Expression processing on data
-- Health score endpoints
+- Simple, focused trait-based API
+- Multiple implementations (TCP, in-memory, mock)
+- Push/subscribe/ack operations
+- Shard assignment via Raft
+- Clear error types
 
-### FORM 2: PROGRAMMATIC MODE (Library)
-
-Building on AutoQueues programmatically, adding queues and expressions.
+## DDL Trait Definition
 
 ```rust
-// Usage:
-let autoqueues = AutoQueues::new()
-    .queue("my_queue", Some("atomic.cpu_percent > 80"))
-    .expect("Failed to create queue");
+/// Core trait for DDL implementations.
+#[async_trait]
+pub trait DDL {
+    /// Push data to a topic
+    async fn push(&self, topic: &str, payload: &[u8]) -> Result<u64, DdlError>;
 
-autoqueues.push("data").await?;
-let result = autoqueues.pop::<f64>().await?;
+    /// Subscribe to topics matching a pattern
+    async fn subscribe(&self, pattern: &str) -> Result<Box<dyn SubscriptionStream>, DdlError>;
+
+    /// Acknowledge an entry (for at-least-once delivery)
+    async fn ack(&self, topic: &str, entry_id: u64) -> Result<(), DdlError>;
+
+    /// Create a new topic with specified capacity
+    async fn create_topic(&self, topic: &str, capacity: usize) -> Result<(), DdlError>;
+}
+
+/// Trait for subscription streams
+#[async_trait]
+pub trait SubscriptionStream {
+    /// Receive next entry
+    async fn next(&mut self) -> Result<Option<Entry>, DdlError>;
+
+    /// Acknowledge processing
+    async fn ack(&mut self, entry_id: u64) -> Result<(), DdlError>;
+
+    /// Subscribe to additional patterns
+    async fn add_pattern(&mut self, pattern: &str) -> Result<(), DdlError>;
+}
 ```
 
-Features:
-- Simple creation API
-- Queue creation and management
-- Expression attachment
-- Pub/sub integration
-- Metrics collection
-- Cluster coordination
+## Implementations
 
-## NEW MODULES AND EXPORTS
+### DdlTcp
+- TCP transport for distributed deployment
+- Full cluster support with Raft shard assignment
+- Production-ready
 
-The following new modules and exports have been added:
+### DdlInMemory
+- In-memory implementation for testing
+- No network overhead
+- Single-node only
 
-### src/server.rs - Server Mode Implementation
-- `AutoQueuesServer` struct for server mode
-- `AutoQueuesServerBuilder` for configuration
-- Redis-like API with push/subscribe operations
+### MockDDL
+- For unit testing
+- Programmable expectations
+- No real I/O
 
-### src/autoqueues.rs - Programmatic Mode Implementation  
-- `AutoQueues` struct for programmatic mode
-- Simple API for creating queues with expressions
-- Push/pop operations with type safety
+## KISS PRINCIPLES FOR DDL API
 
-### Updated src/lib.rs
-- Exports for `AutoQueuesServer` and `AutoQueues`
-- Error types for both modes
-
-## KISS PRINCIPLES FOR NEW APIS
-
-Both new APIs follow KISS principles:
+The API follows KISS principles:
 - Simple interfaces wrapping powerful backends
-- Consistent naming (atomic.*, cluster.*)
+- Consistent naming (topics, entries)
 - Minimal boilerplate
 - Good defaults with override capability
 - Clear documentation
@@ -85,158 +93,123 @@ Both new APIs follow KISS principles:
 
 #### What KISS Means to Us
 
-**✅ Clean Interfaces, Powerful Backends**
+**Clean Interfaces, Powerful Backends**
 - Trait-based APIs that are simple to use
-- Powerful libraries (QUIC, ZeroMQ, eval) doing the heavy lifting
+- Powerful libraries (Raft, TCP) doing the heavy lifting
 - User sees simple interface, library handles complexity
 
-**✅ Use Existing Tools, Don't Reinvent**
+**Use Existing Tools, Don't Reinvent**
 - Dependencies are leverage, not complexity
-- Quinn, ZeroMQ, eval, tokio - proven libraries doing heavy lifting
+- Raft, TCP, tokio - proven libraries doing heavy lifting
 - Your code stays minimal by leveraging existing solutions
 - Don't build complex systems when good ones already exist
 
-**✅ Comprehensive Validation as Good Engineering**
+**Comprehensive Validation as Good Engineering**
 - "No validate should be fairly comprehensive" - catch issues early
 - Validation prevents problems, doesn't add unnecessary complexity
 - Better thorough validation than subtle runtime bugs
-- Use existing validation libraries (eval) rather than building from scratch
+- Use existing validation libraries rather than building from scratch
 
-**✅ Right Tool for the Right Job**
+**Right Tool for the Right Job**
 - Use the best available tool for each specific use case
-- If ZeroMQ is better than QUIC, use ZeroMQ
-- If QUIC is better than ZeroMQ, use QUIC
+- If TCP is better than QUIC, use TCP
+- If QUIC is better than TCP, use QUIC
 - Don't create artificial distinctions between "native" vs "external" communication
 - Evaluate tools on their merits, not on preconceived use cases
 
-**✅ Consistent Syntax and Conventions**
-- Expression syntax matches topic syntax exactly
-- `atomic.cpu` in expressions → `atomic.cpu` in topics
-- No confusing conversions between different naming conventions
-- Simple, predictable behavior throughout the system
-
-**✅ Honest, Straightforward Communication**
+**Honest, Straightforward Communication**
 - No inflated claims like "80% reduction"
 - No emojis or marketing speak
 - Clear, direct documentation
 - Remove all BS statements
 
-**✅ Consolidated, Focused Examples**
+**Consolidated, Focused Examples**
 - One comprehensive example instead of scattered demos
 - Show the system working as intended
 - Reduce cognitive load for users
 
-#### NEW: TWO-FORM API DESIGN
-
-**✅ Simple Interfaces, Powerful Backends**
-- Server Mode API wraps powerful pub/sub and expression engines
-- Programmatic Mode API provides clean builder patterns
-- Both APIs hide complex internals behind simple interfaces
-
-**✅ Consistent Naming Conventions**
-- Both APIs use consistent `atomic.*` and `cluster.*` variable naming
-- Expression syntax matches across both forms
-- No conversion needed between topic names and expression variables
-
-**✅ Minimal Boilerplate**
-- Server Mode: One-liner to start a full server
-- Programmatic Mode: Fluent builder API with method chaining
-- Both follow Rust idioms and best practices
-
 #### What KISS Does NOT Mean
 
-❌ **NOT "few features"** - We can have powerful capabilities through simple interfaces
-❌ **NOT "minimal validation"** - Comprehensive validation prevents issues
-❌ **NOT "artificial tool distinctions"** - Don't create false categories for tools
-❌ **NOT "no dependencies"** - Leverage existing proven libraries
-❌ **NOT "simple systems"** - Simple to use systems with powerful capabilities
-❌ **NOT "inconsistent syntax"** - Keep expression and topic syntax consistent
+NOT "few features" - We can have powerful capabilities through simple interfaces
+NOT "minimal validation" - Comprehensive validation prevents issues
+NOT "artificial tool distinctions" - Don't create false categories for tools
+NOT "no dependencies" - Leverage existing proven libraries
+NOT "simple systems" - Simple to use systems with powerful capabilities
+NOT "inconsistent syntax" - Keep topic syntax consistent
 
-#### KISS Implementation Approaches
+## KISS Implementation Approaches
 
 **We use several KISS-friendly approaches to achieve these principles:**
 
-**1. Singleton Pattern for Runtime Simplicity**
-```rust
-// One implementation of each core component active at runtime
-// Provides simple access and easy customization
-impl NetworkManager {
-    fn get() -> &'static NetworkManager {
-        static MANAGER: OnceCell<NetworkManager> = OnceCell::new();
-        MANAGER.get_or_init(|| NetworkManager::create())
-    }
-}
-```
-
-**2. Trait-Based Interfaces**
+### 1. Trait-Based Interfaces
 ```rust
 // Simple interface, powerful backend
-pub trait Transport {
-    fn connect(&self) -> Result<Connection, TransportError>;
-    fn send(&self, data: &[u8]) -> Result<(), TransportError>;
+#[async_trait]
+pub trait DDL {
+    async fn push(&self, topic: &str, payload: &[u8]) -> Result<u64, DdlError>;
+    async fn subscribe(&self, pattern: &str) -> Result<Box<dyn SubscriptionStream>, DdlError>;
+    async fn ack(&self, topic: &str, entry_id: u64) -> Result<(), DdlError>;
 }
 ```
 
-**3. Leverage Existing Libraries**
+### 2. Multiple Implementations
 ```rust
-// Use eval crate instead of building expression parser
-use eval::Expr;
-let expr = Expr::new(expression).eval()?;
+// Different backends, same trait
+pub struct DdlTcp { ... }     // Distributed deployment
+pub struct DdlInMemory { ... } // Testing/single-node
+#[cfg(test)]
+pub struct MockDDL { ... }    // Unit testing
 ```
 
-**4. Consistent Expression-Topic Syntax**
+### 3. Leverage Existing Libraries
 ```rust
-// Expression: local.cpu_percent
-// Topic: local.cpu_percent (same syntax!)
-let expression = "(local.cpu_percent + local.memory_percent) / 2.0";
-let topic = "local.cpu_percent"; // No conversion needed!
+// Use Raft for shard assignment
+use openraft::Raft;
+
+// Use tokio for async
+use tokio::spawn;
 ```
 
-**5. Configuration-Driven Customization**
+### 4. Configuration-Driven Customization
 ```rust
-// Simple configuration enables "volia different impl of AutoQueues"
-let config = AutoQueuesConfig {
-    network: NetworkConfig {
-        implementation: "zmq",  // or "quic" or custom
-        // other settings...
+// Simple configuration enables different implementations
+let config = DdlConfig {
+    transport: TransportConfig::Tcp {
+        host: "0.0.0.0",
+        port: 6969,
     },
-    // etc...
+    cluster: ClusterConfig {
+        peers: vec!["node1:6969", "node2:6969"],
+    },
 };
-
-AutoQueues::initialize(config);
 ```
 
-#### Easy Customization Pattern
+## Easy Customization Pattern
 
 **Users can easily extend the system through trait implementation:**
 
 ```rust
 // 1. Implement the trait for custom functionality
-impl Transport for MyCustomTransport {
-    fn connect(&self) -> Result<Connection, TransportError> {
-        // Custom connection logic
+#[async_trait]
+impl DDL for MyCustomDDL {
+    async fn push(&self, topic: &str, payload: &[u8]) -> Result<u64, DdlError> {
+        // Custom push logic
     }
-    
-    fn send(&self, data: &[u8]) -> Result<(), TransportError> {
-        // Custom send logic  
+
+    async fn subscribe(&self, pattern: &str) -> Result<Box<dyn SubscriptionStream>, DdlError> {
+        // Custom subscribe logic
+    }
+
+    async fn ack(&self, topic: &str, entry_id: u64) -> Result<(), DdlError> {
+        // Custom ack logic
     }
 }
 
-// 2. Add to configuration
-let config = AutoQueuesConfig {
-    network: NetworkConfig {
-        implementation: "my_custom",
-        custom_transport: Some(Box::new(MyCustomTransport)),
-        // other settings...
-    },
-    // etc...
-};
-
-// 3. Initialize - Volia! Different implementation
-AutoQueues::initialize(config);
+// 2. Use the custom implementation
+let ddl: Arc<dyn DDL> = Arc::new(MyCustomDDL::new());
 ```
 
-#### KISS Assessment Criteria
+## KISS Assessment Criteria
 
 When evaluating if something follows KISS:
 
@@ -244,7 +217,7 @@ When evaluating if something follows KISS:
 2. **Tool Leverage**: Are we using existing proven libraries?
 3. **Validation Adequacy**: Does validation catch real issues without over-engineering?
 4. **Tool Selection**: Are we choosing the best tool for the job without artificial distinctions?
-5. **Syntax Consistency**: Is the syntax consistent across expression and topics?
+5. **Syntax Consistency**: Is the syntax consistent across topics and operations?
 6. **Documentation Clarity**: Is communication honest and straightforward?
 7. **Implementation Flexibility**: Can users easily customize components?
 
@@ -255,8 +228,8 @@ When evaluating if something follows KISS:
 - Always adhere to the KISS principle (Keep It Simple, Stupid)
 - Always write clear, concise comments in code
 - Always write clear commit messages describing changes
-- always follow Rust best practices and idioms
-- always keep it simple and efficient
+- Always follow Rust best practices and idioms
+- Always keep it simple and efficient
 - Never make MOCKS for production code
 - Write thorough tests for all new features and bug fixes
 - Never prematurely optimize, profile first
@@ -314,45 +287,18 @@ cargo bench --lib
 - Group imports: std, external, internal
 - Define types, then public functions
 - Function naming: `snake_case` with action verb
-- Error types: `QueueError`, specific variants for different failures
-
-### Expression Engine
-
-#### Consistent Variable Syntax
-
-```rust
-// Expression syntax MATCHES topic syntax - no conversion needed!
-// Valid local variable references
-"local.cpu_percent"           // → topic "local.cpu_percent"
-"local.memory_usage"          // → topic "local.memory_usage"
-"local.drive_capacity"        // → topic "local.drive_capacity"
-
-// Valid math expressions
-"(local.cpu_percent + local.memory_percent) / 2.0"
-"local.drive_percent.sqrt() * 10.0"
-"local.memory_percent.pow(1.5) / 10.0"
-"local.cpu_percent.abs().max(local.memory_percent)"
-```
-
-#### Mathematical Functions Supported
-
-- Basic arithmetic: `+ - * /`
-- Power functions: `.pow(exponent)`
-- Roots: `.sqrt()`
-- Absolute value: `.abs()`
-- Maximum/Minimum: `.max(other)`, `.min(other)`
-- Rounding: `.round()`, `.ceil()`, `.floor()`
+- Error types: `DdlError`, specific variants for different failures
 
 ### Error Handling
 
-- Use `Result<T, QueueError>` for fallible operations
-- Provide specific error messages: `QueueError::Other("Context: actual issue")`
+- Use `Result<T, DdlError>` for fallible operations
+- Provide specific error messages: `DdlError::ClusterError("Context: actual issue")`
 - Validate inputs early, return errors with context
-- Division by zero → default to 0 in expressions
+- Clear error variants for different failure modes
 
 ### Async/await
 
-- All queue operations are async
+- All DDL operations are async
 - Use `tokio::spawn` for background tasks
 - Handle concurrent access with Arc<Mutex<T>> appropriately
 
@@ -361,6 +307,7 @@ cargo bench --lib
 - Unit tests in module: `#[cfg(test)] mod tests { }`
 - Test names: `test_function_name_scenario`
 - Test empty, single, multiple data scenarios
+- Use MockDDL for controlled testing
 
 ## Architecture Overview
 
@@ -369,66 +316,62 @@ cargo bench --lib
 **Strategic Decision**: Simple interfaces wrapping powerful, proven tools
 
 - **Trait-Based Design**: Clean interfaces for easy implementation
-- **Proven Libraries**: QUIC, ZeroMQ, eval, tokio for heavy lifting
+- **Proven Libraries**: Raft, TCP, tokio for heavy lifting
 - **Configuration-Driven**: Easy customization through simple config
-- **Runtime Simplicity**: Singleton pattern for predictable behavior
-- **Consistent Syntax**: Expression and topic syntax match exactly
+- **Consistent Syntax**: Topic names consistent across operations
 
 #### Core Components
 
 **Network Layer:**
-- QUIC or ZeroMQ (whichever proves better for the use case)
+- TCP transport for reliable messaging
 - Custom implementations via trait
-- Configuration-driven choice
-- No artificial "native" vs "external" distinctions
+- Simple, focused protocol
 
-**Queue System:**
-- Generic queue implementation supporting any data type
-- Expression evaluation integration
-- Pub/sub messaging coordination
-- Simple, focused API
+**Topic System:**
+- Lock-free SPMC ring buffers
+- Pre-allocated circular buffers
+- Monotonic entry IDs
+- At-least-once acknowledgment
 
-**Expression Engine:**
-- Mathematical expression evaluation using eval library
-- Variable substitution using consistent syntax
-- Comprehensive validation for reliability
-- Custom function support
-
-**System Metrics:**
-- Real-time CPU, memory, disk collection via sysinfo
-- Health score calculations
-- Cross-platform support
-- Custom metric providers
+**Cluster Coordination:**
+- Raft for shard assignment only
+- Shard map management
+- Node membership tracking
 
 #### Architecture Pattern
 
 ```rust
 // KISS architecture - simple interfaces, powerful backends
-pub trait Transport {
-    fn connect(&self) -> Result<Connection, TransportError>;
-    fn send(&self, data: &[u8]) -> Result<(), TransportError>;
-    fn receive(&self) -> Result<Vec<u8>, TransportError>;
+#[async_trait]
+pub trait DDL {
+    async fn push(&self, topic: &str, payload: &[u8]) -> Result<u64, DdlError>;
+    async fn subscribe(&self, pattern: &str) -> Result<Box<dyn SubscriptionStream>, DdlError>;
+    async fn ack(&self, topic: &str, entry_id: u64) -> Result<(), DdlError>;
 }
 
-pub struct NetworkManager {
-    transport: Box<dyn Transport>,
+pub struct DdlTcp {
+    config: DdlConfig,
+    shard_map: Arc<RwLock<ShardMap>>,
+    topics: DashMap<String, Topic>,
 }
 
-impl NetworkManager {
-    // Simple interface wrapping powerful transport
-    pub fn new(config: NetworkConfig) -> Result<Self, NetworkError> {
-        let transport = match config.implementation.as_str() {
-            "quic" => Box::new(QuicTransport::new(config)) as Box<dyn Transport>,
-            "zmq" => Box::new(ZmqTransport::new(config)) as Box<dyn Transport>,
-            "custom" => config.custom_transport.unwrap(),
-        };
-        
-        Ok(NetworkManager { transport })
+#[async_trait]
+impl DDL for DdlTcp {
+    async fn push(&self, topic: &str, payload: &[u8]) -> Result<u64, DdlError> {
+        // Simple implementation wrapping powerful primitives
+        let entry = Entry::new(topic, payload);
+        self.topics.get(topic).push(entry)
     }
-    
-    // Clean API - user doesn't need to know transport details
-    pub async fn send(&self, data: &[u8]) -> Result<(), NetworkError> {
-        self.transport.send(data)
+
+    async fn subscribe(&self, pattern: &str) -> Result<Box<dyn SubscriptionStream>, DdlError> {
+        // Pattern matching, stream creation
+        let stream = SubscriptionStreamImpl::new(pattern);
+        Ok(Box::new(stream))
+    }
+
+    async fn ack(&self, topic: &str, entry_id: u64) -> Result<(), DdlError> {
+        // Acknowledgment processing
+        self.topics.get(topic).ack(entry_id)
     }
 }
 ```
@@ -437,303 +380,162 @@ impl NetworkManager {
 
 ```rust
 // Simple configuration enables powerful customization
-pub struct AutoQueuesConfig {
-    pub network: NetworkConfig,
-    pub queue: QueueConfig,
-    pub expression: ExpressionConfig,
-    pub metrics: MetricsConfig,
-    pub pubsub: PubSubConfig,
+pub struct DdlConfig {
+    pub transport: TransportConfig,
+    pub cluster: ClusterConfig,
+    pub topic_defaults: TopicConfig,
 }
 
-pub struct NetworkConfig {
-    pub implementation: String,  // "quic", "zmq", or custom
-    pub custom_transport: Option<Box<dyn Transport>>,
-    pub timeout: Duration,
+pub struct TransportConfig {
+    pub implementation: String,  // "tcp", "in-memory", or custom
+    pub host: String,
+    pub port: u16,
     pub max_connections: usize,
 }
 
 // Easy initialization
-let config = AutoQueuesConfig::from_file("autoqueues.toml")?;
-AutoQueues::initialize(config)?;
-```
-
-## Expression Engine Architecture
-
-### Local-Only Scope
-
-Queues can ONLY evaluate `local.*` expressions. Global variables will be handled by Queue Manager.
-
-### Expression Processing Flow
-
-1. Queue receives expression: `"(local.cpu_percent + local.memory_percent) / 2"`
-2. System extracts `local.*` variables automatically
-3. Maps variables to topics using SAME syntax: `local.cpu_percent` → `local.cpu_percent`
-4. Queue subscribes to all required topics
-5. When any topic updates, recalculates expression at queue interval
-6. Returns computed result with division-by-zero protection
-
-### Expression Configuration
-
-```rust
-let queue = QueueBuilder::new()
-    .expression("(local.drive_percent + local.cpu_percent) / 2.0")
-    .interval(1000) // Evaluate every 1000ms
-    .build();
-```
-
-## Pub/Sub System
-
-### Topic Hierarchy
-
-- `local.cpu_percent` - Local system CPU percentage
-- `metrics.component.hostname` - Component metrics by host
-- `global.aggregate` - Global aggregated metrics (Queue Manager)
-- `alerts.severity` - System alerts by severity
-
-### Wildcard Patterns
-
-- `local.*` - All local metrics
-- `metrics.*.system_a` - All component metrics for system_a
-- `alerts.high` - Only high-severity alerts
-
-### Subscription Modes
-
-- **Exact**: Subscribe to specific topic
-- **Pattern**: Subscribe using wildcards
-- **Filtered**: Subscribe with conditions
-
-## API Design Principles
-
-### Local-First Architecture
-
-- All processing starts local
-- Distributed coordination handled by separate Queue Manager
-- Global variables (global.*) resolved by Queue Manager
-- Local variables (local.*) resolved by local queues
-
-### Helper Methods Priority
-
-Always prefer the new helper methods over raw access:
-
-```rust
-// ✅ Preferred - Clean and safe
-let latest_value = queue.get_latest_value().await;
-let recent_values = queue.get_latest_n_values(5).await;
-
-// ❌ Old way - Verbose and error-prone
-let latest = queue.get_latest().await.map(|(_, data)| data);
-```
-
-### Error Resilience
-
-- Expression errors don't crash queues
-- Division by zero returns 0, not panic
-- Missing data uses safe defaults
-- Failed subscriptions handled gracefully
-
-### Singleton Access Pattern
-
-```rust
-// Clean, simple access to core components
-let network = NetworkManager::get();
-let queue = QueueManager::get();
-let expression = ExpressionEngine::get();
-let metrics = MetricsCollector::get();
-let pubsub = PubSubBroker::get();
-let config = ConfigManager::get();
-```
-
-## Integration Patterns
-
-### Multi-Queue Aggregation
-
-```rust
-// CPU metrics queue (publishes to topic with consistent syntax)
-let cpu_queue = QueueBuilder::new()
-    .expression("local.cpu_percent")
-    .publish_to("local.cpu_percent")
-    .build();
-
-// Health aggregation queue (subscribes to multiple topics)
-let health_queue = QueueBuilder::new()
-    .expression("(local.cpu_percent + local.memory_percent) / 2")
-    .subscribe_to("local.*")
-    .build();
-```
-
-### Real System Integration
-
-```rust
-use autoqueues::metrics::{MetricsCollector, SystemMetrics};
-
-let mut collector = MetricsCollector::new();
-let cpu_usage = collector.get_cpu_usage();
-let memory = collector.get_memory_usage();
-let health_score = collector.get_health_score();
-```
-
-### Network Configuration
-
-```rust
-// KISS network configuration - use best tool for the job
-let config = NetworkConfig {
-    implementation: "zmq",  // or "quic" - choose the best tool
-    timeout: Duration::from_secs(30),
-    max_connections: 1000,
-};
-
-let manager = NetworkManager::with_config(config);
-```
-
-### Complete System Initialization
-
-```rust
-// Single point of initialization for entire system
-let config = AutoQueuesConfig::from_file("autoqueues.toml")?;
-AutoQueues::initialize(config)?;
-
-// All components are now initialized and ready
-let network = NetworkManager::get();
-let queue = QueueManager::get();
-// etc...
+let config = DdlConfig::from_file("ddl.toml")?;
+let ddl: Arc<dyn DDL> = Arc::new(DdlTcp::new(config));
 ```
 
 ## Performance Considerations
 
 ### Memory Efficiency
 
-- Zero-copy where possible in pub/sub
+- Zero-copy where possible in topic operations
+- Pre-allocated ring buffers
 - Single instance of each component (no duplication)
 - Shared Arc<RwLock<>> for concurrent access
 - Efficient topic routing with HashMap
 
 ### Latency Targets
 
-- Local pub/sub: < 1ms within machine
-- Expression evaluation: < 1ms for math operations
-- Metric collection: Real-time via sysinfo
-- Network transport: < 5ms (varies by implementation)
-- Singleton access: < 0.1ms for component retrieval
+- Local push: < 10μs (lock-free)
+- Local subscribe receive: < 5μs
+- Network push: < 100μs
+- Raft commit (shard map): < 10ms
+- Shard migration: < 50ms
 
 ### Network Performance
 
-- **QUIC**: High-performance networking when appropriate
-- **ZeroMQ**: Broad compatibility and reliability when appropriate
+- **TCP**: Reliable messaging for distributed deployment
+- **In-memory**: Zero overhead for testing
 - **Single Stack**: No overhead from unused network protocols
-- **Configuration**: Easy to switch network types for different environments
-
-### Singleton Performance Benefits
-
-- **Thread-safe initialization**: OnceCell ensures single initialization
-- **Static lifetime**: Singletons live for program duration
-- **Lock-free access**: Most singleton operations are lock-free
-- **Minimal overhead**: Singleton pattern adds negligible performance cost
+- **Configuration**: Easy to switch implementations for different environments
 
 ## Testing Strategy
 
-### Expression Testing
+### Unit Testing
 
 ```rust
 #[test]
-fn test_local_variable_parsing() {
-    let var = LocalVariable::new("local.cpu_percent");
-    assert_eq!(var.topic, "local.cpu_percent"); // Consistent syntax!
+fn test_topic_push_pop_roundtrip() {
+    let topic = Topic::new();
+    let data = b"test_payload";
+    let entry_id = topic.push(data).unwrap();
+    let entry = topic.pop().unwrap();
+    assert_eq!(entry.payload, data);
 }
 
-#[test]
-fn test_expression_evaluation() {
-    let expr = LocalExpression::new("local.a + local.b").unwrap();
-    // Setup context variables...
-    let result = expr.evaluate().unwrap();
-    assert!(result > 0.0);
+#[tokio::test]
+async fn test_ddl_trait_push() {
+    let mock_ddl = MockDDL::new();
+    mock_ddl.expect_push().returning(|_, _| Ok(1));
+    let result = mock_ddl.push("test", b"data").await;
+    assert!(result.is_ok());
 }
 ```
 
-### Pub/Sub Testing
+### Integration Testing
 
 ```rust
-#[test]
-fn test_topic_subscription() {
-    let broker = PubSubBroker::new(100);
-    let receiver = broker.subscribe_exact("local.cpu_percent".to_string()).await?;
-    broker.publish("local.cpu_percent".to_string(), &data).await?;
-    // Verify message received...
+#[tokio::test]
+async fn test_ddl_integration() {
+    let ddl: Arc<dyn DDL> = Arc::new(DdlInMemory::new());
+
+    // Create topic
+    ddl.create_topic("test.topic", 1000).await.unwrap();
+
+    // Subscribe
+    let mut stream = ddl.subscribe("test.*").await.unwrap();
+
+    // Push data
+    let entry_id = ddl.push("test.topic", b"hello").await.unwrap();
+
+    // Receive
+    let entry = stream.next().await.unwrap();
+    assert_eq!(entry.topic, "test.topic");
+    assert_eq!(entry.payload, b"hello");
+
+    // Acknowledge
+    stream.ack(entry.id).await.unwrap();
 }
 ```
 
-### Network Testing
+### Mock Testing
 
 ```rust
-#[test]
-fn test_network_singleton() {
-    // Ensure only one network type is active
-    let manager1 = NetworkManager::get();
-    let manager2 = NetworkManager::get();
-    assert_eq!(manager1 as *const _, manager2 as *const _);
+use mockall::predicate::*;
+use ddl::DDL;
+
+#[tokio::test]
+async fn test_with_mock_ddl() {
+    let mut mock = MockDDL::new();
+    mock.expect_push()
+        .with(eq("metrics.cpu"), always())
+        .returning(|_, _| Ok(1));
+    mock.expect_subscribe()
+        .with(eq("metrics.*"))
+        .returning(|_| Ok(Box::new(MockStream::new())));
+
+    // Test using mock
+    let result = mock.push("metrics.cpu", b"data").await;
+    assert!(result.is_ok());
 }
 ```
 
-### Complete System Testing
+## Honest Assessment
 
-```rust
-#[test]
-fn test_singleton_architecture() {
-    // Test that all singletons are properly initialized
-    let network = NetworkManager::get();
-    let queue = QueueManager::get();
-    let expression = ExpressionEngine::get();
-    let metrics = MetricsCollector::get();
-    let pubsub = PubSubBroker::get();
-    let config = ConfigManager::get();
-    
-    // Verify all singletons are accessible and non-null
-    assert!(!network.is_null());
-    assert!(!queue.is_null());
-    assert!(!expression.is_null());
-    assert!(!metrics.is_null());
-    assert!(!pubsub.is_null());
-    assert!(!config.is_null());
-}
-```
+DDL provides:
+
+- **Yes**: Simple distributed log with push/subscribe/ack
+- **Yes**: Trait-based API for flexibility
+- **Yes**: Raft shard assignment
+- **Yes**: Multiple implementations
+
+DDL does NOT provide:
+
+- **No**: Expression evaluation (build separately if needed)
+- **No**: Metrics collection (use system tools)
+- **No**: Automatic failover (design for it separately)
+- **No**: Consumer groups (build on DDL trait)
+- **No**: Message replay (build on DDL trait)
 
 ## Future Extensions
 
-### Queue Manager Integration
+Extensions can build on DDL trait:
 
-- Handle global.* variable resolution across network
-- Coordinate cross-host topic subscriptions
-- Aggregate global metrics across clusters
-- Support user expressions involving both local and global variables
+1. **Expression Engine**
+   - Using evalexpr or fasteval
+   - Optional dependency
+   - Separate crate
 
-### Advanced Math Functions
+2. **Consumer Groups**
+   - Shared offsets
+   - Message replay
+   - Built on DDL trait
 
-- Statistical functions (mean, median, std_dev)
-- Time-series analysis (trend, seasonality)
-- Machine learning integration
-- Custom user-defined functions
+3. **Schema Registry**
+   - Message validation
+   - Schema evolution
+   - Optional feature
 
-### Network Evolution
+4. **Persistent Storage**
+   - Write-ahead logging
+   - Topic compaction
+   - Recovery support
 
-- Easy to add new network protocols as they emerge
-- Maintain KISS principle: simple interface, powerful backend
-- Configuration-driven network selection
-- Plugin architecture for network transports
-
-### Plugin System
-
-- Dynamic loading of custom implementations
-- Plugin registry for third-party extensions
-- Configuration-based plugin activation
-- Version compatibility checking
-
-### Advanced Configuration
-
-- Environment-based configuration overrides
-- Hot-reloading of configuration changes
-- Configuration validation and schema evolution
-- Multi-profile configuration management
-
-This architecture provides a solid foundation for distributed queue management while delivering sophisticated local processing capabilities through simple, clean interfaces and proven tooling.
+This architecture provides a solid foundation for distributed logging while enabling extensions through the clean DDL trait interface.
 
 ## HPC & ML/AI Systems Best Practices
 

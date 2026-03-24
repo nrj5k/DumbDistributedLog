@@ -2,7 +2,7 @@
 //!
 //! Each trait has 3-4 methods maximum for maximum flexibility.
 
-use crate::queue::{QueueError, QueueServerHandle};
+use crate::queue::QueueError;
 use crate::types::Timestamp;
 
 /// Ultra-minimal queue trait for maximum flexibility
@@ -20,7 +20,4 @@ pub trait QueueTrait: Send + Sync {
 
     /// Get current number of items in queue
     fn get_size(&self) -> usize;
-
-    /// Start autonomous server
-    fn start_server(self) -> Result<QueueServerHandle, QueueError>;
 }

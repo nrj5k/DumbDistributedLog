@@ -69,7 +69,7 @@ impl TopicQueue {
                 .unwrap_or_default()
                 .as_nanos() as u64,
             topic,
-            payload,
+            payload: payload.into(), // Convert Vec<u8> to Arc<[u8]>
         };
         
         // Store the entry

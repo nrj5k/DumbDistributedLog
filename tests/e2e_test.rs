@@ -1,9 +1,9 @@
-//! Comprehensive end-to-end tests for AutoQueues
+//! Comprehensive end-to-end tests for DDL
 
-use autoqueues::config::{
-    Config, ConfigError, SourceType, AggregationType,
+use ddl::config::{
+    Config, SourceType, AggregationType,
 };
-use autoqueues::ZmqPubSubBroker;
+use ddl::ZmqPubSubBroker;
 
 #[cfg(test)]
 mod e2e_tests {
@@ -36,10 +36,6 @@ mod e2e_tests {
         assert!(func_source.is_ok());
         assert!(matches!(func_source.unwrap(), SourceType::Function(_)));
 
-        let expr_source = SourceType::parse("expression:(cpu + memory) / 2");
-        assert!(expr_source.is_ok());
-        assert!(matches!(expr_source.unwrap(), SourceType::Expression(_)));
-
         let default_source = SourceType::parse("cpu");
         assert!(default_source.is_ok());
         assert!(matches!(default_source.unwrap(), SourceType::Function(_)));
@@ -62,14 +58,5 @@ mod e2e_tests {
             Ok(_b) => assert!(true),
             Err(_) => println!("ZMQ not available, skipping pub/sub test"),
         }
-    }
-
-    /// Test expression variable extraction
-    #[tokio::test]
-    async fn test_expression_variables() {
-        let source = SourceType::parse("expression:(cpu + memory) / 2").unwrap();
-        let vars = source.variables();
-        assert!(vars.contains(&"cpu".to_string()));
-        assert!(vars.contains(&"memory".to_string()));
     }
 }

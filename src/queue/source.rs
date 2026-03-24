@@ -2,8 +2,6 @@
 //!
 //! Provides the QueueSource trait and implementations for different queue data sources.
 
-use crate::config::Config;
-use crate::dist::aggregator::DistributedAggregator;
 use crate::queue::interval::IntervalConfig;
 use crate::queue::persistence::QueuePersistence;
 use crate::queue::spmc_lockfree_queue::SPMCLockFreeQueue as SimpleQueue;
@@ -88,7 +86,6 @@ where
     fn start(
         &self,
         queue: Arc<RwLock<SimpleQueue<T>>>,
-        _config: &Config,
         interval_config: IntervalConfig,
         persistence: Option<Arc<QueuePersistence>>,
     ) {
@@ -137,19 +134,17 @@ where
                     // In a real implementation, you'd want to handle this more gracefully
                     if let Some(value) = convert_to_f64(&result) {
                         persister.persist(value);
-}
+     }
+ }
 
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::net::SocketAddr;
-    
-    // Tests removed due to generic type requirement complications
-    // Actual implementation is working correctly
-}
-                }
+ #[cfg(test)]
+ mod tests {
+     
+     
+     
+     // Tests removed due to generic type requirement complications
+     // Actual implementation is working correctly
+ }
             }
         });
     }
@@ -199,7 +194,6 @@ pub trait QueueSource<T: Clone + Send + Sync + 'static>: Send {
     fn start(
         &self,
         queue: Arc<RwLock<SimpleQueue<T>>>,
-        config: &Config,
         interval: IntervalConfig,
         persistence: Option<Arc<QueuePersistence>>,
     );
@@ -226,7 +220,6 @@ where
     fn start(
         &self,
         queue: Arc<RwLock<SimpleQueue<T>>>,
-        _config: &Config,
         interval: IntervalConfig,
         _persistence: Option<Arc<QueuePersistence>>,
     ) {
@@ -299,17 +292,16 @@ impl<T: Clone + Send + Sync + 'static> QueueSource<T> for ExpressionSource {
     fn start(
         &self,
         queue: Arc<RwLock<SimpleQueue<T>>>,
-        config: &Config,
         interval_config: IntervalConfig,
-        persistence: Option<Arc<QueuePersistence>>,
+        _persistence: Option<Arc<QueuePersistence>>,
     ) {
-        let queue_clone = queue.clone();
+        let _queue_clone = queue.clone();
         let paused = self.paused.clone();
         let should_stop = self.should_stop.clone();
         let expression = self.expression.clone();
         let source_queue = self.source_queue.clone();
-        let trigger_on_push = self.trigger_on_push;
-        let trigger_interval_ms = self.trigger_interval_ms;
+        let _trigger_on_push = self.trigger_on_push;
+        let _trigger_interval_ms = self.trigger_interval_ms;
         
         // Get the interval duration from the config
         let interval_duration = match &interval_config {
@@ -378,7 +370,6 @@ pub struct DistributedAggregationSource {
     pub queue_name: String,
     pub operation: String,          // "avg", "max", "min", etc.
     pub source_queues: Vec<String>, // Source queues to aggregate
-    pub aggregator: DistributedAggregator,
     /// Flag indicating if the source is paused
     paused: Arc<AtomicBool>,
     /// Flag indicating if the source should stop
@@ -391,16 +382,12 @@ impl DistributedAggregationSource {
         queue_name: String,
         operation: String,
         source_queues: Vec<String>,
-        nodes: Vec<SocketAddr>,
+        _nodes: Vec<SocketAddr>,
     ) -> Self {
-        let node_id = std::env::var("NODE_ID").unwrap_or_else(|_| "local".to_string());
-        let aggregator = DistributedAggregator::new(node_id, nodes);
-
         Self {
             queue_name,
             operation,
             source_queues,
-            aggregator,
             paused: Arc::new(AtomicBool::new(false)),
             should_stop: Arc::new(AtomicBool::new(false)),
         }
@@ -421,16 +408,15 @@ impl<T: Clone + Send + Sync + 'static> QueueSource<T> for DistributedAggregation
     fn start(
         &self,
         queue: Arc<RwLock<SimpleQueue<T>>>,
-        config: &Config,
         interval_config: IntervalConfig,
-        persistence: Option<Arc<QueuePersistence>>,
+        _persistence: Option<Arc<QueuePersistence>>,
     ) {
-        let queue_clone = queue.clone();
+        let _queue_clone = queue.clone();
         let paused = self.paused.clone();
         let should_stop = self.should_stop.clone();
         let queue_name = self.queue_name.clone();
         let operation = self.operation.clone();
-        let source_queues = self.source_queues.clone();
+        let _source_queues = self.source_queues.clone();
         
         // Get the interval duration from the config
         let interval_duration = match &interval_config {
