@@ -16,8 +16,58 @@ struct SubscriberInfo {
     sender: Sender<Entry>,
 }
 
-/// Per-topic queue with ring buffer semantics
-/// Align to cache line boundary to prevent false sharing
+/// Per-topic queue with ring buffer semantics.
+///
+/// # Mutex Trade-off Design Decision
+///
+/// This struct uses a hybrid synchronization approach:
+/// - `AtomicU64` for `write_pos` and `ack_pos` (lock-free)
+/// - `Mutex<Vec<Option<Entry>>>` for `entries` (lock-based)
+///
+/// ## Why Mutex is Used for Entries
+///
+/// The entries array requires mutable access for both push (write) and read operations.
+/// Rust's ownership model doesn't allow safe lock-free mutable access to a `Vec` without
+/// complex unsafe code that would be difficult to verify for correctness and freedom from
+/// undefined behavior.
+///
+/// A fully lock-free implementation would require either:
+/// - `UnsafeCell<Entry>` with manual memory ordering guarantees
+/// - Atomic pointers with proper lifetime management
+/// - A lock-free queue data structure like `crossbeam-queue`
+///
+/// All of these approaches introduce significant complexity and subtle correctness requirements.
+///
+/// ## Trade-off Analysis
+///
+/// **Pros:**
+/// - Simplicity: Correct implementation without undefined behavior
+/// - Safety: Mutex guarantees exclusive access, preventing data races
+/// - Mutex overhead is O(1) for lock/unlock, not proportional to data size
+/// - Well-understood semantics and debugging characteristics
+///
+/// **Cons:**
+/// - Contention when multiple producers push to the same topic
+/// - Blocks readers during push and vice versa
+/// - Lock acquisition overhead in high-contention scenarios
+///
+/// ## Performance Characteristics
+///
+/// - Mutex contention is minimal in typical single-producer scenarios
+/// - The lock is held briefly (just for index calculation and entry write)
+/// - No lock is needed for `ack_pos` updates (atomic)
+/// - For multi-producer, consider using per-producer queues or sharding
+///
+/// ## Future Optimization Paths
+///
+/// If contention becomes measurable in production:
+/// 1. Use `crossbeam-queue` for fully lock-free implementation
+/// 2. Use `Box<[UnsafeCell<AtomicPtr<Entry>>]>` with proper synchronization
+///    (requires careful memory ordering and lifetime management)
+/// 3. Use sharding by topic hash to distribute across multiple queues
+/// 4. Consider `parking_lot::Mutex` for potentially better performance
+///
+/// Align to cache line boundary to prevent false sharing.
 #[repr(align(64))]
 struct TopicQueue {
     /// Write position (monotonically increasing) - placed first for cache alignment
@@ -53,14 +103,14 @@ impl TopicQueue {
     }
     
     /// Append an entry, returns the entry ID
-    fn push(&self, topic: String, payload: Vec<u8>) -> Result<u64, DdlError> {
+    fn push(&self, topic: Arc<str>, payload: Vec<u8>) -> Result<u64, DdlError> {
         // Convert Vec<u8> to Arc<[u8]> for zero-copy sharing
         let payload_arc = Arc::from(payload);
         
         // Lock entries first - this provides mutual exclusion for both
         // the write_pos increment and the entry write, ensuring atomicity
         let mut entries = self.entries.lock()
-            .map_err(|_| DdlError::LockPoisoned(topic.clone()))?;
+            .map_err(|_| DdlError::LockPoisoned(topic.to_string()))?;
         
         // Get current position inside the lock
         let id = self.write_pos.load(Ordering::Relaxed);
@@ -69,7 +119,7 @@ impl TopicQueue {
         // Check if we're overwriting unacknowledged data
         let ack = self.ack_pos.load(Ordering::Acquire);
         if id >= ack + self.capacity as u64 {
-            return Err(DdlError::BufferFull(topic));
+            return Err(DdlError::BufferFull(topic.to_string()));
         }
         
         let entry = Entry {
@@ -107,6 +157,7 @@ impl TopicQueue {
         if let Ok(entries) = self.entries.lock() {
             entries[index].clone()
         } else {
+            log::warn!("Poisoned lock on topic queue for entry id {}, returning None", id);
             None
         }
     }
@@ -161,24 +212,36 @@ impl InMemoryDdl {
     }
     
     /// Get or create a topic queue
+    /// 
+    /// Uses DashMap's entry API for atomic check-and-insert semantics.
+    /// Handles the race condition where another thread might create the topic
+    /// between the limit check and insertion.
     fn get_or_create_topic(&self, topic: &str) -> Result<Arc<TopicQueue>, DdlError> {
-        // Check if topic already exists (allowed)
+        // Fast path: check if topic already exists
         if let Some(queue) = self.topics.get(topic) {
             return Ok(queue.clone());
         }
         
         // Check topic limit (0 means unlimited)
+        // Note: There's still a small race window here, but we handle it below
         if self.config.max_topics > 0 && self.topics.len() >= self.config.max_topics {
+            // Double-check: another thread might have created this topic while we
+            // were checking the limit. If so, return the existing queue instead of error.
+            if let Some(queue) = self.topics.get(topic) {
+                return Ok(queue.clone());
+            }
             return Err(DdlError::TopicLimitExceeded {
                 max: self.config.max_topics,
                 current: self.topics.len(),
             });
         }
         
-        // Create new topic
-        let queue = Arc::new(TopicQueue::new(self.config.buffer_size));
-        self.topics.insert(topic.to_string(), queue.clone());
-        Ok(queue)
+        // Use entry API for atomic check-and-insert
+        // or_insert_with returns the value (either existing or newly created)
+        // This handles the race where another thread creates the topic concurrently
+        Ok(self.topics.entry(topic.to_string())
+            .or_insert_with(|| Arc::new(TopicQueue::new(self.config.buffer_size)))
+            .clone())
     }
 }
 
@@ -188,8 +251,11 @@ impl DDL for InMemoryDdl {
         // Check ownership (for now, allow all topics)
         // In distributed version: check if we own this topic
         
+        // Convert topic to Arc<str> once for zero-copy sharing
+        let topic_arc: Arc<str> = topic.into();
+        
         let queue = self.get_or_create_topic(topic)?;
-        let id = queue.push(topic.to_string(), payload)?;
+        let id = queue.push(topic_arc, payload)?;
         
         // Get entry to send to subscribers
         let entry = queue.read(id);
@@ -251,6 +317,9 @@ impl DDL for InMemoryDdl {
             return Err(DdlError::BufferFull(topic.to_string()));
         }
         
+        // Convert topic to Arc<str> once for zero-copy sharing
+        let topic_arc: Arc<str> = topic.into();
+        
         let queue = self.get_or_create_topic(topic)?;
         let mut last_id = 0;
         
@@ -259,7 +328,7 @@ impl DDL for InMemoryDdl {
         
         // Push all entries
         for payload in payloads {
-            let id = queue.push(topic.to_string(), payload)?;
+            let id = queue.push(topic_arc.clone(), payload)?;
             last_id = id;
             
             // Get entry to send to subscribers
@@ -532,7 +601,7 @@ mod tests {
             handles.push(thread::spawn(move || {
                 b.wait(); // Synchronize all threads to start simultaneously
                 for j in 0..100 {
-                    q.push(format!("entry_{}_{}", i, j), vec![j as u8; 64]).unwrap();
+                    q.push(format!("entry_{}_{}", i, j).into(), vec![j as u8; 64]).unwrap();
                 }
             }));
         }

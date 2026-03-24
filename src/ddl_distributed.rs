@@ -52,14 +52,14 @@ impl TopicQueue {
     }
     
     /// Append an entry, returns the entry ID
-    fn push(&self, topic: String, payload: Vec<u8>) -> Result<u64, DdlError> {
+    fn push(&self, topic: Arc<str>, payload: Vec<u8>) -> Result<u64, DdlError> {
         let id = self.write_pos.fetch_add(1, Ordering::SeqCst);
         let index = (id as usize) & self.mask;
         
         // Check if we're overwriting unacknowledged data
         let ack = self.ack_pos.load(Ordering::SeqCst);
         if id >= ack + self.capacity as u64 {
-            return Err(DdlError::BufferFull(topic));
+            return Err(DdlError::BufferFull(topic.to_string()));
         }
         
         let entry = Entry {
@@ -201,8 +201,11 @@ impl DDL for DdlDistributed {
             return Err(DdlError::NotOwner(topic.to_string()));
         }
         
+        // Convert topic to Arc<str> once for zero-copy sharing
+        let topic_arc: Arc<str> = topic.into();
+        
         let queue = self.get_or_create_topic(topic)?;
-        let id = queue.push(topic.to_string(), payload)?;
+        let id = queue.push(topic_arc, payload)?;
         
         // Get entry to send to subscribers
         let entry = queue.read(id);

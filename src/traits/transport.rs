@@ -3,8 +3,8 @@
 
 use async_trait::async_trait;
 
-// Re-export the canonical TransportError from tcp.rs
-pub use crate::network::tcp::TransportError;
+// Re-export TransportError from transport_traits (the trait module)
+pub use crate::network::transport_traits::TransportError;
 
 /// Connection information
 #[derive(Debug, Clone)]

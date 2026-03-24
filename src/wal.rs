@@ -26,7 +26,8 @@ pub struct TopicWal {
 impl TopicWal {
     /// Create or open a WAL for a topic
     pub fn open(topic: &str, data_dir: &Path) -> Result<Self, WalError> {
-        let topic_dir = data_dir.join("wal").join(sanitize_topic(topic));
+        let sanitized = sanitize_topic(topic)?;
+        let topic_dir = data_dir.join("wal").join(sanitized);
         std::fs::create_dir_all(&topic_dir)?;
         
         let path = topic_dir.join("entries.wal");
@@ -113,10 +114,41 @@ impl TopicWal {
     }
 }
 
-/// Sanitize topic name for filesystem
-fn sanitize_topic(topic: &str) -> String {
-    // Replace characters that are problematic for filesystems
-    topic.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_")
+/// Sanitize topic name for filesystem with security validation.
+/// 
+/// Returns an error for:
+/// - Empty topic names
+/// - Topic names exceeding 255 characters
+/// - Topic names containing ".." (path traversal)
+/// - Topic names containing control characters
+fn sanitize_topic(topic: &str) -> Result<String, WalError> {
+    // Check for empty topic name
+    if topic.is_empty() {
+        return Err(WalError::InvalidTopic("topic name cannot be empty".to_string()));
+    }
+    
+    // Check for excessively long topic names
+    if topic.len() > 255 {
+        return Err(WalError::InvalidTopic(format!(
+            "topic name too long: {} characters (max 255)",
+            topic.len()
+        )));
+    }
+    
+    // Check for path traversal attempts
+    if topic.contains("..") {
+        return Err(WalError::InvalidTopic("topic name cannot contain '..'".to_string()));
+    }
+    
+    // Check for control characters
+    if topic.chars().any(|c| c.is_control()) {
+        return Err(WalError::InvalidTopic(
+            "topic name cannot contain control characters".to_string(),
+        ));
+    }
+    
+    // Sanitize by replacing unsafe filesystem characters
+    Ok(topic.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_"))
 }
 
 /// Un-sanitize topic name from filesystem
@@ -289,6 +321,9 @@ pub enum WalError {
     
     #[error("Topic not found: {0}")]
     TopicNotFound(String),
+    
+    #[error("Invalid topic name: {0}")]
+    InvalidTopic(String),
 }
 
 impl From<waly::WalError> for WalError {
@@ -305,8 +340,59 @@ mod tests {
     #[test]
     fn test_wal_sanity_check() {
         let tmp = TempDir::new().unwrap();
+        // "/" is sanitized to "_", so this should work
         let wal = TopicWal::open("test/topic", tmp.path());
         assert!(wal.is_ok());
+    }
+    
+    #[test]
+    fn test_sanitize_topic_valid() {
+        // Valid topic names
+        assert!(sanitize_topic("valid_topic").is_ok());
+        assert!(sanitize_topic("topic123").is_ok());
+        assert!(sanitize_topic("my-topic").is_ok());
+    }
+    
+    #[test]
+    fn test_sanitize_topic_sanitizes_chars() {
+        // Characters should be sanitized
+        let result = sanitize_topic("test/topic").unwrap();
+        assert_eq!(result, "test_topic");
+        
+        let result = sanitize_topic("test:topic").unwrap();
+        assert_eq!(result, "test_topic");
+        
+        let result = sanitize_topic("test\\topic").unwrap();
+        assert_eq!(result, "test_topic");
+    }
+    
+    #[test]
+    fn test_sanitize_topic_empty() {
+        // Empty topic should fail
+        assert!(sanitize_topic("").is_err());
+    }
+    
+    #[test]
+    fn test_sanitize_topic_path_traversal() {
+        // Path traversal should fail
+        assert!(sanitize_topic("../etc/passwd").is_err());
+        assert!(sanitize_topic("topic/../etc").is_err());
+        assert!(sanitize_topic("..").is_err());
+    }
+    
+    #[test]
+    fn test_sanitize_topic_too_long() {
+        // Long topic names should fail
+        let long_topic = "a".repeat(300);
+        assert!(sanitize_topic(&long_topic).is_err());
+    }
+    
+    #[test]
+    fn test_sanitize_topic_control_chars() {
+        // Control characters should fail
+        assert!(sanitize_topic("topic\x00name").is_err());
+        assert!(sanitize_topic("topic\x1fname").is_err());
+        assert!(sanitize_topic("topic\nname").is_err());
     }
     
     #[tokio::test]
@@ -319,7 +405,7 @@ mod tests {
             let entry = Entry { 
                 id: 1, 
                 timestamp: 123, 
-                topic: "test".to_string(), 
+                topic: "test".into(),  // Convert &str to Arc<str>
                 payload: vec![1, 2, 3].into()  // Convert Vec<u8> to Arc<[u8]>
             };
             wal.append(&entry).await.unwrap();
@@ -345,7 +431,7 @@ mod tests {
                 let entry = Entry { 
                     id: i, 
                     timestamp: i * 100, 
-                    topic: "multi-test".to_string(), 
+                    topic: "multi-test".into(),  // Convert &str to Arc<str>
                     payload: vec![i as u8; 10].into()  // Convert Vec<u8> to Arc<[u8]>
                 };
                 wal.append(&entry).await.unwrap();
@@ -374,7 +460,7 @@ mod tests {
             let entry1 = Entry { 
                 id: 1, 
                 timestamp: 1, 
-                topic: "topic1".to_string(), 
+                topic: "topic1".into(),  // Convert &str to Arc<str>
                 payload: vec![1].into()  // Convert Vec<u8> to Arc<[u8]>
             };
             wal1.append(&entry1).await.unwrap();
@@ -383,7 +469,7 @@ mod tests {
             let entry2 = Entry { 
                 id: 1, 
                 timestamp: 2, 
-                topic: "topic2".to_string(), 
+                topic: "topic2".into(),  // Convert &str to Arc<str>
                 payload: vec![2].into()  // Convert Vec<u8> to Arc<[u8]>
             };
             wal2.append(&entry2).await.unwrap();

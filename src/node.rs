@@ -156,11 +156,12 @@ impl AutoQueuesNode {
         // Spawn subscription and receive task
         let remote_values_sub = self.remote_values.clone();
         let running_sub = self.running.clone();
-        let other_nodes: Vec<SocketAddr> = config
+        let other_nodes: Result<Vec<SocketAddr>, _> = config
             .other_nodes(node_id)
             .into_iter()
             .map(|(_, cfg)| cfg.pubsub_addr())
             .collect();
+        let other_nodes = other_nodes?;
 
         tokio::spawn(async move {
             if let Err(e) = Self::subscribe_and_receive(

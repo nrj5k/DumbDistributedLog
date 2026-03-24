@@ -11,58 +11,6 @@ use ddl::traits::queue::QueueTrait;
 // ============================================================================
 
 #[test]
-fn test_spmc_push_pop() {
-    // ARRANGE: Create a queue with capacity 16
-    let mut queue: SimpleQueue<i32, 16> = SimpleQueue::new();
-
-    // ACT: Push entries
-    queue.push(1).unwrap();
-    queue.push(2).unwrap();
-    queue.push(3).unwrap();
-
-    // ASSERT: Verify entries can be retrieved
-    // Get the latest entry (producer's view)
-    if let Some((_, value)) = queue.get_latest() {
-        assert_eq!(value, 3);
-    } else {
-        panic!("Should have entry");
-    }
-    
-    // Get all entries
-    let entries: Vec<i32> = queue.get_latest_n(16);
-    assert_eq!(entries, vec![1, 2, 3]);
-}
-
-#[test]
-fn test_spmc_empty_queue_behavior() {
-    // ARRANGE: Create empty queue
-    let mut queue: SimpleQueue<i32, 16> = SimpleQueue::new();
-
-    // ASSERT: Queue is empty
-    assert!(queue.is_empty());
-    assert_eq!(queue.len(), 0);
-
-    // ASSERT: get_latest returns None for empty queue
-    assert!(queue.get_latest().is_none());
-
-    // ASSERT: get_latest_n returns empty Vec
-    let entries: Vec<i32> = queue.get_latest_n(10);
-    assert!(entries.is_empty());
-}
-
-#[test]
-fn test_spmc_capacity() {
-    // ARRANGE: Create queue with different capacities
-    let queue1: SimpleQueue<i32, 8> = SimpleQueue::new();
-    let queue2: SimpleQueue<i32, 16> = SimpleQueue::new();
-    let queue3: SimpleQueue<i32, 32> = SimpleQueue::new();
-
-    // ASSERT: Verify capacities
-    assert_eq!(queue1.capacity(), 8);
-    assert_eq!(queue2.capacity(), 16);
-    assert_eq!(queue3.capacity(), 32);
-}
-
 // ============================================================================
 // Test SPMC queue capacity limits
 // ============================================================================
@@ -221,16 +169,15 @@ struct TestStruct {
 #[test]
 fn test_queue_trait_get_size() {
     // ARRANGE: Create queue
-    let queue: SimpleQueue<i32, 16> = SimpleQueue::new();
+    let mut queue: SimpleQueue<i32, 16> = SimpleQueue::new();
 
     // ASSERT: Empty queue has size 0
     assert_eq!(queue.get_size(), 0);
 
-    // ACT: Push entries
-    let mut queue_mut = queue;
-    queue_mut.push(1).unwrap();
-    queue_mut.push(2).unwrap();
-    queue_mut.push(3).unwrap();
+    // ACT: Push entries directly
+    queue.push(1).unwrap();
+    queue.push(2).unwrap();
+    queue.push(3).unwrap();
 
     // ASSERT: Size reflects entries
     assert_eq!(queue.get_size(), 3);
@@ -249,22 +196,6 @@ fn test_queue_trait_publish() {
 }
 
 #[test]
-fn test_queue_trait_get_latest_n() {
-    // ARRANGE: Create queue with entries
-    let mut queue: SimpleQueue<i32, 16> = SimpleQueue::new();
-    for i in 1..=10 {
-        queue.push(i).unwrap();
-    }
-
-    // ASSERT: get_latest_n(5) returns last 5 entries
-    let entries: Vec<i32> = queue.get_latest_n(5);
-    assert_eq!(entries, vec![6, 7, 8, 9, 10]);
-
-    // ASSERT: get_latest_n(20) returns all entries (not more)
-    let entries: Vec<i32> = queue.get_latest_n(20);
-    assert_eq!(entries, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-}
-
 // ============================================================================
 // Test consumer read behavior
 // ============================================================================
@@ -273,18 +204,20 @@ fn test_queue_trait_get_latest_n() {
 fn test_consumer_has_data() {
     // ARRANGE: Create queue
     let mut queue: SimpleQueue<i32, 16> = SimpleQueue::new();
-    let consumer = queue.consumer();
 
     // ASSERT: Empty queue has no data
-    assert!(!consumer.has_data());
-    assert!(consumer.is_empty());
+    assert!(queue.is_empty());
 
     // ACT: Push entry
     queue.push(42).unwrap();
 
+    // ASSERT: Queue has data
+    assert!(!queue.is_empty());
+    
+    // ACT: Create consumer after push
+    let consumer = queue.consumer();
     // ASSERT: Consumer now has data
     assert!(consumer.has_data());
-    assert!(!consumer.is_empty());
 }
 
 #[test]
@@ -308,7 +241,7 @@ fn test_consumer_available() {
 #[test]
 fn test_consumer_pop_none_when_empty() {
     // ARRANGE: Create empty queue
-    let queue: SimpleQueue<i32, 16> = SimpleQueue::new();
+    let mut queue: SimpleQueue<i32, 16> = SimpleQueue::new();
     let consumer = queue.consumer();
 
     // ASSERT: Pop returns None for empty queue

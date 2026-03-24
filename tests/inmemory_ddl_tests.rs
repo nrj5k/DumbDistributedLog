@@ -3,8 +3,9 @@
 //! This file contains integration tests for the in-memory DDL implementation,
 //! covering concurrent operations, backpressure modes, and subscription behavior.
 
-use ddl::traits::ddl::{BackpressureMode, DDL, DdlConfig, DdlError, Entry};
+use ddl::traits::ddl::{BackpressureMode, DDL, DdlConfig, DdlError};
 use ddl::ddl::InMemoryDdl;
+use std::sync::Arc;
 use std::time::Duration;
 
 // ============================================================================
@@ -13,22 +14,21 @@ use std::time::Duration;
 
 #[tokio::test]
 async fn test_concurrent_push_multiple_threads() {
-    // ARRANGE: Create DDL instance with default config
+    // ARRANGE: Create ONE shared DDL instance
     let config = DdlConfig::default();
+    let ddl = Arc::new(InMemoryDdl::new(config));
     let topic = "test.concurrent_push";
-    let config_clone = config.clone();
 
     // ACT: Launch multiple threads pushing concurrently
     let mut handles = vec![];
     for thread_id in 0..10 {
         let topic_clone = topic.to_string();
-        let config_thread = config_clone.clone();
+        let ddl_clone = Arc::clone(&ddl);
         let handle = tokio::spawn(async move {
-            let mut ddl = InMemoryDdl::new(config_thread);
             let mut ids = vec![];
             for i in 0..100 {
                 let payload = format!("thread:{}-item:{}", thread_id, i);
-                let id = ddl
+                let id = ddl_clone
                     .push(&topic_clone, payload.into_bytes())
                     .await
                     .unwrap();
@@ -49,19 +49,10 @@ async fn test_concurrent_push_multiple_threads() {
     // Verify we got 1000 total entries (10 threads x 100 items each)
     assert_eq!(all_ids.len(), 1000);
 
-    // Verify IDs are unique and sequential within each thread's view
-    for thread_id in 0..10 {
-        let thread_ids: Vec<_> = all_ids
-            .iter()
-            .skip(thread_id * 100)
-            .take(100)
-            .cloned()
-            .collect();
-        //Each thread should have IDs that are at least monotonic
-        for i in 1..thread_ids.len() {
-            assert!(thread_ids[i] >= thread_ids[i - 1]);
-        }
-    }
+    // Verify all IDs are unique (concurrent pushes to shared DDL)
+    all_ids.sort();
+    let unique_count = all_ids.windows(2).filter(|w| w[0] != w[1]).count() + 1;
+    assert_eq!(unique_count, 1000);
 }
 
 // ============================================================================
@@ -115,8 +106,8 @@ async fn test_subscribe_after_push() {
     assert_eq!(entry.id, id3);
     assert_eq!(entry.payload.as_ref(), b"third");
 
-    // Should be no more data (no more entries)
-    assert!(stream.next().is_none());
+    // Should be no more data - use try_next() for non-blocking check
+    assert!(stream.try_next().is_none());
 }
 
 // ============================================================================
@@ -353,6 +344,9 @@ async fn test_push_empty_payload() {
     let ddl = InMemoryDdl::new(config);
     let topic = "test.empty_payload";
 
+    // Subscribe FIRST before pushing
+    let mut stream = ddl.subscribe(topic).await.unwrap();
+
     // ACT: Push empty payload
     let id = ddl.push(topic, vec![]).await.unwrap();
 
@@ -360,8 +354,7 @@ async fn test_push_empty_payload() {
     assert_eq!(id, 0);
 
     // Verify we can read it back
-    let mut entry = ddl.subscribe(topic).await.unwrap();
-    let received = entry.next().unwrap();
+    let received = stream.next().unwrap();
     assert_eq!(received.payload.len(), 0);
 }
 
@@ -400,22 +393,18 @@ async fn test_topic_limit_exceeded() {
 
 #[tokio::test]
 async fn test_concurrent_push_subscribe_operations() {
-    // ARRANGE: Create DDL
+    // ARRANGE: Create ONE shared DDL instance
     let config = DdlConfig::default();
+    let ddl = Arc::new(InMemoryDdl::new(config));
     let topic = "test.concurrent_push_subscribe";
-    let config_clone = config.clone();
 
-    // ACT: Spawn tasks that push and subscribe concurrently
-    let mut handles = vec![];
-
-    // Producer task
+    // ACT: Spawn producer task that pushes entries
+    let ddl_producer = Arc::clone(&ddl);
     let topic_producer = topic.to_string();
-    let config_producer = config_clone.clone();
-    let handle1 = tokio::spawn(async move {
-        let mut ddl = InMemoryDdl::new(config_producer);
+    let handle_producer = tokio::spawn(async move {
         let mut ids = vec![];
         for i in 0..50 {
-            let id = ddl
+            let id = ddl_producer
                 .push(&topic_producer, format!("entry_{}", i).into_bytes())
                 .await
                 .unwrap();
@@ -424,40 +413,34 @@ async fn test_concurrent_push_subscribe_operations() {
         }
         ids
     });
-    handles.push(handle1);
 
-    // Subscriber task
+    // Subscriber task - subscribe FIRST, then receive entries as they come
+    let ddl_subscriber = Arc::clone(&ddl);
     let topic_subscriber = topic.to_string();
-    let config_subscriber = config_clone.clone();
-    let handle2 = tokio::spawn(async move {
-        let mut ddl = InMemoryDdl::new(config_subscriber);
+    let handle_subscriber = tokio::spawn(async move {
+        let mut stream = ddl_subscriber.subscribe(&topic_subscriber).await.unwrap();
         let mut received = vec![];
-        // Try to get entries with timeout
+        // Try to receive entries with a timeout
         for _ in 0..50 {
-            let mut stream = ddl.subscribe(&topic_subscriber).await.unwrap();
-            if let Some(entry) = stream.next() {
+            // Use try_next() for non-blocking check
+            if let Some(entry) = stream.try_next() {
                 received.push(entry.id);
             }
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
         received
     });
-    handles.push(handle2);
 
-    // Wait for all tasks to complete and collect results
-    let mut results = vec![];
-    for handle in handles {
-        let ids = handle.await.unwrap();
-        results.push(ids);
-    }
-
-    let producer_ids = &results[0];
-    let subscriber_ids = &results[1];
+    // Wait for producer to finish
+    let producer_ids = handle_producer.await.unwrap();
+    
+    // Wait for subscriber to finish
+    let subscriber_ids = handle_subscriber.await.unwrap();
 
     // ASSERT: Producer pushed entries
     assert_eq!(producer_ids.len(), 50);
     
-    // Subscriber received some entries (may not get all due to timing)
-    // This is expected behavior - subscriber may start after some entries are pushed
+    // Subscriber received some entries
     assert!(!subscriber_ids.is_empty());
     assert!(subscriber_ids.len() <= producer_ids.len());
 }
@@ -473,16 +456,18 @@ async fn test_entry_metadata_preservation() {
     let ddl = InMemoryDdl::new(config);
     let topic = "test.metadata";
 
+    // Subscribe FIRST before pushing
+    let mut stream = ddl.subscribe(topic).await.unwrap();
+
     // ACT: Push entry with specific data
     let payload = b"test_payload_with_metadata";
     let id = ddl.push(topic, payload.to_vec()).await.unwrap();
 
     // ASSERT: Verify all metadata is preserved correctly
-    let mut stream = ddl.subscribe(topic).await.unwrap();
     let entry = stream.next().unwrap();
 
     assert_eq!(entry.id, id);
-    assert_eq!(entry.topic, topic);
+    assert_eq!(&*entry.topic, topic);
     assert_eq!(entry.payload.as_ref(), payload);
     assert!(entry.timestamp > 0); // Timestamp should be set
 }

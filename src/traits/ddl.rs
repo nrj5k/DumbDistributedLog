@@ -13,8 +13,8 @@ pub struct Entry {
     pub id: u64,
     /// When the entry was created (nanoseconds since epoch)
     pub timestamp: u64,
-    /// Which topic this entry belongs to
-    pub topic: String,
+    /// Which topic this entry belongs to (Arc<str> for zero-copy sharing)
+    pub topic: Arc<str>,
     /// The actual data (shared ownership for zero-copy)
     pub payload: Arc<[u8]>,
 }

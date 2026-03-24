@@ -944,6 +944,7 @@ dependencies = [
  "criterion",
  "crossbeam",
  "dashmap",
+ "futures",
  "iroh-base",
  "iroh-gossip",
  "log",

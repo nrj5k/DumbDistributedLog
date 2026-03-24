@@ -5,7 +5,7 @@
 use crate::config::Config;
 
 use crate::queue::persistence::{PersistenceManager, QueuePersistence};
-use crate::queue::source::{AutoQueuesError, ExpressionSource, QueueSource};
+use crate::queue::source::{AutoQueuesError, QueueSource};
 use crate::queue::spmc_lockfree_queue::SPMCLockFreeQueue as SimpleQueue;
 use crate::queue::QueueError;
 use crate::IntervalConfig;
@@ -108,55 +108,6 @@ impl QueueRegistry {
         self.sources.insert(name.to_string(), Box::new(source));
 
         Ok(())
-    }
-
-    /// Add an expression-based queue to the registry
-    pub fn add_expression_queue(
-        &self,
-        name: &str,
-        expression: &str,
-        source_queue: &str,
-        trigger_on_push: bool,
-        trigger_interval_ms: Option<u64>,
-    ) -> Result<(), AutoQueuesError> {
-        self.add_expression_queue_with_persistence(
-            name,
-            expression,
-            source_queue,
-            trigger_on_push,
-            trigger_interval_ms,
-            false,
-        )
-    }
-
-    /// Add an expression-based queue to the registry with optional persistence
-    pub fn add_expression_queue_with_persistence(
-        &self,
-        name: &str,
-        expression: &str,
-        source_queue: &str,
-        trigger_on_push: bool,
-        trigger_interval_ms: Option<u64>,
-        enable_persistence: bool,
-    ) -> Result<(), AutoQueuesError> {
-        // TODO: Validate the expression
-        // For now, we'll skip validation since the expression module was removed
-        let _ = expression;
-
-        let source = ExpressionSource::new(
-            expression.to_string(),
-            source_queue.to_string(),
-            trigger_on_push,
-            trigger_interval_ms,
-        );
-
-        // Expressions always evaluate to f64 values
-        self.add_queue_with_interval_and_persistence::<f64>(
-            name,
-            source,
-            IntervalConfig::default(),
-            enable_persistence,
-        )
     }
 
     /// Check if a queue exists in the registry

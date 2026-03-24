@@ -64,6 +64,9 @@ pub enum ConfigError {
 
     #[error("Missing required field: {0}")]
     MissingField(String),
+
+    #[error("Parse error: {0}")]
+    ParseError(String),
 }
 
 // ============================================================================
@@ -190,31 +193,31 @@ pub struct NodeConfig {
 
 impl NodeConfig {
     /// Get the socket address for node communication
-    pub fn communication_addr(&self) -> SocketAddr {
+    pub fn communication_addr(&self) -> Result<SocketAddr, ConfigError> {
         format!("{}:{}", self.host, self.communication_port)
             .parse()
-            .unwrap()
+            .map_err(|e| ConfigError::ParseError(format!("Invalid communication address: {}", e)))
     }
 
     /// Get the query address
-    pub fn query_addr(&self) -> SocketAddr {
+    pub fn query_addr(&self) -> Result<SocketAddr, ConfigError> {
         format!("{}:{}", self.host, self.query_port)
             .parse()
-            .unwrap()
+            .map_err(|e| ConfigError::ParseError(format!("Invalid query address: {}", e)))
     }
 
     /// Get the coordination address
-    pub fn coordination_addr(&self) -> SocketAddr {
+    pub fn coordination_addr(&self) -> Result<SocketAddr, ConfigError> {
         format!("{}:{}", self.host, self.coordination_port)
             .parse()
-            .unwrap()
+            .map_err(|e| ConfigError::ParseError(format!("Invalid coordination address: {}", e)))
     }
 
     /// Get the pub/sub address for metric distribution
-    pub fn pubsub_addr(&self) -> SocketAddr {
+    pub fn pubsub_addr(&self) -> Result<SocketAddr, ConfigError> {
         format!("{}:{}", self.host, self.pubsub_port)
             .parse()
-            .unwrap()
+            .map_err(|e| ConfigError::ParseError(format!("Invalid pubsub address: {}", e)))
     }
 }
 

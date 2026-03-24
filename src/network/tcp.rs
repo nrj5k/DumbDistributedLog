@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc, Semaphore};
 use crate::traits::ddl::Entry;
+use crate::network::transport_traits::TransportError;
 use log::{info, debug, warn, error};
 
 /// TCP transport server
@@ -311,48 +312,6 @@ async fn handle_connection(
             }
         }
     }
-}
-
-/// Transport errors
-#[derive(Debug, thiserror::Error)]
-pub enum TransportError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    
-    #[error("Serialization error: {0}")]
-    Serialization(#[from] serde_json::Error),
-    
-    #[error("Generic serialization error: {source}")]
-    SerializationError {
-        source: Box<dyn std::error::Error + Send + Sync>,
-    },
-    
-    #[error("Peer not found: {0}")]
-    PeerNotFound(String),
-    
-    #[error("Send failed to peer: {0}")]
-    SendFailed(String),
-    
-    #[error("Backpressure: {0}")]
-    Backpressure(String),
-    
-    #[error("Connection limit reached")]
-    ConnectionLimit,
-    
-    #[error("Operation timeout: {0}")]
-    Timeout(String),
-    
-    #[error("Connection lost to {remote_addr}")]
-    ConnectionLost { remote_addr: std::net::SocketAddr },
-    
-    #[error("Network unreachable")]
-    NetworkUnreachable,
-    
-    #[error("Transport shutdown")]
-    TransportShutdown,
-    
-    #[error("Invalid message format")]
-    InvalidMessage,
 }
 
 #[cfg(test)]

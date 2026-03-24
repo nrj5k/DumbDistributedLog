@@ -6,11 +6,10 @@
 use ddl::traits::ddl::{DDL, DdlConfig, EntryStream};
 use ddl::ddl::InMemoryDdl;
 use ddl::queue::interval::IntervalConfig;
-use ddl::queue::source::FunctionSource;
+use ddl::queue::source::{FunctionSource, QueueSource};
 use ddl::queue::spmc_lockfree_queue::SPMCLockFreeQueue as SimpleQueue;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tokio::time::timeout;
 
 // ============================================================================
 // Stress test: 1000 concurrent pushes
@@ -21,16 +20,22 @@ async fn test_stress_concurrent_pushes() {
     // ARRANGE: Create DDL
     let config = DdlConfig::default();
     let topic = "stress.concurrent_pushes";
-
-    // ACT: Spawn 1000 concurrent push tasks
+    let ddl = Arc::new(InMemoryDdl::new(config));
+    // ACT: Launch 100 threads pushing concurrently (using shared DDL)
     let mut handles = vec![];
-    for i in 0..1000 {
+    for thread_id in 0..100 {
         let topic_clone = topic.to_string();
+        let ddl_clone = ddl.clone();
         let handle = tokio::spawn(async move {
-            let mut ddl = InMemoryDdl::new(config.clone());
-            ddl.push(&topic_clone, format!("entry_{}", i).into_bytes())
-                .await
-                .unwrap()
+            let mut ids = vec![];
+            for i in 0..10 {
+                let id = ddl_clone
+                    .push(&topic_clone, format!("entry_{}", i).into_bytes())
+                    .await
+                    .unwrap();
+                ids.push(id);
+            }
+            ids
         });
         handles.push(handle);
     }
@@ -38,14 +43,13 @@ async fn test_stress_concurrent_pushes() {
     // ASSERT: All pushes should succeed
     let mut ids = vec![];
     for handle in handles {
-        ids.push(handle.await.unwrap());
+        ids.extend(handle.await.unwrap());
     }
 
-    // Verify we got 1000 unique entries
+    // Verify we got 1000 entries (100 threads x 10 items each)
     assert_eq!(ids.len(), 1000);
 
     // Verify entries are in the DDL
-    let ddl = InMemoryDdl::new(config);
     let position = ddl.position(topic).await.unwrap();
     assert_eq!(position, 1000);
 }
@@ -58,10 +62,11 @@ async fn test_stress_concurrent_pushes() {
 async fn test_stress_many_subscribers() {
     // ARRANGE: Create DDL
     let config = DdlConfig::default();
+    let config_clone = config.clone();
     let topic = "stress.many_subscribers";
 
     // Create DDL instance for this test
-    let ddl = InMemoryDdl::new(config);
+    let ddl = InMemoryDdl::new(config_clone.clone());
     
     // ACT: Create 100 subscribers
     let mut streams = vec![];
@@ -123,7 +128,6 @@ async fn test_stress_high_throughput() {
     assert_eq!(all_ids.len(), 10000);
 
     // Throughput should be reasonable
-    // (This is a sanity check - actual numbers will vary)
     let rate = (all_ids.len() as f64) / duration.as_secs_f64();
     log::info!("Push rate: {:.2} entries/second", rate);
     
@@ -140,7 +144,8 @@ async fn test_performance_baseline_push_rate() {
     // ARRANGE: Create DDL
     let config = DdlConfig::default();
     let topic = "perf.baseline";
-    let ddl = InMemoryDdl::new(config);
+    let config_clone = config.clone();
+    let ddl = InMemoryDdl::new(config_clone);
 
     // Warmup: push 1000 entries
     for i in 0..1000 {
@@ -166,8 +171,7 @@ async fn test_performance_baseline_push_rate() {
     // ASSERT: Should achieve reasonable throughput
     log::info!("Push rate: {:.2} entries/second", rate);
 
-    // Expected: At least 1000 entries/second on modern hardware
-    // This is a sanity check that may fail on CI
+    // Expected: At least 100 entries/second
     assert!(rate > 100.0, "Should achieve at least 100 entries/second");
 }
 
@@ -179,8 +183,9 @@ async fn test_performance_baseline_push_rate() {
 async fn test_performance_batch_push_rate() {
     // ARRANGE: Create DDL
     let config = DdlConfig::default();
+    let config_clone = config.clone();
     let topic = "perf.batch";
-    let ddl = InMemoryDdl::new(config);
+    let ddl = InMemoryDdl::new(config_clone);
 
     // ACT: Push batches of 100 entries
     let batch_size = 100;
@@ -207,7 +212,7 @@ async fn test_performance_batch_push_rate() {
         num_batches as f64 / duration.as_secs_f64()
     );
 
-    // Expected: At least 1000 entries/second
+    // Expected: At least 100 entries/second
     assert!(rate > 100.0);
 }
 
@@ -240,17 +245,18 @@ fn test_function_source_pause_resume() {
 async fn test_stress_many_producers_one_topic() {
     // ARRANGE: Create DDL
     let config = DdlConfig::default();
+    let ddl = Arc::new(InMemoryDdl::new(config));
     let topic = "stress.many_producers";
 
-    // ACT: 50 producers, each pushing 20 entries
+    // ACT: 50 producers, each pushing 20 entries (using shared DDL instance)
     let mut handles = vec![];
     for producer_id in 0..50 {
         let topic_clone = topic.to_string();
+        let ddl_clone = ddl.clone();
         let handle = tokio::spawn(async move {
-            let mut ddl = InMemoryDdl::new(config.clone());
             let mut ids = vec![];
             for i in 0..20 {
-                let id = ddl
+                let id = ddl_clone
                     .push(&topic_clone, format!("p{}_e{}", producer_id, i).into_bytes())
                     .await
                     .unwrap();
@@ -270,7 +276,7 @@ async fn test_stress_many_producers_one_topic() {
     // ASSERT: 1000 total entries
     assert_eq!(all_ids.len(), 1000);
 
-    // Verify entries are monotonically increasing
+    // Verify entries are monotonically increasing (from same DDL instance)
     for i in 1..all_ids.len() {
         assert!(all_ids[i] >= all_ids[i - 1]);
     }

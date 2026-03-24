@@ -54,7 +54,7 @@ impl DDL for DdlWithWal {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos() as u64,
-            topic: topic.to_string(),
+            topic: topic.into(),  // Convert &str to Arc<str>
             payload: payload.into(), // Convert Vec<u8> to Arc<[u8]>
         };
         

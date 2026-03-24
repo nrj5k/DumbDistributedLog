@@ -6,10 +6,9 @@
 use ddl::traits::ddl::{DDL, DdlConfig, EntryStream};
 use ddl::ddl::InMemoryDdl;
 use ddl::queue::interval::IntervalConfig;
-use ddl::queue::source::FunctionSource;
+use ddl::queue::source::{FunctionSource, QueueSource};
 use ddl::queue::spmc_lockfree_queue::SPMCLockFreeQueue as SimpleQueue;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
 
 // ============================================================================
 // Test empty topic name handling
@@ -36,6 +35,9 @@ async fn test_empty_payload() {
     let config = DdlConfig::default();
     let ddl = InMemoryDdl::new(config);
 
+    // Subscribe BEFORE pushing (pub/sub pattern)
+    let mut stream = ddl.subscribe("topic").await.unwrap();
+
     // ACT: Push empty payload
     let result = ddl.push("topic", vec![]).await;
 
@@ -44,7 +46,6 @@ async fn test_empty_payload() {
     let id = result.unwrap();
 
     // Verify we can read it back
-    let mut stream = ddl.subscribe("topic").await.unwrap();
     let entry = stream.next().unwrap();
     assert_eq!(entry.payload.len(), 0);
     assert_eq!(entry.id, id);
@@ -60,6 +61,9 @@ async fn test_large_payload() {
     let config = DdlConfig::default();
     let ddl = InMemoryDdl::new(config);
 
+    // Subscribe BEFORE pushing (pub/sub pattern)
+    let mut stream = ddl.subscribe("largedata").await.unwrap();
+
     // ACT: Push a large payload (1MB)
     let large_data = vec![42u8; 1_048_576]; // 1MB
     let result = ddl.push("largedata", large_data.clone()).await;
@@ -69,7 +73,6 @@ async fn test_large_payload() {
     let id = result.unwrap();
 
     // Verify we can read it back
-    let mut stream = ddl.subscribe("largedata").await.unwrap();
     let entry = stream.next().unwrap();
     assert_eq!(entry.payload.len(), 1_048_576);
     assert_eq!(entry.id, id);
@@ -86,27 +89,34 @@ async fn test_rapid_push_subscribe() {
     let config = DdlConfig::default();
     let ddl = InMemoryDdl::new(config);
 
-    // ACT: Rapidly push and subscribe
+    // Create subscriptions BEFORE pushing (pub/sub pattern)
+    // This ensures the streams are ready to receive data
+    let mut streams = vec![];
     for i in 0..100 {
         let topic = format!("topic{}", i);
-        ddl.push(&topic, b"data".to_vec()).await.unwrap();
-
-        // Immediately subscribe
-        let mut stream = ddl.subscribe(&topic).await.unwrap();
-        let entry = stream.next().unwrap();
-        assert_eq!(entry.payload.as_ref(), b"data");
+        let stream = ddl.subscribe(&topic).await.unwrap();
+        streams.push((topic, stream));
     }
 
-    // ASSERT: All 100 operations succeeded
-    // (The test would panic if it failed)
+    // ACT: Push data to each topic
+    for (topic, _) in &streams {
+        ddl.push(topic, b"data".to_vec()).await.unwrap();
+    }
+
+    // ASSERT: All 100 streams should receive their data
+    for (topic, mut stream) in streams {
+        let entry = stream.next().unwrap();
+        assert_eq!(&*entry.topic, topic);
+        assert_eq!(entry.payload.as_ref(), b"data");
+    }
 }
 
 // ============================================================================
 // Test FunctionSource pause immediately after start
 // ============================================================================
 
-#[test]
-fn test_function_source_pause_immediately() {
+#[tokio::test]
+async fn test_function_source_pause_immediately() {
     // ARRANGE: Create queue and source
     let queue = Arc::new(RwLock::new(SimpleQueue::<i32, 1024>::new()));
     let source = FunctionSource::new(|| 42);
@@ -176,18 +186,19 @@ async fn test_immediate_stream_consume() {
     let ddl = InMemoryDdl::new(config);
     let topic = "test.immediate";
 
-    // ACT: Push to topic first
+    // Subscribe BEFORE pushing (pub/sub pattern)
+    let mut stream = ddl.subscribe(topic).await.unwrap();
+
+    // ACT: Push to topic
     ddl.push(topic, b"first".to_vec()).await.unwrap();
     ddl.push(topic, b"second".to_vec()).await.unwrap();
 
-    // THEN: Immediately subscribe and consume
-    let mut stream = ddl.subscribe(topic).await.unwrap();
-
     // ASSERT: Should receive both entries
-    for expected in [b"first", b"second"].iter() {
-        let entry = stream.next().unwrap();
-        assert_eq!(entry.payload.as_ref(), *expected);
-    }
+    let entry1 = stream.next().unwrap();
+    assert_eq!(entry1.payload.as_ref(), b"first");
+
+    let entry2 = stream.next().unwrap();
+    assert_eq!(entry2.payload.as_ref(), b"second");
 }
 
 // ============================================================================
@@ -200,7 +211,7 @@ async fn test_special_characters_in_topic() {
     let config = DdlConfig::default();
     let ddl = InMemoryDdl::new(config);
 
-    // ACT: Push with various topic name formats
+    // Topics with special characters
     let topics = [
         "topic-with-dashes",
         "topic_with_underscores",
@@ -210,13 +221,22 @@ async fn test_special_characters_in_topic() {
         "mixed-Topic_123.test",
     ];
 
+    // Create subscriptions BEFORE pushing (pub/sub pattern)
+    let mut streams = vec![];
     for topic in &topics {
-        ddl.push(topic, b"data".to_vec()).await.unwrap();
+        let stream = ddl.subscribe(topic).await.unwrap();
+        streams.push((*topic, stream));
+    }
 
-        // Verify we can read it back
-        let mut stream = ddl.subscribe(topic).await.unwrap();
+    // ACT: Push with various topic name formats
+    for (topic, _) in &streams {
+        ddl.push(topic, b"data".to_vec()).await.unwrap();
+    }
+
+    // ASSERT: Verify we can read each topic
+    for (topic, mut stream) in streams {
         let entry = stream.next().unwrap();
-        assert_eq!(entry.topic, *topic);
+        assert_eq!(&*entry.topic, topic);
     }
 }
 
