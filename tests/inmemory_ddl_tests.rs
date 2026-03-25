@@ -160,7 +160,7 @@ async fn test_backpressure_drop_oldest() {
     let ddl = InMemoryDdl::new(config);
     let topic = "test.backpressure_drop_oldest";
 
-    let mut stream = ddl.subscribe(topic).await.unwrap();
+    let stream = ddl.subscribe(topic).await.unwrap();
 
     // ACT: Push more entries than buffer can hold
     for i in 0..10 {
@@ -192,7 +192,7 @@ async fn test_backpressure_drop_newest() {
     let ddl = InMemoryDdl::new(config);
     let topic = "test.backpressure_drop_newest";
 
-    let mut stream = ddl.subscribe(topic).await.unwrap();
+    let stream = ddl.subscribe(topic).await.unwrap();
 
     // ACT: Push entries rapidly
     for i in 0..10 {
@@ -258,7 +258,7 @@ async fn test_ack_advances_position() {
     // ACT: Push entries and acknowledge them
     let id1 = ddl.push(topic, b"entry1".to_vec()).await.unwrap();
     let id2 = ddl.push(topic, b"entry2".to_vec()).await.unwrap();
-    let id3 = ddl.push(topic, b"entry3".to_vec()).await.unwrap();
+    let _id3 = ddl.push(topic, b"entry3".to_vec()).await.unwrap();
 
     // Verify position is at 3 (next entry ID)
     let position_before = ddl.position(topic).await.unwrap();
@@ -418,7 +418,7 @@ async fn test_concurrent_push_subscribe_operations() {
     let ddl_subscriber = Arc::clone(&ddl);
     let topic_subscriber = topic.to_string();
     let handle_subscriber = tokio::spawn(async move {
-        let mut stream = ddl_subscriber.subscribe(&topic_subscriber).await.unwrap();
+        let stream = ddl_subscriber.subscribe(&topic_subscriber).await.unwrap();
         let mut received = vec![];
         // Try to receive entries with a timeout
         for _ in 0..50 {

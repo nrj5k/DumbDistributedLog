@@ -3,7 +3,7 @@
 //! This file contains tests for boundary conditions, unusual inputs,
 //! and edge case behaviors that might cause panics or unexpected behavior.
 
-use ddl::traits::ddl::{DDL, DdlConfig, EntryStream};
+use ddl::traits::ddl::{DDL, DdlConfig};
 use ddl::ddl::InMemoryDdl;
 use ddl::queue::interval::IntervalConfig;
 use ddl::queue::source::{FunctionSource, QueueSource};

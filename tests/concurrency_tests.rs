@@ -3,12 +3,10 @@
 //! This file contains stress tests that push the system to its limits
 //! with concurrent operations, high throughput, and many participants.
 
-use ddl::traits::ddl::{DDL, DdlConfig, DdlError, EntryStream};
+use ddl::traits::ddl::{DDL, DdlConfig, DdlError};
 use ddl::ddl::InMemoryDdl;
-use ddl::queue::interval::IntervalConfig;
 use ddl::queue::source::{FunctionSource, QueueSource};
-use ddl::queue::spmc_lockfree_queue::SPMCLockFreeQueue as SimpleQueue;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 // ============================================================================
@@ -23,7 +21,7 @@ async fn test_stress_concurrent_pushes() {
     let ddl = Arc::new(InMemoryDdl::new(config));
     // ACT: Launch 100 threads pushing concurrently (using shared DDL)
     let mut handles = vec![];
-    for thread_id in 0..100 {
+    for _thread_id in 0..100 {
         let topic_clone = topic.to_string();
         let ddl_clone = ddl.clone();
         let handle = tokio::spawn(async move {

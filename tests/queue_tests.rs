@@ -241,7 +241,7 @@ fn test_consumer_available() {
 #[test]
 fn test_consumer_pop_none_when_empty() {
     // ARRANGE: Create empty queue
-    let mut queue: SimpleQueue<i32, 16> = SimpleQueue::new();
+    let queue: SimpleQueue<i32, 16> = SimpleQueue::new();
     let consumer = queue.consumer();
 
     // ASSERT: Pop returns None for empty queue
