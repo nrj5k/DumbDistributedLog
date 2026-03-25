@@ -7,6 +7,7 @@ use crate::queue::persistence::QueuePersistence;
 use crate::queue::spmc_lockfree_queue::SPMCLockFreeQueue as SimpleQueue;
 use crate::queue::QueueError;
 use crate::traits::queue::QueueTrait;
+use crate::types::convert_to_f64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -148,32 +149,6 @@ where
     }
 }
 
-/// Convert a value to f64 for persistence
-/// This is a temporary solution - in a real implementation you would want to use
-/// proper serialization or type constraints
-fn convert_to_f64<T>(value: &T) -> Option<f64>
-where
-    T: 'static,
-{
-    // This is a simple implementation that tries common numeric types
-    // In practice, you'd probably want to constrain T to be numeric or serializable
-    if let Some(v) = (value as &dyn std::any::Any).downcast_ref::<f64>() {
-        Some(*v)
-    } else if let Some(v) = (value as &dyn std::any::Any).downcast_ref::<f32>() {
-        Some(*v as f64)
-    } else if let Some(v) = (value as &dyn std::any::Any).downcast_ref::<i64>() {
-        Some(*v as f64)
-    } else if let Some(v) = (value as &dyn std::any::Any).downcast_ref::<i32>() {
-        Some(*v as f64)
-    } else if let Some(v) = (value as &dyn std::any::Any).downcast_ref::<u64>() {
-        Some(*v as f64)
-    } else if let Some(v) = (value as &dyn std::any::Any).downcast_ref::<u32>() {
-        Some(*v as f64)
-    } else {
-        None
-    }
-}
-
 /// Trait for queue data sources
 pub trait QueueSource<T: Clone + Send + Sync + 'static>: Send {
     /// Start the queue source with interval configuration and optional persistence
@@ -192,60 +167,4 @@ pub trait QueueSource<T: Clone + Send + Sync + 'static>: Send {
 
     /// Remove the queue source
     fn remove(&self);
-}
-
-/// Blanket implementation for function-based queue sources.
-///
-/// # Limitations
-///
-/// - `pause()`, `resume()`, and `remove()` are no-ops
-/// - For full lifecycle control with pause/resume/remove support, use `FunctionSource` instead
-/// - Background task is NOT started automatically; the `start()` method is a no-op
-/// - This implementation is intended for simple use cases where lifecycle management is not needed
-///
-/// # Example
-///
-/// ```ignore
-/// use autoqueues::queue::source::QueueSource;
-///
-/// // Simple function source (no lifecycle control)
-/// let source = || 42.0;
-///
-/// // For full lifecycle control, use FunctionSource:
-/// use autoqueues::queue::source::FunctionSource;
-/// let source = FunctionSource::new(|| 42.0);
-/// source.pause();  // Now you can pause/resume
-/// ```
-impl<F, T> QueueSource<T> for F
-where
-    F: Fn() -> T + Send + Sync + 'static,
-    T: Clone + Send + Sync + 'static,
-{
-    fn start(
-        &self,
-        queue: Arc<RwLock<SimpleQueue<T>>>,
-        interval: IntervalConfig,
-        _persistence: Option<Arc<QueuePersistence>>,
-    ) {
-        // Background task is not implemented for simple function sources.
-        // This is intentional - for active background task with interval-based publishing,
-        // use FunctionSource which implements proper lifecycle management.
-        let _queue = queue;
-        let _interval = interval;
-    }
-
-    fn pause(&self) {
-        // No-op for simple function sources
-        // Use FunctionSource for full pause/resume control
-    }
-
-    fn resume(&self) {
-        // No-op for simple function sources
-        // Use FunctionSource for full pause/resume control
-    }
-
-    fn remove(&self) {
-        // No-op for simple function sources
-        // Use FunctionSource for full lifecycle control
-    }
 }

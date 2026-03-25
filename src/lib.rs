@@ -78,6 +78,7 @@
 pub mod ddl;
 pub mod ddl_distributed;
 pub mod benchmarks;
+pub mod topic_queue;
 pub mod cluster;
 pub mod config;
 pub mod constants;
@@ -178,9 +179,6 @@ pub use crate::network::transport_traits::TransportError;
 
 /// Transport type enumeration (TCP, RDMA, Hybrid).
 pub use crate::network::transport_traits::TransportType;
-
-/// Hybrid transport combining multiple strategies.
-pub use crate::network::hybrid::HybridTransport;
 
 /// Configuration for hybrid transport mode selection.
 pub use crate::network::hybrid::TransportConfig as HybridTransportConfig;

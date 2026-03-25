@@ -88,6 +88,30 @@ impl Default for AtomicQueueStats {
     }
 }
 
+/// Convert a value to f64 for persistence.
+///
+/// Attempts downcasting to common numeric types. Returns None for non-numeric types.
+pub fn convert_to_f64<T>(value: &T) -> Option<f64>
+where
+    T: 'static,
+{
+    if let Some(v) = (value as &dyn std::any::Any).downcast_ref::<f64>() {
+        Some(*v)
+    } else if let Some(v) = (value as &dyn std::any::Any).downcast_ref::<f32>() {
+        Some(*v as f64)
+    } else if let Some(v) = (value as &dyn std::any::Any).downcast_ref::<i64>() {
+        Some(*v as f64)
+    } else if let Some(v) = (value as &dyn std::any::Any).downcast_ref::<i32>() {
+        Some(*v as f64)
+    } else if let Some(v) = (value as &dyn std::any::Any).downcast_ref::<u64>() {
+        Some(*v as f64)
+    } else if let Some(v) = (value as &dyn std::any::Any).downcast_ref::<u32>() {
+        Some(*v as f64)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,5 +151,47 @@ mod tests {
         let snapshot = stats.snapshot();
         assert_eq!(snapshot.total_published, 2);
         assert_eq!(snapshot.last_updated, 54321);
+    }
+
+    #[test]
+    fn test_convert_to_f64_f64() {
+        let val = 42.5_f64;
+        assert_eq!(convert_to_f64(&val), Some(42.5));
+    }
+
+    #[test]
+    fn test_convert_to_f64_f32() {
+        let val = 42.5_f32;
+        assert_eq!(convert_to_f64(&val), Some(42.5));
+    }
+
+    #[test]
+    fn test_convert_to_f64_i64() {
+        let val = 42_i64;
+        assert_eq!(convert_to_f64(&val), Some(42.0));
+    }
+
+    #[test]
+    fn test_convert_to_f64_i32() {
+        let val = 42_i32;
+        assert_eq!(convert_to_f64(&val), Some(42.0));
+    }
+
+    #[test]
+    fn test_convert_to_f64_u64() {
+        let val = 42_u64;
+        assert_eq!(convert_to_f64(&val), Some(42.0));
+    }
+
+    #[test]
+    fn test_convert_to_f64_u32() {
+        let val = 42_u32;
+        assert_eq!(convert_to_f64(&val), Some(42.0));
+    }
+
+    #[test]
+    fn test_convert_to_f64_non_numeric() {
+        let val = "hello";
+        assert_eq!(convert_to_f64(&val), None);
     }
 }

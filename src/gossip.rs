@@ -2,7 +2,6 @@
 //!
 //! Uses iroh-gossip for efficient peer-to-peer topic distribution.
 
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast};
@@ -41,13 +40,6 @@ impl GossipCoordinator {
     pub async fn join_topic(&self, topic: &str) -> Result<(), GossipError> {
         // In a real implementation, we would join the gossip network here
         info!("Joined gossip for topic: {}", topic);
-        Ok(())
-    }
-
-    /// Announce our presence and owned topics to the network
-    async fn announce_presence(&self) -> Result<(), GossipError> {
-        // In a real implementation, we would announce our presence here
-        info!("Announcing presence");
         Ok(())
     }
 
@@ -111,19 +103,6 @@ impl GossipCoordinator {
         // Send shutdown signal to all receivers
         let _ = self.shutdown_tx.send(());
     }
-}
-
-/// Messages exchanged over gossip
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum GossipMessage {
-    /// Announce node presence and owned topics
-    NodeAnnouncement {
-        node_id: String,
-        topics: Vec<String>,
-        timestamp: u64,
-    },
-    /// Request topics from a peer
-    TopicRequest { requester: String },
 }
 
 /// Gossip errors

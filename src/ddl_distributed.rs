@@ -1,110 +1,14 @@
 //! Distributed DDL implementation using gossip for topic ownership
 
 use crate::gossip::GossipCoordinator;
-use crate::traits::ddl::{BackpressureMode, DDL, DdlConfig, DdlError, Entry, EntryStream};
+use crate::traits::ddl::{validate_topic, DDL, DdlConfig, DdlError, EntryStream};
+use crate::topic_queue::{notify_subscribers, SubscriberInfo, TopicQueue};
 use async_trait::async_trait;
-use crossbeam::channel::{bounded, Sender, TrySendError};
+use crossbeam::channel::bounded;
 use dashmap::DashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::Instant;
 use tokio::task::JoinHandle;
-
-/// Subscriber metadata
-struct SubscriberInfo {
-    sender: Sender<Entry>,
-    created_at: Instant,
-}
-
-/// Per-topic queue with ring buffer semantics
-struct TopicQueue {
-    /// Entries stored in ring buffer
-    entries: Mutex<Vec<Option<Entry>>>,
-    /// Write position (monotonically increasing)
-    write_pos: AtomicU64,
-    /// Last acknowledged position
-    ack_pos: AtomicU64,
-    /// Buffer size (power of 2 for efficient wrap-around)
-    capacity: usize,
-    /// Mask for efficient modulo operations
-    mask: usize,
-}
-
-impl TopicQueue {
-    fn new(capacity: usize) -> Self {
-        // Ensure capacity is power of 2
-        let capacity = capacity.next_power_of_two();
-        let mask = capacity - 1;
-        
-        let mut entries = Vec::with_capacity(capacity);
-        for _ in 0..capacity {
-            entries.push(None);
-        }
-        
-        Self {
-            entries: Mutex::new(entries),
-            write_pos: AtomicU64::new(0),
-            ack_pos: AtomicU64::new(0),
-            capacity,
-            mask,
-        }
-    }
-    
-    /// Append an entry, returns the entry ID
-    fn push(&self, topic: Arc<str>, payload: Vec<u8>) -> Result<u64, DdlError> {
-        let id = self.write_pos.fetch_add(1, Ordering::SeqCst);
-        let index = (id as usize) & self.mask;
-        
-        // Check if we're overwriting unacknowledged data
-        let ack = self.ack_pos.load(Ordering::SeqCst);
-        if id >= ack + self.capacity as u64 {
-            return Err(DdlError::BufferFull(topic.to_string()));
-        }
-        
-        let entry = Entry {
-            id,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
-            topic,
-            payload: payload.into(), // Convert Vec<u8> to Arc<[u8]>
-        };
-        
-        // Store the entry
-        if let Ok(mut entries) = self.entries.lock() {
-            entries[index] = Some(entry);
-        }
-        
-        Ok(id)
-    }
-    
-    /// Read entry at specific ID
-    fn read(&self, id: u64) -> Option<Entry> {
-        let index = (id as usize) & self.mask;
-        if let Ok(entries) = self.entries.lock() {
-            entries[index].clone()
-        } else {
-            None
-        }
-    }
-    
-    /// Acknowledge entries up to this ID
-    fn ack(&self, id: u64) {
-        // Simple: just move ack_pos forward
-        // In production: handle out-of-order acks
-        let current = self.ack_pos.load(Ordering::SeqCst);
-        if id > current {
-            self.ack_pos.store(id, Ordering::SeqCst);
-        }
-    }
-    
-    /// Get current position (next ID to write)
-    fn position(&self) -> u64 {
-        self.write_pos.load(Ordering::SeqCst)
-    }
-}
 
 /// Distributed DDL implementation using gossip for topic ownership
 pub struct DdlDistributed {
@@ -116,7 +20,16 @@ pub struct DdlDistributed {
     /// Gossip coordinator for topic ownership discovery
     gossip: Arc<GossipCoordinator>,
     /// Handle to the gossip message handler task
-    _gossip_task_handle: Option<JoinHandle<()>>,
+    gossip_task_handle: Option<JoinHandle<()>>,
+}
+
+impl Drop for DdlDistributed {
+    fn drop(&mut self) {
+        // Cancel the gossip task if it's running to prevent resource leak
+        if let Some(handle) = self.gossip_task_handle.take() {
+            handle.abort();
+        }
+    }
 }
 
 impl DdlDistributed {
@@ -161,7 +74,7 @@ impl DdlDistributed {
             topics,
             subscribers,
             gossip,
-            _gossip_task_handle: Some(gossip_task_handle),
+            gossip_task_handle: Some(gossip_task_handle),
         })
     }
     
@@ -196,6 +109,9 @@ impl DdlDistributed {
 #[async_trait]
 impl DDL for DdlDistributed {
     async fn push(&self, topic: &str, payload: Vec<u8>) -> Result<u64, DdlError> {
+        // Validate topic name (defense-in-depth)
+        validate_topic(topic)?;
+
         // Check ownership using gossip
         if !self.owns_topic_async(topic).await {
             return Err(DdlError::NotOwner(topic.to_string()));
@@ -208,60 +124,23 @@ impl DDL for DdlDistributed {
         let id = queue.push(topic_arc, payload)?;
         
         // Get entry to send to subscribers
-        let entry = queue.read(id);
-        
-        // Notify subscribers with backpressure handling
-        if let Some(senders) = self.subscribers.get(topic) {
-            if let Some(entry) = entry {
-                for info in senders.value().iter() {
-                    match self.config.subscription_backpressure {
-                        BackpressureMode::Block => {
-                            // This should not be called in async context, but we handle it
-                            // In practice, Block mode requires async send
-                            if let Err(e) = info.sender.send(entry.clone()) {
-                                log::debug!("Subscriber disconnected: {:?}", e);
-                            }
-                        }
-                        BackpressureMode::DropOldest => {
-                            // Try to send, drop if full (non-blocking)
-                            match info.sender.try_send(entry.clone()) {
-                                Err(TrySendError::Full(_)) => {
-                                    log::debug!("Subscriber buffer full for topic {}, dropping message", topic);
-                                }
-                                Err(TrySendError::Disconnected(_)) => {
-                                    log::debug!("Subscriber disconnected for topic {}", topic);
-                                }
-                                Ok(_) => {}
-                            }
-                        }
-                        BackpressureMode::DropNewest => {
-                            // Check if full before sending
-                            if info.sender.is_full() {
-                                log::debug!("Subscriber buffer full for topic {}, dropping newest", topic);
-                                continue;
-                            }
-                            if let Err(e) = info.sender.try_send(entry.clone()) {
-                                log::debug!("Send error for topic {}: {:?}", topic, e);
-                            }
-                        }
-                        BackpressureMode::Error => {
-                            // Return error if full
-                            if info.sender.is_full() {
-                                return Err(DdlError::SubscriberBufferFull(topic.to_string()));
-                            }
-                            if let Err(e) = info.sender.try_send(entry.clone()) {
-                                log::debug!("Send error for topic {}: {:?}", topic, e);
-                            }
-                        }
-                    }
-                }
-            }
+        if let Some(entry) = queue.read(id) {
+            // Use shared notification function
+            notify_subscribers(
+                &self.subscribers,
+                topic,
+                &entry,
+                self.config.subscription_backpressure,
+            )?;
         }
         
         Ok(id)
     }
     
     async fn subscribe(&self, topic: &str) -> Result<EntryStream, DdlError> {
+        // Validate topic name (defense-in-depth)
+        validate_topic(topic)?;
+
         // Ensure topic exists (create if needed)
         self.get_or_create_topic(topic)?;
         
@@ -274,7 +153,7 @@ impl DDL for DdlDistributed {
             .or_insert_with(Vec::new)
             .push(SubscriberInfo {
                 sender,
-                created_at: Instant::now(),
+                created_at: Some(Instant::now()),
             });
         
         // Create stream with backpressure mode

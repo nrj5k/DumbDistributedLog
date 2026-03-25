@@ -61,12 +61,6 @@ impl EntryStream {
     pub fn try_next(&self) -> Option<Entry> {
         self.receiver.try_recv().ok()
     }
-    
-    /// Acknowledge processing of an entry
-    pub async fn ack(&self, _entry_id: u64) -> Result<(), DdlError> {
-        // In this simple implementation, we don't do anything with acks
-        Ok(())
-    }
 }
 
 /// Core DDL trait - minimal distributed log interface
@@ -202,4 +196,24 @@ pub enum DdlError {
     
     #[error("WAL error: {0}")]
     Wal(String),
+    
+    #[error("Invalid topic name: {0}")]
+    InvalidTopic(String),
+}
+
+/// Validate topic name for defense-in-depth
+pub fn validate_topic(topic: &str) -> Result<(), DdlError> {
+    if topic.is_empty() {
+        return Err(DdlError::InvalidTopic("topic name cannot be empty".to_string()));
+    }
+    if topic.len() > 255 {
+        return Err(DdlError::InvalidTopic(format!("topic name too long: {} characters", topic.len())));
+    }
+    if topic.contains("..") {
+        return Err(DdlError::InvalidTopic("topic name cannot contain '..'".to_string()));
+    }
+    if topic.chars().any(|c| c.is_control()) {
+        return Err(DdlError::InvalidTopic("topic name cannot contain control characters".to_string()));
+    }
+    Ok(())
 }

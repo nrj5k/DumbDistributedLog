@@ -3,7 +3,7 @@
 //! This file contains stress tests that push the system to its limits
 //! with concurrent operations, high throughput, and many participants.
 
-use ddl::traits::ddl::{DDL, DdlConfig, EntryStream};
+use ddl::traits::ddl::{DDL, DdlConfig, DdlError, EntryStream};
 use ddl::ddl::InMemoryDdl;
 use ddl::queue::interval::IntervalConfig;
 use ddl::queue::source::{FunctionSource, QueueSource};
@@ -144,29 +144,39 @@ async fn test_performance_baseline_push_rate() {
     // ARRANGE: Create DDL
     let config = DdlConfig::default();
     let topic = "perf.baseline";
-    let config_clone = config.clone();
-    let ddl = InMemoryDdl::new(config_clone);
+    let ddl = InMemoryDdl::new(config);
 
-    // Warmup: push 1000 entries
-    for i in 0..1000 {
+    // Subscribe to drain entries during the test
+    let stream = ddl.subscribe(topic).await.unwrap();
+
+    // Warmup: push and drain
+    for i in 0..100 {
         ddl.push(&topic, format!("warmup_{}", i).into_bytes())
             .await
             .unwrap();
     }
+    while stream.try_next().is_some() {}
 
     // ACT: Measure push rate
     let start = std::time::Instant::now();
     let mut count = 0;
 
     while start.elapsed() < Duration::from_secs(1) {
-        ddl.push(&topic, format!("entry_{}", count).into_bytes())
-            .await
-            .unwrap();
-        count += 1;
+        match ddl.push(&topic, format!("entry_{}", count).into_bytes()).await {
+            Ok(_) => count += 1,
+            Err(DdlError::BufferFull(_)) => {
+                // Drain some entries and continue
+                for _ in 0..100 {
+                    if stream.try_next().is_none() {
+                        break;
+                    }
+                }
+            }
+            Err(e) => panic!("Unexpected error: {:?}", e),
+        }
     }
 
-    let duration = start.elapsed();
-    let rate = (count as f64) / duration.as_secs_f64();
+    let rate = (count as f64) / start.elapsed().as_secs_f64();
 
     // ASSERT: Should achieve reasonable throughput
     log::info!("Push rate: {:.2} entries/second", rate);

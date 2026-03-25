@@ -5,15 +5,12 @@
 
 #[cfg(test)]
 mod benchmarks {
-    
+
     use std::sync::Arc;
     use std::thread;
     use std::time::Instant;
 
-    use crate::{
-        queue::{lockfree::ShardedRingBuffer, spmc_lockfree_queue::SPMCLockFreeQueue},
-        traits::queue::QueueTrait,
-    };
+    use crate::queue::spmc_lockfree_queue::SPMCLockFreeQueue;
 
     // Only run expensive benchmarks in release mode
     macro_rules! release_only_test {
@@ -94,18 +91,6 @@ mod benchmarks {
             let _ = SPMCLockFreeQueue::<f64, 1024>::new();
             start.elapsed().as_nanos()
         });
-
-        benchmark_with_stats("sharded_ring_buffer_creation", RUNS, || {
-            let start = Instant::now();
-            let _ = ShardedRingBuffer::<f64, 1024>::new();
-            start.elapsed().as_nanos()
-        });
-
-        benchmark_with_stats("lockfree_queue_creation", RUNS, || {
-            let start = Instant::now();
-            let _ = ShardedRingBuffer::<f64, 1024>::new();
-            start.elapsed().as_nanos()
-        });
     }
 
     #[test]
@@ -122,24 +107,6 @@ mod benchmarks {
             let mut queue = SPMCLockFreeQueue::<f64, 4096>::new();
             for i in 0..1000 {
                 let _ = queue.push(i as f64);
-            }
-            start.elapsed().as_nanos()
-        });
-
-        benchmark_with_stats("sharded_ring_buffer_push_1000", RUNS, || {
-            let start = Instant::now();
-            let mut queue = ShardedRingBuffer::<f64, 1024>::new();
-            for i in 0..1000 {
-                let _ = QueueTrait::publish(&mut queue, i as f64);
-            }
-            start.elapsed().as_nanos()
-        });
-
-        benchmark_with_stats("lockfree_push_1000", RUNS, || {
-            let start = Instant::now();
-            let mut queue = ShardedRingBuffer::<f64, 4096>::new();
-            for i in 0..1000 {
-                let _ = QueueTrait::publish(&mut queue, i as f64);
             }
             start.elapsed().as_nanos()
         });
@@ -605,30 +572,6 @@ mod benchmarks {
             while let Some((_, _)) = consumer.pop() {}
             start.elapsed().as_nanos()
         });
-
-        benchmark_with_stats(
-            &format!("sharded_ring_buffer_{}k", OPS / 1000),
-            RUNS / 2,
-            || {
-                let start = Instant::now();
-                let mut queue = ShardedRingBuffer::<u64, 1024>::new();
-                for i in 0..OPS {
-                    let _ = QueueTrait::publish(&mut queue, i as u64);
-                }
-                let _ = QueueTrait::get_latest(&queue);
-                start.elapsed().as_nanos()
-            },
-        );
-
-        benchmark_with_stats(&format!("lockfree_{}k", OPS / 1000), RUNS / 2, || {
-            let start = Instant::now();
-            let mut queue = ShardedRingBuffer::<u64, 16384>::new();
-            for i in 0..OPS {
-                let _ = QueueTrait::publish(&mut queue, i as u64);
-            }
-            let _ = QueueTrait::get_latest(&queue);
-            start.elapsed().as_nanos()
-        });
     }
 
     // ============ MEMORY FOOTPRINT ============
@@ -640,19 +583,9 @@ mod benchmarks {
         use std::mem::size_of;
 
         let spmc_size = size_of::<SPMCLockFreeQueue<f64, 1024>>();
-        let sharded_ring_buffer_size = size_of::<ShardedRingBuffer<f64, 1024>>();
-        let lockfree_size = size_of::<ShardedRingBuffer<f64, 1024>>();
 
         println!("Struct overhead:");
         println!("  SPMC Queue<f64, 1024>:           {:>6} bytes", spmc_size);
-        println!(
-            "  Sharded Ring Buffer<f64, 1024>:  {:>6} bytes",
-            sharded_ring_buffer_size
-        );
-        println!(
-            "  LockFree Queue<f64, 1024>:       {:>6} bytes",
-            lockfree_size
-        );
         println!("");
         println!("Data buffer (per queue, pre-allocated):");
         println!("  1024 slots x 16 bytes = 16384 bytes = 16 KB");

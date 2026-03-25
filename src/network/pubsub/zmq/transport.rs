@@ -2,7 +2,7 @@
 //!
 //! Implements the Transport trait using ZMQ for distributed node communication.
 
-use crate::traits::transport::{ConnectionInfo, Transport, TransportError, TransportType};
+use crate::network::transport_traits::{ConnectionInfo, Transport, TransportError, TransportType};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -57,7 +57,7 @@ impl ZmqTransport {
 #[async_trait]
 impl Transport for ZmqTransport {
     /// Connect to remote address
-    async fn connect(&self, addr: &str) -> Result<ConnectionInfo, TransportError> {
+    async fn connect(&mut self, addr: &str) -> Result<ConnectionInfo, TransportError> {
         let socket = self.socket.lock().await;
         
         // Connect to the address
@@ -80,7 +80,7 @@ impl Transport for ZmqTransport {
     }
 
     /// Send data to remote endpoint
-    async fn send(&self, data: &[u8]) -> Result<(), TransportError> {
+    async fn send(&mut self, data: &[u8]) -> Result<(), TransportError> {
         let socket = self.socket.lock().await;
         
         let msg = Message::from(data);
@@ -92,7 +92,7 @@ impl Transport for ZmqTransport {
     }
 
     /// Receive data from remote endpoint
-    async fn receive(&self) -> Result<Vec<u8>, TransportError> {
+    async fn receive(&mut self) -> Result<Vec<u8>, TransportError> {
         let socket = self.socket.lock().await;
         
         let msg = socket.recv_bytes(0).map_err(|_e| TransportError::ConnectionLost {
@@ -150,12 +150,10 @@ pub enum NodeMessage {
 
 /// Send a message using ZMQ transport
 pub async fn send_message(
-    transport: &ZmqTransport,
+    transport: &mut ZmqTransport,
     addr: &str,
     message: &NodeMessage,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use crate::traits::transport::Transport;
-
     let data = serde_json::to_vec(message)?;
 
     // Connect if not already connected
@@ -173,14 +171,14 @@ pub async fn request_value(
     addr: &SocketAddr,
     queue_name: &str,
 ) -> Result<Option<f64>, Box<dyn std::error::Error + Send + Sync>> {
-    let transport = ZmqTransport::new()?;
+    let mut transport = ZmqTransport::new()?;
     let addr_str = format!("tcp://{}", addr);
 
     let message = NodeMessage::RequestValue {
         queue_name: queue_name.to_string(),
     };
 
-    send_message(&transport, &addr_str, &message).await?;
+    send_message(&mut transport, &addr_str, &message).await?;
 
     let response_data = transport.receive().await?;
     let response_msg: NodeMessage = serde_json::from_slice(&response_data)?;
@@ -196,14 +194,14 @@ pub async fn request_expression_score(
     addr: &SocketAddr,
     sources: &[String],
 ) -> Result<Option<f64>, Box<dyn std::error::Error + Send + Sync>> {
-    let transport = ZmqTransport::new()?;
+    let mut transport = ZmqTransport::new()?;
     let addr_str = format!("tcp://{}", addr);
 
     let message = NodeMessage::RequestExpression {
         sources: sources.to_vec(),
     };
 
-    send_message(&transport, &addr_str, &message).await?;
+    send_message(&mut transport, &addr_str, &message).await?;
 
     let response_data = transport.receive().await?;
     let response_msg: NodeMessage = serde_json::from_slice(&response_data)?;
@@ -221,7 +219,7 @@ pub async fn request_aggregation(
     operation: &str,
     args: Vec<String>,
 ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
-    let transport = ZmqTransport::new()?;
+    let mut transport = ZmqTransport::new()?;
     let addr_str = format!("tcp://{}", addr);
 
     let message = NodeMessage::RequestAggregation {
@@ -230,7 +228,7 @@ pub async fn request_aggregation(
         args,
     };
 
-    send_message(&transport, &addr_str, &message).await?;
+    send_message(&mut transport, &addr_str, &message).await?;
 
     let response_data = transport.receive().await?;
     let response_msg: NodeMessage = serde_json::from_slice(&response_data)?;

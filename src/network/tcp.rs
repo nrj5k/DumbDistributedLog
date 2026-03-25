@@ -13,6 +13,9 @@ use crate::traits::ddl::Entry;
 use crate::network::transport_traits::TransportError;
 use log::{info, debug, warn, error};
 
+/// Maximum message size (10MB)
+const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
+
 /// TCP transport server
 pub struct TcpTransport {
     /// Bind address
@@ -271,6 +274,16 @@ async fn handle_connection(
         ).await {
             Ok(Ok(_)) => {
                 let len = u32::from_be_bytes(len_buf) as usize;
+                
+                // Validate message size to prevent OOM attacks
+                if len > MAX_MESSAGE_SIZE {
+                    error!("Message too large: {} bytes (max: {})", len, MAX_MESSAGE_SIZE);
+                    break;
+                }
+                if len == 0 {
+                    error!("Empty message length");
+                    break;
+                }
                 
                 // Read message data with timeout
                 let mut data = vec![0u8; len];

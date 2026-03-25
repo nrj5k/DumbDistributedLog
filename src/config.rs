@@ -570,7 +570,7 @@ impl Config {
 
     /// Get local metric source
     pub fn local_source(&self, name: &str) -> Option<SourceType> {
-        self.local.get(name).map(|s| SourceType::parse(s).unwrap())
+        self.local.get(name).and_then(|s| SourceType::parse(s).ok())
     }
 
     /// Get global metric configuration

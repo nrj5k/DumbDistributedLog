@@ -23,10 +23,14 @@ async fn test_empty_topic_name() {
     // ACT: Push with empty topic name
     let result = ddl.push("", b"data".to_vec()).await;
 
-    // ASSERT: Should succeed (empty topic is valid)
-    assert!(result.is_ok());
-    let id = result.unwrap();
-    assert_eq!(id, 0);
+    // ASSERT: Should fail (empty topic name is invalid)
+    assert!(result.is_err());
+    match result {
+        Err(ddl::traits::ddl::DdlError::InvalidTopic(msg)) => {
+            assert!(msg.contains("empty"));
+        }
+        _ => panic!("Expected InvalidTopic error for empty topic name"),
+    }
 }
 
 #[tokio::test]

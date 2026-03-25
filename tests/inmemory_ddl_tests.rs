@@ -492,8 +492,8 @@ async fn test_stream_acknowledgment() {
     let received = stream.next().unwrap();
     assert_eq!(received.id, id);
 
-    // Acknowledge the entry
-    stream.ack(id).await.unwrap();
+    // Acknowledge the entry (ack is on DDL, not stream)
+    ddl.ack(topic, id).await.unwrap();
 
     // ASSERT: Acknowledge should complete without error
     // (InMemoryDdl's ack in stream is a no-op, but should not error)

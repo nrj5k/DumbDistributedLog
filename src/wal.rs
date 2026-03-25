@@ -116,38 +116,19 @@ impl TopicWal {
 
 /// Sanitize topic name for filesystem with security validation.
 /// 
+/// First validates using the shared validate_topic function, then
+/// sanitizes unsafe filesystem characters.
+/// 
 /// Returns an error for:
 /// - Empty topic names
 /// - Topic names exceeding 255 characters
 /// - Topic names containing ".." (path traversal)
 /// - Topic names containing control characters
 fn sanitize_topic(topic: &str) -> Result<String, WalError> {
-    // Check for empty topic name
-    if topic.is_empty() {
-        return Err(WalError::InvalidTopic("topic name cannot be empty".to_string()));
-    }
+    // First validate using the shared function
+    crate::traits::ddl::validate_topic(topic)?;
     
-    // Check for excessively long topic names
-    if topic.len() > 255 {
-        return Err(WalError::InvalidTopic(format!(
-            "topic name too long: {} characters (max 255)",
-            topic.len()
-        )));
-    }
-    
-    // Check for path traversal attempts
-    if topic.contains("..") {
-        return Err(WalError::InvalidTopic("topic name cannot contain '..'".to_string()));
-    }
-    
-    // Check for control characters
-    if topic.chars().any(|c| c.is_control()) {
-        return Err(WalError::InvalidTopic(
-            "topic name cannot contain control characters".to_string(),
-        ));
-    }
-    
-    // Sanitize by replacing unsafe filesystem characters
+    // Then sanitize for filesystem (replace unsafe characters)
     Ok(topic.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_"))
 }
 
@@ -329,6 +310,15 @@ pub enum WalError {
 impl From<waly::WalError> for WalError {
     fn from(e: waly::WalError) -> Self {
         WalError::Wal(e.to_string())
+    }
+}
+
+impl From<crate::traits::ddl::DdlError> for WalError {
+    fn from(e: crate::traits::ddl::DdlError) -> Self {
+        match e {
+            crate::traits::ddl::DdlError::InvalidTopic(msg) => WalError::InvalidTopic(msg),
+            _ => WalError::Wal(e.to_string()),
+        }
     }
 }
 

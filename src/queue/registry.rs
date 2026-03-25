@@ -33,7 +33,6 @@ impl<T: Clone + Send + Sync + 'static> AnyQueue for Arc<RwLock<SimpleQueue<T>>> 
 pub struct QueueRegistry {
     queues: DashMap<String, Box<dyn AnyQueue>>,
     sources: DashMap<String, Box<dyn Any>>,
-    config: Config,
     persistence_manager: PersistenceManager,
 }
 
@@ -44,7 +43,6 @@ impl QueueRegistry {
         Self {
             queues: DashMap::new(),
             sources: DashMap::new(),
-            config,
             persistence_manager: PersistenceManager::new(persistence_config),
         }
     }

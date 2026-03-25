@@ -201,7 +201,9 @@ impl PersistenceManager {
     }
 
     pub fn enable_for_queue(&self, queue_name: &str) -> std::io::Result<Arc<QueuePersistence>> {
-        let mut handles = self.handles.lock().unwrap();
+        let mut handles = self.handles.lock().map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::Other, format!("Lock poisoned: {}", e))
+        })?;
 
         if let Some(handle) = handles.get(queue_name) {
             return Ok(handle.clone());
@@ -217,65 +219,37 @@ impl PersistenceManager {
     }
 
     pub fn get_handle(&self, queue_name: &str) -> Option<Arc<QueuePersistence>> {
-        let handles = self.handles.lock().unwrap();
+        let handles = self.handles.lock().ok()?;
         handles.get(queue_name).cloned()
     }
 
     /// Shutdown all persistence handles gracefully
     pub fn shutdown_all(&self) {
-        let mut handles = self.handles.lock().unwrap();
+        let handles = match self.handles.lock() {
+            Ok(h) => h,
+            Err(e) => {
+                log::error!("Failed to acquire lock for shutdown: {}", e);
+                return;
+            }
+        };
+
         // Take ownership of all handles to trigger their shutdown via Drop
-        let handle_values: Vec<_> = handles.drain().map(|(_, handle)| handle).collect();
+        let handle_values: Vec<_> = handles.iter().map(|(_, handle)| handle.clone()).collect();
 
         // Explicitly drop each handle to trigger the shutdown via Drop
+        // We drop them after releasing the lock by calling shutdown on each
+        drop(handles);
+
         for handle in handle_values {
+            // This will call the Drop impl which does graceful shutdown
             drop(handle);
         }
-    }
-}
-
-/// Helper function to convert values to f64 for persistence
-pub fn convert_to_f64<T>(value: &T) -> Option<f64>
-where
-    T: 'static,
-{
-    // Try direct casting for numeric types
-    if let Some(v) = (value as &dyn std::any::Any).downcast_ref::<f64>() {
-        Some(*v)
-    } else if let Some(v) = (value as &dyn std::any::Any).downcast_ref::<f32>() {
-        Some(*v as f64)
-    } else if let Some(v) = (value as &dyn std::any::Any).downcast_ref::<i64>() {
-        Some(*v as f64)
-    } else if let Some(v) = (value as &dyn std::any::Any).downcast_ref::<i32>() {
-        Some(*v as f64)
-    } else if let Some(v) = (value as &dyn std::any::Any).downcast_ref::<u64>() {
-        Some(*v as f64)
-    } else if let Some(v) = (value as &dyn std::any::Any).downcast_ref::<u32>() {
-        Some(*v as f64)
-    } else {
-        // For non-numeric types, we can't persist without a custom serialization
-        None
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_convert_to_f64() {
-        let f64_val = 42.5_f64;
-        assert_eq!(convert_to_f64(&f64_val), Some(42.5));
-
-        let f32_val = 42.5_f32;
-        assert_eq!(convert_to_f64(&f32_val), Some(42.5));
-
-        let i64_val = 42_i64;
-        assert_eq!(convert_to_f64(&i64_val), Some(42.0));
-
-        let string_val = "hello";
-        assert_eq!(convert_to_f64(&string_val), None);
-    }
 
     #[test]
     fn test_persistence_config_works_in_practice() {

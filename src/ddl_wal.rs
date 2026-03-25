@@ -5,7 +5,7 @@ use crate::wal::{WalManager, WalError};
 use crate::traits::ddl::{DDL, DdlConfig, DdlError, Entry, EntryStream};
 use async_trait::async_trait;
 use std::path::Path;
-use std::sync::Arc;
+use tokio::sync::Mutex;
 use log::warn;
 
 impl From<WalError> for DdlError {
@@ -23,7 +23,9 @@ pub struct DdlWithWal {
     /// Sync interval (every N entries)
     sync_interval: usize,
     /// Entries since last sync
-    entries_since_sync: Arc<std::sync::atomic::AtomicUsize>,
+    entries_since_sync: std::sync::atomic::AtomicUsize,
+    /// Mutex to serialize sync operations (tokio Mutex for async)
+    sync_lock: Mutex<()>,
 }
 
 impl DdlWithWal {
@@ -36,7 +38,8 @@ impl DdlWithWal {
             inner,
             wal,
             sync_interval: 100,
-            entries_since_sync: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            entries_since_sync: std::sync::atomic::AtomicUsize::new(0),
+            sync_lock: Mutex::new(()),
         })
     }
 }
@@ -61,14 +64,21 @@ impl DDL for DdlWithWal {
         // Append to WAL - propagate errors since data won't be persisted on crash
         self.wal.append(topic, &entry).await?;
         
-        // Periodic sync
-        let count = self.entries_since_sync.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // Periodic sync with proper synchronization
+        // Use Mutex to prevent race condition between check-sync-reset
+        let count = self.entries_since_sync.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if count >= self.sync_interval {
-            if let Err(e) = self.wal.sync_all().await {
-                // Log sync errors but continue since data is already in WAL
-                warn!("Failed to sync WAL: {}", e);
+            // Try to acquire sync lock - only one thread syncs at a time
+            // Use try_lock to avoid blocking if another thread is syncing
+            if let Ok(_guard) = self.sync_lock.try_lock() {
+                if let Err(e) = self.wal.sync_all().await {
+                    // Log sync errors but continue since data is already in WAL
+                    warn!("Failed to sync WAL: {}", e);
+                }
+                // Reset counter inside the lock
+                self.entries_since_sync.store(0, std::sync::atomic::Ordering::Release);
             }
-            self.entries_since_sync.store(0, std::sync::atomic::Ordering::SeqCst);
+            // If we couldn't acquire lock, another thread is syncing - that's fine
         }
         
         Ok(id)
