@@ -19,6 +19,38 @@ pub struct Entry {
     pub payload: Arc<[u8]>,
 }
 
+impl Entry {
+    /// Create a new entry with auto-generated timestamp
+    /// 
+    /// # Example
+    /// ```
+    /// use ddl::Entry;
+    /// use std::sync::Arc;
+    /// 
+    /// let entry = Entry::new(1, "my-topic", vec![1, 2, 3]);
+    /// assert_eq!(entry.id, 1);
+    /// assert_eq!(*entry.topic, "my-topic");
+    /// ```
+    pub fn new(id: u64, topic: impl Into<Arc<str>>, payload: impl Into<Arc<[u8]>>) -> Self {
+        Self {
+            id,
+            timestamp: crate::types::now_nanos(),
+            topic: topic.into(),
+            payload: payload.into(),
+        }
+    }
+    
+    /// Create an entry with a specific timestamp (for testing)
+    pub fn with_timestamp(id: u64, timestamp: u64, topic: impl Into<Arc<str>>, payload: impl Into<Arc<[u8]>>) -> Self {
+        Self {
+            id,
+            timestamp,
+            topic: topic.into(),
+            payload: payload.into(),
+        }
+    }
+}
+
 /// Stream of entries from a subscription
 pub struct EntryStream {
     // Internal receiver
@@ -140,6 +172,14 @@ pub struct DdlConfig {
     pub subscription_buffer_size: usize,
     /// Backpressure mode for subscription channels
     pub subscription_backpressure: BackpressureMode,
+    /// Heartbeat interval in seconds for gossip (default: 5)
+    pub heartbeat_interval_secs: u64,
+    /// Owner timeout in seconds for gossip (default: 30)
+    pub owner_timeout_secs: u64,
+    /// Enable Raft for topic ownership (strongly consistent)
+    pub raft_enabled: bool,
+    /// Is this the bootstrap node (first node in cluster)
+    pub is_bootstrap: bool,
 }
 
 impl Default for DdlConfig {
@@ -157,6 +197,10 @@ impl Default for DdlConfig {
             wal_enabled: true,
             subscription_buffer_size: 1000,
             subscription_backpressure: BackpressureMode::DropOldest,
+            heartbeat_interval_secs: 5,  // Default: 5 seconds
+            owner_timeout_secs: 30,        // Default: 30 seconds
+            raft_enabled: false,           // Raft disabled by default
+            is_bootstrap: false,           // Not a bootstrap node by default
         }
     }
 }
@@ -216,4 +260,48 @@ pub fn validate_topic(topic: &str) -> Result<(), DdlError> {
         return Err(DdlError::InvalidTopic("topic name cannot contain control characters".to_string()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // P1 Fix #4: Test configurable heartbeat and timeout defaults
+    #[test]
+    fn test_ddl_config_defaults() {
+        let config = DdlConfig::default();
+        
+        assert_eq!(config.heartbeat_interval_secs, 5);
+        assert_eq!(config.owner_timeout_secs, 30);
+        assert!(config.wal_enabled); // WAL should be enabled by default
+    }
+
+    #[test]
+    fn test_validate_topic_valid() {
+        assert!(validate_topic("valid.topic").is_ok());
+        assert!(validate_topic("simple").is_ok());
+        assert!(validate_topic("a.b.c").is_ok());
+    }
+
+    #[test]
+    fn test_validate_topic_empty() {
+        assert!(validate_topic("").is_err());
+    }
+
+    #[test]
+    fn test_validate_topic_too_long() {
+        let long_topic = "a".repeat(300);
+        assert!(validate_topic(&long_topic).is_err());
+    }
+
+    #[test]
+    fn test_validate_topic_path_traversal() {
+        assert!(validate_topic("bad..topic").is_err());
+    }
+
+    #[test]
+    fn test_validate_topic_control_chars() {
+        assert!(validate_topic("bad\0topic").is_err());
+        assert!(validate_topic("bad\ntopic").is_err());
+    }
 }

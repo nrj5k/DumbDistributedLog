@@ -11,7 +11,7 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 /// Persistence configuration for a queue
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,10 +76,7 @@ impl QueuePersistence {
 
     /// Persist a data point (non-blocking, may lag)
     pub fn persist(&self, value: f64) {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let timestamp = crate::types::now_millis();
 
         // Send to background thread - log warning on failure
         if let Err(e) = self.sender.send(PersistEvent::Data { timestamp, value }) {

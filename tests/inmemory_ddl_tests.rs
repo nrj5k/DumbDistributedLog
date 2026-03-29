@@ -1,10 +1,10 @@
-//! Comprehensive tests for InMemoryDdl implementation
+//! Comprehensive tests for DdlDistributed standalone mode
 //!
-//! This file contains integration tests for the in-memory DDL implementation,
+//! This file contains integration tests for the DdlDistributed implementation,
 //! covering concurrent operations, backpressure modes, and subscription behavior.
 
 use ddl::traits::ddl::{BackpressureMode, DDL, DdlConfig, DdlError};
-use ddl::ddl::InMemoryDdl;
+use ddl::DdlDistributed;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,7 +16,7 @@ use std::time::Duration;
 async fn test_concurrent_push_multiple_threads() {
     // ARRANGE: Create ONE shared DDL instance
     let config = DdlConfig::default();
-    let ddl = Arc::new(InMemoryDdl::new(config));
+    let ddl = Arc::new(DdlDistributed::new_standalone(config));
     let topic = "test.concurrent_push";
 
     // ACT: Launch multiple threads pushing concurrently
@@ -63,7 +63,7 @@ async fn test_concurrent_push_multiple_threads() {
 async fn test_subscribe_before_push() {
     // ARRANGE: Create DDL and subscribe first
     let config = DdlConfig::default();
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
     let topic = "test.subscribe_before";
 
     // ACT: Subscribe before pushing
@@ -87,7 +87,7 @@ async fn test_subscribe_before_push() {
 async fn test_subscribe_after_push() {
     // ARRANGE: Create DDL and push first
     let config = DdlConfig::default();
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
     let topic = "test.subscribe_after";
 
     // ACT: Push data then subscribe
@@ -118,7 +118,7 @@ async fn test_subscribe_after_push() {
 async fn test_multiple_subscribers_same_topic() {
     // ARRANGE: Create DDL with multiple subscribers
     let config = DdlConfig::default();
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
     let topic = "test.multiple_subscribers";
 
     // Create two subscribers
@@ -157,7 +157,7 @@ async fn test_backpressure_drop_oldest() {
     config.buffer_size = 16; // Small buffer to trigger backpressure
     config.subscription_buffer_size = 4; // Tiny subscriber buffer
     config.subscription_backpressure = BackpressureMode::DropOldest;
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
     let topic = "test.backpressure_drop_oldest";
 
     let stream = ddl.subscribe(topic).await.unwrap();
@@ -189,7 +189,7 @@ async fn test_backpressure_drop_newest() {
     config.buffer_size = 16;
     config.subscription_buffer_size = 4;
     config.subscription_backpressure = BackpressureMode::DropNewest;
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
     let topic = "test.backpressure_drop_newest";
 
     let stream = ddl.subscribe(topic).await.unwrap();
@@ -219,7 +219,7 @@ async fn test_backpressure_error() {
     config.buffer_size = 16;
     config.subscription_buffer_size = 2; // Very small
     config.subscription_backpressure = BackpressureMode::Error;
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
     let topic = "test.backpressure_error";
 
     let _stream = ddl.subscribe(topic).await.unwrap();
@@ -252,7 +252,7 @@ async fn test_backpressure_error() {
 async fn test_ack_advances_position() {
     // ARRANGE: Create DDL
     let config = DdlConfig::default();
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
     let topic = "test.ack_position";
 
     // ACT: Push entries and acknowledge them
@@ -271,7 +271,7 @@ async fn test_ack_advances_position() {
     ddl.ack(topic, id2).await.unwrap();
 
     // ASSERT: Push should now work (ack freed up space)
-    // In InMemoryDdl, ack position affects how much data is kept,
+    // In DdlDistributed, ack position affects how much data is kept,
     // but doesn't block new pushes unless buffer is full
     let id4 = ddl.push(topic, b"entry4".to_vec()).await.unwrap();
     assert_eq!(id4, 3); // Next sequential ID
@@ -286,7 +286,7 @@ async fn test_buffer_full_returns_error() {
     // ARRANGE: Create DDL with very small buffer
     let mut config = DdlConfig::default();
     config.buffer_size = 8; // Very small buffer
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
     let topic = "test.buffer_full";
 
     // ACT: Push entries until buffer is full
@@ -310,7 +310,7 @@ async fn test_buffer_full_returns_error() {
 
 // ============================================================================
 // owns_topic returns correct values
-// NOTE: Currently InMemoryDdl doesn't enforce topic ownership in push/subscribe
+// NOTE: DdlDistributed in standalone mode owns all topics
 // The owns_topic method is present for API consistency but always returns true
 // ============================================================================
 
@@ -322,13 +322,13 @@ fn test_owns_topic() {
         "metrics.cpu".to_string(),
         "metrics.memory".to_string(),
     ];
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
 
     // ASSERT: Verify ownership checks
-    // Currently InMemoryDdl allows all topics, so owns_topic may return true for any topic
+    // DdlDistributed in standalone mode owns all topics
     assert!(ddl.owns_topic("metrics.cpu"));
     assert!(ddl.owns_topic("metrics.memory"));
-    // ownership checks may not be enforced in InMemoryDdl yet
+    // ownership check returns true for any topic in standalone mode
     // The test verifies the method exists and can be called
     let _ = ddl.owns_topic("other.topic");
 }
@@ -341,7 +341,7 @@ fn test_owns_topic() {
 async fn test_push_empty_payload() {
     // ARRANGE: Create DDL
     let config = DdlConfig::default();
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
     let topic = "test.empty_payload";
 
     // Subscribe FIRST before pushing
@@ -367,7 +367,7 @@ async fn test_topic_limit_exceeded() {
     // ARRANGE: Create DDL with small topic limit
     let mut config = DdlConfig::default();
     config.max_topics = 3;
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
 
     // ACT: Create 3 topics (should succeed)
     let _ = ddl.push("topic1", b"data".to_vec()).await.unwrap();
@@ -395,7 +395,7 @@ async fn test_topic_limit_exceeded() {
 async fn test_concurrent_push_subscribe_operations() {
     // ARRANGE: Create ONE shared DDL instance
     let config = DdlConfig::default();
-    let ddl = Arc::new(InMemoryDdl::new(config));
+    let ddl = Arc::new(DdlDistributed::new_standalone(config));
     let topic = "test.concurrent_push_subscribe";
 
     // ACT: Spawn producer task that pushes entries
@@ -453,7 +453,7 @@ async fn test_concurrent_push_subscribe_operations() {
 async fn test_entry_metadata_preservation() {
     // ARRANGE: Create DDL
     let config = DdlConfig::default();
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
     let topic = "test.metadata";
 
     // Subscribe FIRST before pushing
@@ -480,7 +480,7 @@ async fn test_entry_metadata_preservation() {
 async fn test_stream_acknowledgment() {
     // ARRANGE: Create DDL
     let config = DdlConfig::default();
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
     let topic = "test.stream_ack";
 
     let mut stream = ddl.subscribe(topic).await.unwrap();
@@ -496,5 +496,5 @@ async fn test_stream_acknowledgment() {
     ddl.ack(topic, id).await.unwrap();
 
     // ASSERT: Acknowledge should complete without error
-    // (InMemoryDdl's ack in stream is a no-op, but should not error)
+    // (DdlDistributed's ack is a no-op for acknowledged entries)
 }

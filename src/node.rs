@@ -241,9 +241,7 @@ impl AutoQueuesNode {
             // Publish metrics to cluster
             let publisher_guard = publisher.read().await;
             if let Some(broker) = &*publisher_guard {
-                let timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)?
-                    .as_millis() as u64;
+                let timestamp = crate::types::now_millis();
 
                 for (name, value) in &*l {
                     let msg = MetricMessage {

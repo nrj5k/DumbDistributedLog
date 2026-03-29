@@ -106,9 +106,6 @@ impl TopicQueue {
 
     /// Append an entry, returns the entry ID
     pub fn push(&self, topic: Arc<str>, payload: Vec<u8>) -> Result<u64, DdlError> {
-        // Convert Vec<u8> to Arc<[u8]> for zero-copy sharing
-        let payload_arc = Arc::from(payload);
-
         // Lock entries first - this provides mutual exclusion for both
         // the write_pos increment and the entry write, ensuring atomicity
         let mut entries = self
@@ -126,15 +123,7 @@ impl TopicQueue {
             return Err(DdlError::BufferFull(topic.to_string()));
         }
 
-        let entry = Entry {
-            id,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
-            topic,
-            payload: payload_arc,
-        };
+        let entry = Entry::new(id, topic, payload);
 
         // Store the entry BEFORE incrementing write_pos
         // This ensures readers can't see incomplete entries
@@ -186,20 +175,27 @@ impl TopicQueue {
 }
 
 /// Notify subscribers of a new entry with backpressure handling
+///
+/// Also cleans up disconnected subscribers to prevent memory leaks.
+/// Disconnected subscribers are detected during notification and removed afterward.
 pub fn notify_subscribers(
     subscribers: &DashMap<String, Vec<SubscriberInfo>>,
     topic: &str,
     entry: &Entry,
     backpressure: crate::traits::ddl::BackpressureMode,
 ) -> Result<(), DdlError> {
+    // Track indices of disconnected subscribers for cleanup
+    let mut disconnected_indices: Vec<usize> = Vec::new();
+
     if let Some(senders) = subscribers.get(topic) {
-        for info in senders.value().iter() {
+        for (idx, info) in senders.value().iter().enumerate() {
             match backpressure {
                 crate::traits::ddl::BackpressureMode::Block => {
                     // This should not be called in async context, but we handle it
                     // In practice, Block mode requires async send
                     if let Err(e) = info.sender.send(entry.clone()) {
                         log::debug!("Subscriber disconnected: {:?}", e);
+                        disconnected_indices.push(idx);
                     }
                 }
                 crate::traits::ddl::BackpressureMode::DropOldest => {
@@ -213,6 +209,7 @@ pub fn notify_subscribers(
                         }
                         Err(TrySendError::Disconnected(_)) => {
                             log::debug!("Subscriber disconnected for topic {}", topic);
+                            disconnected_indices.push(idx);
                         }
                         Ok(_) => {}
                     }
@@ -228,6 +225,9 @@ pub fn notify_subscribers(
                     }
                     if let Err(e) = info.sender.try_send(entry.clone()) {
                         log::debug!("Send error for topic {}: {:?}", topic, e);
+                        if matches!(e, TrySendError::Disconnected(_)) {
+                            disconnected_indices.push(idx);
+                        }
                     }
                 }
                 crate::traits::ddl::BackpressureMode::Error => {
@@ -237,11 +237,34 @@ pub fn notify_subscribers(
                     }
                     if let Err(e) = info.sender.try_send(entry.clone()) {
                         log::debug!("Send error for topic {}: {:?}", topic, e);
+                        if matches!(e, TrySendError::Disconnected(_)) {
+                            disconnected_indices.push(idx);
+                        }
                     }
                 }
             }
         }
     }
+
+    // Clean up disconnected subscribers to prevent memory leaks
+    // Remove in reverse sorted order to maintain valid indices during removal
+    if !disconnected_indices.is_empty() {
+        if let Some(mut subscriber_list) = subscribers.get_mut(topic) {
+            // Sort descending so removal doesn't shift remaining indices
+            disconnected_indices.sort_by(|a, b| b.cmp(a));
+
+            for idx in disconnected_indices {
+                // Bounds check for safety - list may have been modified concurrently
+                if idx < subscriber_list.len() {
+                    let removed = subscriber_list.remove(idx);
+                    log::debug!("Cleaned up disconnected subscriber for topic {}", topic);
+                    // Removed subscriber is dropped here, cleaning up channel resources
+                    drop(removed);
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 

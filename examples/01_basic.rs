@@ -1,6 +1,6 @@
 //! DDL Basic Example
 
-use ddl::{InMemoryDdl, DDL, DdlConfig};
+use ddl::{DdlDistributed, DDL, DdlConfig};
 
 #[tokio::main]
 async fn main() {
@@ -9,8 +9,8 @@ async fn main() {
     // Create a basic config
     let config = DdlConfig::default();
 
-    // Create DDL instance (in-memory implementation)
-    let ddl = InMemoryDdl::new(config);
+    // Create DDL instance (standalone mode for testing/single-node)
+    let ddl = DdlDistributed::new_standalone(config);
     println!("DDL configured");
 
     // Push some data to a topic

@@ -4,7 +4,6 @@
 //! entries survive crashes by writing to disk before acknowledging.
 
 use ddl::{DdlWithWal, DdlConfig, DDL, EntryStream};
-use ddl::traits::ddl::BackpressureMode;
 use tempfile::TempDir;
 
 #[tokio::main]
@@ -20,15 +19,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         node_id: 1,
         peers: vec![],
         owned_topics: vec!["demo.metrics".to_string()],
-        buffer_size: 1024,
-        max_topics: 10000, // Default limit of 10,000 topics
-        gossip_enabled: false,
-        gossip_bind_addr: "0.0.0.0:0".to_string(),
-        gossip_bootstrap: vec![],
         data_dir: data_dir.to_path_buf(),
         wal_enabled: true,
-        subscription_buffer_size: 1000,
-        subscription_backpressure: BackpressureMode::DropOldest,
+        ..Default::default()
     };
     
     // Create DDL with WAL

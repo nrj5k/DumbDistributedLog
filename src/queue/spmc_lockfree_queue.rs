@@ -43,11 +43,10 @@
 use crate::constants::memory;
 use crate::queue::QueueError;
 use crate::traits::queue::QueueTrait;
-use crate::types::{QueueData, Timestamp};
+use crate::types::{now_millis, QueueData, Timestamp};
 use circular_buffer::CircularBuffer;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// SPMC (Single-Producer, Multiple-Consumer) Lock-Free Circular Queue
 ///
@@ -182,10 +181,7 @@ where
     /// On overflow (full queue): Drops the oldest entry and pushes new data.
     #[inline]
     pub fn push(&mut self, data: T) -> Result<bool, QueueError> {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as Timestamp;
+        let timestamp = now_millis();
 
         // Push to circular buffer (handles drop-oldest)
         self.buffer.push_back((timestamp, data));

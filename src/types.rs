@@ -88,6 +88,28 @@ impl Default for AtomicQueueStats {
     }
 }
 
+/// Generate current timestamp in nanoseconds since UNIX epoch.
+///
+/// Returns 0 if system time is before UNIX epoch (should never happen).
+#[inline]
+pub fn now_nanos() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
+}
+
+/// Generate current timestamp in milliseconds since UNIX epoch.
+///
+/// Returns 0 if system time is before UNIX epoch (should never happen).
+#[inline]
+pub fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 /// Convert a value to f64 for persistence.
 ///
 /// Attempts downcasting to common numeric types. Returns None for non-numeric types.

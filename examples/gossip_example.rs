@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Creating distributed DDL with gossip...");
     
     // Create distributed DDL
-    let ddl = DdlDistributed::new(config).await?;
+    let ddl = DdlDistributed::new_distributed(config).await?;
     
     println!("Created distributed DDL");
     

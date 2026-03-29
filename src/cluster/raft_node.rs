@@ -3,8 +3,6 @@
 //! Basic coordination without complex consensus algorithms.
 //! Focused on performance and minimal overhead.
 
-use crate::config::Config;
-
 /// Cluster configuration for HPC use cases
 #[derive(Debug, Clone)]
 pub struct ClusterConfig {
@@ -54,23 +52,5 @@ impl RaftNode {
     pub async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
         println!("Stopping HPC node {}", self.config.node_id);
         Ok(())
-    }
-}
-
-pub struct RaftClusterNode {
-    pub node_id: u64,
-    pub config: Config,
-}
-
-impl RaftClusterNode {
-    pub fn new(node_id: u64) -> Self {
-        Self {
-            node_id,
-            config: Config::default(),
-        }
-    }
-
-    pub async fn is_leader(&self) -> bool {
-        false
     }
 }

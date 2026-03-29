@@ -4,7 +4,7 @@
 //! with concurrent operations, high throughput, and many participants.
 
 use ddl::traits::ddl::{DDL, DdlConfig, DdlError};
-use ddl::ddl::InMemoryDdl;
+use ddl::DdlDistributed;
 use ddl::queue::source::{FunctionSource, QueueSource};
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,7 +18,7 @@ async fn test_stress_concurrent_pushes() {
     // ARRANGE: Create DDL
     let config = DdlConfig::default();
     let topic = "stress.concurrent_pushes";
-    let ddl = Arc::new(InMemoryDdl::new(config));
+    let ddl = Arc::new(DdlDistributed::new_standalone(config));
     // ACT: Launch 100 threads pushing concurrently (using shared DDL)
     let mut handles = vec![];
     for _thread_id in 0..100 {
@@ -64,7 +64,7 @@ async fn test_stress_many_subscribers() {
     let topic = "stress.many_subscribers";
 
     // Create DDL instance for this test
-    let ddl = InMemoryDdl::new(config_clone.clone());
+    let ddl = DdlDistributed::new_standalone(config_clone.clone());
     
     // ACT: Create 100 subscribers
     let mut streams = vec![];
@@ -105,7 +105,7 @@ async fn test_stress_high_throughput() {
     // ARRANGE: Create DDL
     let config = DdlConfig::default();
     let topic = "stress.high_throughput";
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
 
     // ACT: Push 10000 entries as fast as possible
     let start = std::time::Instant::now();
@@ -142,7 +142,7 @@ async fn test_performance_baseline_push_rate() {
     // ARRANGE: Create DDL
     let config = DdlConfig::default();
     let topic = "perf.baseline";
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
 
     // Subscribe to drain entries during the test
     let stream = ddl.subscribe(topic).await.unwrap();
@@ -193,7 +193,7 @@ async fn test_performance_batch_push_rate() {
     let config = DdlConfig::default();
     let config_clone = config.clone();
     let topic = "perf.batch";
-    let ddl = InMemoryDdl::new(config_clone);
+    let ddl = DdlDistributed::new_standalone(config_clone);
 
     // ACT: Push batches of 100 entries
     let batch_size = 100;
@@ -253,7 +253,7 @@ fn test_function_source_pause_resume() {
 async fn test_stress_many_producers_one_topic() {
     // ARRANGE: Create DDL
     let config = DdlConfig::default();
-    let ddl = Arc::new(InMemoryDdl::new(config));
+    let ddl = Arc::new(DdlDistributed::new_standalone(config));
     let topic = "stress.many_producers";
 
     // ACT: 50 producers, each pushing 20 entries (using shared DDL instance)

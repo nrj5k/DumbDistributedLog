@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.gossip_bind_addr = "127.0.0.1:0".to_string(); // Let OS assign port
 
     // Create DDL instance
-    let ddl = DdlDistributed::new(config).await?;
+    let ddl = DdlDistributed::new_distributed(config).await?;
 
     // Push some sample data (simulate metrics)
     let cpu_data = b"CPU usage: 45.2%".to_vec();

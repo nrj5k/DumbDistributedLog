@@ -1,14 +1,14 @@
 //! Basic usage example for the DDL API
 
-use ddl::{InMemoryDdl, DDL, DdlConfig};
+use ddl::{DdlDistributed, DDL, DdlConfig};
 
 #[tokio::main]
 async fn main() {
     // Create a basic config
     let config = DdlConfig::default();
 
-    // Create DDL instance (in-memory implementation)
-    let ddl = InMemoryDdl::new(config);
+    // Create DDL instance (standalone mode for testing/single-node)
+    let ddl = DdlDistributed::new_standalone(config);
 
     // Push some data to CPU topic
     let cpu_data = b"CPU usage: 42%".to_vec();

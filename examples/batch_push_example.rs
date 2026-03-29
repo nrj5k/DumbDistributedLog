@@ -1,12 +1,12 @@
 //! Example demonstrating the batch push functionality
 
-use ddl::{InMemoryDdl, DDL, DdlConfig};
+use ddl::{DdlDistributed, DDL, DdlConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create DDL with default config
+    // Create DDL with default config (standalone mode)
     let config = DdlConfig::default();
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
     
     // Subscribe to the topic before pushing messages
     let stream = ddl.subscribe("test.batch").await?;

@@ -4,7 +4,7 @@
 //! and edge case behaviors that might cause panics or unexpected behavior.
 
 use ddl::traits::ddl::{DDL, DdlConfig};
-use ddl::ddl::InMemoryDdl;
+use ddl::DdlDistributed;
 use ddl::queue::interval::IntervalConfig;
 use ddl::queue::source::{FunctionSource, QueueSource};
 use ddl::queue::spmc_lockfree_queue::SPMCLockFreeQueue as SimpleQueue;
@@ -18,7 +18,7 @@ use std::sync::{Arc, RwLock};
 async fn test_empty_topic_name() {
     // ARRANGE: Create DDL
     let config = DdlConfig::default();
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
 
     // ACT: Push with empty topic name
     let result = ddl.push("", b"data".to_vec()).await;
@@ -37,7 +37,7 @@ async fn test_empty_topic_name() {
 async fn test_empty_payload() {
     // ARRANGE: Create DDL
     let config = DdlConfig::default();
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
 
     // Subscribe BEFORE pushing (pub/sub pattern)
     let mut stream = ddl.subscribe("topic").await.unwrap();
@@ -63,7 +63,7 @@ async fn test_empty_payload() {
 async fn test_large_payload() {
     // ARRANGE: Create DDL
     let config = DdlConfig::default();
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
 
     // Subscribe BEFORE pushing (pub/sub pattern)
     let mut stream = ddl.subscribe("largedata").await.unwrap();
@@ -91,7 +91,7 @@ async fn test_large_payload() {
 async fn test_rapid_push_subscribe() {
     // ARRANGE: Create DDL
     let config = DdlConfig::default();
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
 
     // Create subscriptions BEFORE pushing (pub/sub pattern)
     // This ensures the streams are ready to receive data
@@ -159,7 +159,7 @@ fn test_function_source_variable_values() {
 async fn test_repeated_topic_creation() {
     // ARRANGE: Create DDL
     let config = DdlConfig::default();
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
     let topic = "test.repeated";
 
     // ACT: Push to same topic multiple times
@@ -187,7 +187,7 @@ async fn test_repeated_topic_creation() {
 async fn test_immediate_stream_consume() {
     // ARRANGE: Create DDL
     let config = DdlConfig::default();
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
     let topic = "test.immediate";
 
     // Subscribe BEFORE pushing (pub/sub pattern)
@@ -213,7 +213,7 @@ async fn test_immediate_stream_consume() {
 async fn test_special_characters_in_topic() {
     // ARRANGE: Create DDL
     let config = DdlConfig::default();
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
 
     // Topics with special characters
     let topics = [
@@ -252,13 +252,13 @@ async fn test_special_characters_in_topic() {
 async fn test_ack_nonexistent_entry() {
     // ARRANGE: Create DDL
     let config = DdlConfig::default();
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
     let topic = "test.nonexistent_ack";
 
     // ACT: Acknowledge entry that doesn't exist
     let result = ddl.ack(topic, 999).await;
 
-    // ASSERT: May succeed (InMemoryDdl is lenient)
+    // ASSERT: May succeed (DdlDistributed is lenient)
     // The test verifies no panic occurs
     assert!(result.is_ok() || result.is_err());
 }
@@ -271,7 +271,7 @@ async fn test_ack_nonexistent_entry() {
 async fn test_position_nonexistent_topic() {
     // ARRANGE: Create DDL
     let config = DdlConfig::default();
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
 
     // ACT: Query position for topic that doesn't exist
     // The get_or_create_topic will create it on push

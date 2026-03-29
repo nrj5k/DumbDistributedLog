@@ -14,8 +14,7 @@
 //!
 //! The library is organized into several modules with clean separation of concerns:
 //!
-//! - **Core** ([`ddl`]): In-memory DDL implementation with lock-free SPMC queues
-//! - **Distributed** ([`ddl_distributed`]): Network-aware DDL with TCP transport
+//! - **DDL** ([`ddl_distributed`]): Distributed log with standalone and distributed modes
 //! - **WAL** ([`wal`], [`ddl_wal`]): Write-ahead logging for persistence
 //! - **Network** ([`network`]): Transport abstractions (TCP, ZMQ, Hybrid)
 //! - **Cluster** ([`cluster`]): Raft-based coordination for shard assignment
@@ -32,12 +31,12 @@
 //! # Quick Start
 //!
 //! ```ignore
-//! use ddl::{InMemoryDdl, DDL};
+//! use ddl::{DdlDistributed, DDL, DdlConfig};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // Create an in-memory DDL
-//!     let ddl = InMemoryDdl::new();
+//!     // Create a standalone DDL for testing/single-node
+//!     let ddl = DdlDistributed::new_standalone(DdlConfig::default());
 //!
 //!     // Subscribe to a topic pattern
 //!     let mut stream = ddl.subscribe("metrics.*").await?;
@@ -75,7 +74,6 @@
 //! - Consistent syntax across all operations
 
 // Core modules for HPC performance
-pub mod ddl;
 pub mod ddl_distributed;
 pub mod benchmarks;
 pub mod topic_queue;
@@ -83,6 +81,7 @@ pub mod cluster;
 pub mod config;
 pub mod constants;
 pub mod gossip;
+pub mod gossip_protocol;
 pub mod network;
 pub mod node;
 pub mod queue;
@@ -100,10 +99,21 @@ pub mod ddl_wal;
 /// Use this trait when you need type erasure or when implementing custom DDL backends.
 pub use crate::traits::ddl::{DDL, DdlConfig, DdlError};
 
-/// In-memory DDL implementation for testing and single-node deployments.
+/// Dumb Distributed Log implementation.
 ///
-/// Zero network overhead, ideal for unit tests and local-only use cases.
-pub use crate::ddl::InMemoryDdl;
+/// Supports two modes:
+/// - Standalone: No gossip, owns all topics (for testing/single-node)
+/// - Distributed: With gossip for topic ownership discovery (multi-node)
+///
+/// Use [`DdlDistributed::new_standalone`] for testing and single-node deployments.
+/// Use [`DdlDistributed::new_distributed`] for multi-node deployments.
+pub use crate::ddl_distributed::DdlDistributed;
+
+/// Type alias for backwards compatibility.
+///
+/// `InMemoryDdl` is now `DdlDistributed` in standalone mode.
+/// Use `DdlDistributed::new_standalone()` for the same behavior.
+pub use crate::ddl_distributed::InMemoryDdl;
 
 /// DDL with write-ahead logging for persistence.
 ///
@@ -228,3 +238,9 @@ pub use crate::types::QueueStats;
 
 /// High-precision timestamp type.
 pub use crate::types::Timestamp;
+
+/// Generate current timestamp in nanoseconds since UNIX epoch.
+pub use crate::types::now_nanos;
+
+/// Generate current timestamp in milliseconds since UNIX epoch.
+pub use crate::types::now_millis;

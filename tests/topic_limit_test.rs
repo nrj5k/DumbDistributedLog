@@ -1,6 +1,6 @@
 //! Test topic limit functionality
 
-use ddl::{InMemoryDdl, DDL, DdlConfig, DdlError};
+use ddl::{DdlDistributed, DDL, DdlConfig, DdlError};
 
 #[tokio::test]
 async fn test_topic_limit_exceeded() {
@@ -8,7 +8,7 @@ async fn test_topic_limit_exceeded() {
     let mut config = DdlConfig::default();
     config.max_topics = 2; // Only allow 2 topics
     
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
     
     // Create first topic - should succeed
     let result1 = ddl.push("topic1", vec![1, 2, 3]).await;
@@ -37,7 +37,7 @@ async fn test_topic_limit_zero_means_unlimited() {
     let mut config = DdlConfig::default();
     config.max_topics = 0; // Unlimited topics
     
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
     
     // Create many topics - should all succeed
     for i in 0..100 {
@@ -53,7 +53,7 @@ async fn test_existing_topic_still_works_after_limit() {
     let mut config = DdlConfig::default();
     config.max_topics = 1; // Only allow 1 topic
     
-    let ddl = InMemoryDdl::new(config);
+    let ddl = DdlDistributed::new_standalone(config);
     
     // Create the one allowed topic
     let result1 = ddl.push("allowed_topic", vec![1, 2, 3]).await;

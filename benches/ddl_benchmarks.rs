@@ -4,7 +4,7 @@
 
 use std::hint::black_box;
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
-use ddl::{InMemoryDdl, DdlConfig, DDL};
+use ddl::{DdlDistributed, DdlConfig, DDL};
 use std::time::Duration;
 use tokio::runtime::Runtime;
 
@@ -18,7 +18,7 @@ fn bench_push_throughput(c: &mut Criterion) {
     
     group.bench_function("in_memory_1000_entries", |b| {
         b.to_async(&rt).iter(|| async {
-            let ddl = InMemoryDdl::default();
+            let ddl = DdlDistributed::default();
             
             for i in 0..1000u64 {
                 let data = format!("entry_{}", i);
@@ -36,7 +36,7 @@ fn bench_push_latency(c: &mut Criterion) {
     
     c.bench_function("push_latency", |b| {
         b.to_async(&rt).iter(|| async {
-            let ddl = InMemoryDdl::default();
+            let ddl = DdlDistributed::default();
             let data = vec![0u8; 100]; // 100 bytes
             let _ = black_box(ddl.push("test_topic", data.clone()).await);
         });
@@ -52,7 +52,7 @@ fn bench_subscribe_throughput(c: &mut Criterion) {
     
     group.bench_function("consume_1000_entries", |b| {
         b.to_async(&rt).iter(|| async {
-            let ddl = InMemoryDdl::default();
+            let ddl = DdlDistributed::default();
             
             // Pre-populate
             for i in 0..1000u64 {
@@ -85,7 +85,7 @@ fn bench_payload_sizes(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(*size as u64));
         
         group.bench_function(format!("{}_bytes", size), |b| {
-            let ddl = InMemoryDdl::default();
+            let ddl = DdlDistributed::default();
             let data = vec![0u8; *size];
             
             b.to_async(&rt).iter(|| async {
@@ -108,7 +108,7 @@ fn bench_ring_buffer_wraparound(c: &mut Criterion) {
                 buffer_size: 100,
                 ..Default::default()
             };
-            let ddl = InMemoryDdl::new(config);
+            let ddl = DdlDistributed::new_standalone(config);
             
             // Write more than buffer size
             for i in 0..200u64 {
@@ -128,7 +128,7 @@ fn bench_concurrent_producers(c: &mut Criterion) {
     for num_producers in [2, 4, 8, 16].iter() {
         group.bench_function(format!("{}_producers", num_producers), |b| {
             b.to_async(&rt).iter(|| async {
-                let ddl = InMemoryDdl::default();
+                let ddl = DdlDistributed::default();
                 let ddl = std::sync::Arc::new(ddl);
                 
                 let mut handles = vec![];
@@ -163,7 +163,7 @@ fn bench_transport_overhead(c: &mut Criterion) {
     // Local (no network)
     group.bench_function("local_only", |b| {
         b.to_async(&rt).iter(|| async {
-            let ddl = InMemoryDdl::default();
+            let ddl = DdlDistributed::default();
             let _ = black_box(ddl.push("test_topic", vec![1, 2, 3]).await.unwrap());
         });
     });
