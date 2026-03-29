@@ -1,10 +1,13 @@
 [package]
 name = "ddl"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 description = "DDL - Dumb Distributed Log. A minimal distributed append-only log for HPC clusters."
-license = "GPL"
-keywords = ["queue", "log", "distributed", "hpc", "pubsub"]
+license = "GPL-3.0-or-later"
+authors = ["DDL Contributors"]
+repository = "https://github.com/nrj5k/DumbDistributedLog"
+readme = "README.md"
+keywords = ["queue", "log", "distributed", "hpc", "pubsub", "raft", "append-only"]
 categories = ["asynchronous", "data-structures", "network-programming"]
 
 [lib]
