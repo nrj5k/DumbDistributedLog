@@ -280,8 +280,27 @@ impl AutoqueuesRaftStorage {
 
         // Atomic rename (POSIX guarantees atomicity)
         std::fs::rename(&temp_path, path)
-            .map_err(|e| StorageError::from_io_error(ErrorSubject::Vote, ErrorVerb::Write, e))?;
+            .map_err(|e| StorageError::from_io_error(ErrorSubject::Logs, ErrorVerb::Write, e))?;
 
+        Ok(())
+    }
+
+    /// Public method to explicitly flush ownership state to disk.
+    /// This is useful for tests that modify ownership_state directly.
+    pub fn flush_ownership_state(&self) -> Result<(), StorageError<u64>> {
+        if self.dirty.load(Ordering::Acquire) {
+            self.flush_to_file()?;
+            self.dirty.store(false, Ordering::Release);
+        }
+        Ok(())
+    }
+
+    /// Mark ownership state as dirty and flush to disk.
+    /// Call this after modifying ownership_state directly in tests.
+    pub fn mark_dirty_and_flush(&self) -> Result<(), StorageError<u64>> {
+        self.dirty.store(true, Ordering::Release);
+        self.flush_to_file()?;
+        self.dirty.store(false, Ordering::Release);
         Ok(())
     }
 }
@@ -309,6 +328,19 @@ impl Clone for AutoqueuesRaftStorage {
             data_file: self.data_file.clone(),
             dirty: Arc::clone(&self.dirty),  // Share dirty flag
             flush_lock: Arc::clone(&self.flush_lock),  // Share flush lock
+        }
+    }
+}
+
+impl Drop for AutoqueuesRaftStorage {
+    fn drop(&mut self) {
+        // Flush ownership state if dirty when dropping
+        // Only flush if we're the last reference to ownership_state
+        if Arc::strong_count(&self.ownership_state) == 1 {
+            if self.dirty.load(Ordering::Acquire) && self.data_file.is_some() {
+                let _ = self.flush_to_file();
+                self.dirty.store(false, Ordering::Release);
+            }
         }
     }
 }
@@ -412,10 +444,13 @@ impl RaftStorage<TypeConfig> for AutoqueuesRaftStorage {
         for key in keys {
             log.remove(&key);
         }
+        drop(log);
+
+        // Update last_purged_log_id (maps to last_applied in openraft semantics)
+        *self.last_applied.write().unwrap() = Some(log_id.clone());
 
         // Persist changes
         if self.log_file.is_some() {
-            drop(log); // Release lock before flush
             self.flush_log_to_file()?;
         }
 
@@ -434,24 +469,35 @@ impl RaftStorage<TypeConfig> for AutoqueuesRaftStorage {
         &mut self,
         entries: &[Entry<TypeConfig>],
     ) -> Result<Vec<OwnershipResponse>, StorageError<u64>> {
-        let mut result = Vec::new();
+        let mut result = Vec::with_capacity(entries.len());
         let mut state = self.ownership_state.write().unwrap();
 
         for entry in entries {
             self.last_applied.write().unwrap().replace(entry.log_id);
 
-            if let openraft::entry::EntryPayload::Normal(ref cmd) = entry.payload {
-                let topic = match cmd {
-                    OwnershipCommand::ClaimTopic { topic, .. } => topic.clone(),
-                    OwnershipCommand::ReleaseTopic { topic, .. } => topic.clone(),
-                    OwnershipCommand::TransferTopic { topic, .. } => topic.clone(),
-                };
+            match &entry.payload {
+                openraft::entry::EntryPayload::Normal(cmd) => {
+                    let topic = match cmd {
+                        OwnershipCommand::ClaimTopic { topic, .. } => topic.clone(),
+                        OwnershipCommand::ReleaseTopic { topic, .. } => topic.clone(),
+                        OwnershipCommand::TransferTopic { topic, .. } => topic.clone(),
+                    };
 
-                state.apply(cmd);
-                self.dirty.store(true, Ordering::Release);
+                    state.apply(cmd);
+                    self.dirty.store(true, Ordering::Release);
 
-                let owner = state.get_owner(&topic);
-                result.push(OwnershipResponse::Owner { topic, owner });
+                    let owner = state.get_owner(&topic);
+                    result.push(OwnershipResponse::Owner { topic, owner });
+                }
+                openraft::entry::EntryPayload::Membership(_membership) => {
+                    // Handle membership changes - update stored membership if needed
+                    // For now, just return an empty response to satisfy openraft
+                    result.push(OwnershipResponse::Owner { topic: String::new(), owner: None });
+                }
+                openraft::entry::EntryPayload::Blank => {
+                    // Blank entries - return empty response
+                    result.push(OwnershipResponse::Owner { topic: String::new(), owner: None });
+                }
             }
         }
 
@@ -558,7 +604,25 @@ impl RaftLogReader<TypeConfig> for AutoqueuesRaftStorage {
 
 impl RaftSnapshotBuilder<TypeConfig> for AutoqueuesRaftStorage {
     async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfig>, StorageError<u64>> {
-        let meta = self.snapshot_meta.read().unwrap().clone().unwrap_or_default();
+        // Get last_log_id from the log entries
+        let log = self.log.read().unwrap();
+        let last_log_id = if log.is_empty() {
+            *self.last_applied.read().unwrap()
+        } else {
+            let last_idx = *log.keys().next_back().unwrap();
+            let entry = log.get(&last_idx).unwrap();
+            Some(entry.log_id.clone())
+        };
+        drop(log);
+
+        let meta = SnapshotMeta {
+            last_log_id,
+            last_membership: self.membership.read().unwrap().clone(),
+            snapshot_id: format!("snapshot-{}", std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()),
+        };
 
         // Serialize ownership state
         let state = self.ownership_state.read().unwrap();
@@ -568,6 +632,9 @@ impl RaftSnapshotBuilder<TypeConfig> for AutoqueuesRaftStorage {
                 ErrorVerb::Write,
                 std::io::Error::new(std::io::ErrorKind::InvalidData, e),
             ))?;
+
+        // Store snapshot metadata
+        *self.snapshot_meta.write().unwrap() = Some(meta.clone());
 
         Ok(Snapshot {
             meta,

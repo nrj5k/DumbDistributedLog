@@ -194,6 +194,9 @@ fn test_atomic_write_prevents_partial_state() {
             node_id: 1,
             timestamp: 1000,
         });
+
+        // Explicitly mark dirty and flush - required when modifying ownership_state directly
+        storage.mark_dirty_and_flush().unwrap();
     }
 
     // Reload and verify
@@ -375,6 +378,9 @@ async fn test_persistence_across_multiple_restarts() {
                 timestamp: 1000 + i as u64,
             });
         }
+
+        // Explicitly mark dirty and flush - required when modifying ownership_state directly
+        storage.mark_dirty_and_flush().unwrap();
     }
 
     // Second restart - verify state persisted

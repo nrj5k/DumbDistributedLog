@@ -94,6 +94,18 @@ async fn test_raft_topic_claim_release() {
 
     raft.initialize().await.expect("Failed to initialize");
 
+    // Poll until leader is elected (with timeout)
+    let leader_ready = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        async {
+            while !raft.is_leader().await {
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            }
+        }
+    ).await;
+
+    assert!(leader_ready.is_ok(), "Timeout waiting for leader election");
+
     // Claim a topic
     raft.claim_topic("test-topic").await.expect("Failed to claim topic");
 
@@ -361,13 +373,14 @@ async fn test_complete_roundtrip_persistence() {
         let vote = Vote::new(1, 1);
         storage.save_vote(&vote).await.expect("Failed to save vote");
 
-        // Save ownership state
+        // Save ownership state - use mark_dirty_and_flush for direct modifications
         storage.ownership_state.write().unwrap().apply(&OwnershipCommand::ClaimTopic {
             topic: "roundtrip.state".to_string(),
             node_id: 1,
             timestamp: 1001,
         });
-    } // storage is dropped here
+        storage.mark_dirty_and_flush().expect("Failed to flush ownership state");
+    } // storage is dropped here - Drop implementation should also flush
 
     // Phase 2: Recreate storage (simulating restart)
     let mut storage2 = AutoqueuesRaftStorage::with_persistence(temp.path())
@@ -491,6 +504,9 @@ async fn test_ownership_state_recovery() {
         for cmd in commands {
             storage.ownership_state.write().unwrap().apply(&cmd);
         }
+
+        // Explicitly flush to persist the ownership state
+        storage.mark_dirty_and_flush().expect("Failed to flush ownership state");
     }
 
     // Phase 2: Recover and verify
