@@ -78,8 +78,10 @@ fn test_ownership_state_serialization() {
         timestamp: 1001,
     });
 
-    let serialized = bincode::serialize(&state).unwrap();
-    let restored: OwnershipState = bincode::deserialize(&serialized).unwrap();
+    let serialized = oxicode::serde::encode_to_vec(&state, oxicode::config::standard()).unwrap();
+    let restored: OwnershipState = oxicode::serde::decode_from_slice(&serialized, oxicode::config::standard())
+        .map(|(v, _)| v)
+        .unwrap();
 
     assert_eq!(restored.get_owner("topic1"), Some(1));
     assert_eq!(restored.get_owner("topic2"), Some(2));

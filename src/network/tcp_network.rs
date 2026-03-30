@@ -1,7 +1,7 @@
 //! TCP-based Raft network implementation for production multi-node deployment.
 //!
 //! Provides reliable RPC communication between Raft nodes using length-prefixed
-//! binary protocol with bincode serialization.
+//! binary protocol with oxicode serialization.
 //!
 //! # Architecture
 //!
@@ -179,7 +179,8 @@ impl TcpNetwork {
         let mut buf = Vec::new();
         buf.push(rpc_type as u8);
         buf.extend_from_slice(
-            &bincode::serialize(request).map_err(|e| TcpNetworkError(format!("Serialize error: {}", e)))?,
+            &oxicode::serde::encode_to_vec(request, oxicode::config::standard())
+                .map_err(|e| TcpNetworkError(format!("Serialize error: {}", e)))?,
         );
 
         // Send length + data with timeout
@@ -215,7 +216,9 @@ impl TcpNetwork {
             .map_err(|e| TcpNetworkError(format!("Read data error: {}", e)))?;
 
         // Deserialize response
-        bincode::deserialize(&response_buf).map_err(|e| TcpNetworkError(format!("Deserialize error: {}", e)))
+        oxicode::serde::decode_from_slice(&response_buf, oxicode::config::standard())
+            .map(|(v, _)| v)
+            .map_err(|e| TcpNetworkError(format!("Deserialize error: {}", e)))
     }
 }
 
@@ -368,7 +371,8 @@ pub fn create_raft_handler(
 }
 
 fn handle_append_entries(router: &Arc<RaftMessageRouter>, data: &[u8]) -> Result<Vec<u8>, String> {
-    let request: AppendEntriesRequest<TypeConfig> = bincode::deserialize(data)
+    let request: AppendEntriesRequest<TypeConfig> = oxicode::serde::decode_from_slice(data, oxicode::config::standard())
+        .map(|(v, _)| v)
         .map_err(|e| format!("Deserialize error: {}", e))?;
 
     // Use tokio runtime to run async
@@ -379,11 +383,13 @@ fn handle_append_entries(router: &Arc<RaftMessageRouter>, data: &[u8]) -> Result
         router.handle_append_entries(request).await
     }).map_err(|e| format!("Raft error: {:?}", e))?;
 
-    bincode::serialize(&response).map_err(|e| format!("Serialize error: {}", e))
+    oxicode::serde::encode_to_vec(&response, oxicode::config::standard())
+        .map_err(|e| format!("Serialize error: {}", e))
 }
 
 fn handle_vote(router: &Arc<RaftMessageRouter>, data: &[u8]) -> Result<Vec<u8>, String> {
-    let request: VoteRequest<u64> = bincode::deserialize(data)
+    let request: VoteRequest<u64> = oxicode::serde::decode_from_slice(data, oxicode::config::standard())
+        .map(|(v, _)| v)
         .map_err(|e| format!("Deserialize error: {}", e))?;
 
     let rt = tokio::runtime::Handle::try_current()
@@ -393,11 +399,13 @@ fn handle_vote(router: &Arc<RaftMessageRouter>, data: &[u8]) -> Result<Vec<u8>, 
         router.handle_vote(request).await
     }).map_err(|e| format!("Raft error: {:?}", e))?;
 
-    bincode::serialize(&response).map_err(|e| format!("Serialize error: {}", e))
+    oxicode::serde::encode_to_vec(&response, oxicode::config::standard())
+        .map_err(|e| format!("Serialize error: {}", e))
 }
 
 fn handle_install_snapshot(router: &Arc<RaftMessageRouter>, data: &[u8]) -> Result<Vec<u8>, String> {
-    let request: InstallSnapshotRequest<TypeConfig> = bincode::deserialize(data)
+    let request: InstallSnapshotRequest<TypeConfig> = oxicode::serde::decode_from_slice(data, oxicode::config::standard())
+        .map(|(v, _)| v)
         .map_err(|e| format!("Deserialize error: {}", e))?;
 
     let rt = tokio::runtime::Handle::try_current()
@@ -407,7 +415,8 @@ fn handle_install_snapshot(router: &Arc<RaftMessageRouter>, data: &[u8]) -> Resu
         router.handle_install_snapshot(request).await
     }).map_err(|e| format!("Raft error: {:?}", e))?;
 
-    bincode::serialize(&response).map_err(|e| format!("Serialize error: {}", e))
+    oxicode::serde::encode_to_vec(&response, oxicode::config::standard())
+        .map_err(|e| format!("Serialize error: {}", e))
 }
 
 #[cfg(test)]

@@ -11,7 +11,7 @@ use openraft::{
 };
 use openraft::impls::BasicNode;
 use std::collections::BTreeMap;
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::ops::RangeBounds;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -127,7 +127,8 @@ impl AutoqueuesRaftStorage {
             .map_err(|e| StorageError::from_io_error(ErrorSubject::Snapshot(None), ErrorVerb::Read, e))?;
 
         if !buffer.is_empty() {
-            let state: OwnershipState = bincode::deserialize(&buffer)
+            let state: OwnershipState = oxicode::serde::decode_from_slice(&buffer, oxicode::config::standard())
+                .map(|(v, _)| v)
                 .map_err(|e| {
                     let io_err = std::io::Error::new(std::io::ErrorKind::InvalidData, e);
                     StorageError::from_io_error(ErrorSubject::Snapshot(None), ErrorVerb::Read, io_err)
@@ -160,8 +161,8 @@ impl AutoqueuesRaftStorage {
         {
             let file = std::fs::File::create(&temp_path)
                 .map_err(|e| StorageError::from_io_error(ErrorSubject::Logs, ErrorVerb::Write, e))?;
-            let writer = std::io::BufWriter::new(file);
-            bincode::serialize_into(writer, &*state)
+            let mut writer = std::io::BufWriter::new(file);
+            oxicode::serde::encode_into_std_write(&*state, &mut writer, oxicode::config::standard())
                 .map_err(|e| StorageError::from_io_error(
                     ErrorSubject::Logs,
                     ErrorVerb::Write,
@@ -180,8 +181,12 @@ impl AutoqueuesRaftStorage {
     fn load_log_from_file(&self, path: &PathBuf) -> Result<(), StorageError<u64>> {
         let file = std::fs::File::open(path)
             .map_err(|e| StorageError::from_io_error(ErrorSubject::Logs, ErrorVerb::Read, e))?;
-        let reader = std::io::BufReader::new(file);
-        let entries: Vec<SerializableLogEntry> = bincode::deserialize_from(reader)
+        let mut reader = std::io::BufReader::new(file);
+        let mut buffer = Vec::new();
+        reader.read_to_end(&mut buffer)
+            .map_err(|e| StorageError::from_io_error(ErrorSubject::Logs, ErrorVerb::Read, e))?;
+        let entries: Vec<SerializableLogEntry> = oxicode::serde::decode_owned_from_slice(&buffer, oxicode::config::standard())
+            .map(|(v, _)| v)
             .map_err(|e| StorageError::from_io_error(
                 ErrorSubject::Logs,
                 ErrorVerb::Read,
@@ -215,8 +220,8 @@ impl AutoqueuesRaftStorage {
         {
             let file = std::fs::File::create(&temp_path)
                 .map_err(|e| StorageError::from_io_error(ErrorSubject::Logs, ErrorVerb::Write, e))?;
-            let writer = std::io::BufWriter::new(file);
-            bincode::serialize_into(writer, &entries)
+            let mut writer = std::io::BufWriter::new(file);
+            oxicode::serde::encode_into_std_write(&entries, &mut writer, oxicode::config::standard())
                 .map_err(|e| StorageError::from_io_error(
                     ErrorSubject::Logs,
                     ErrorVerb::Write,
@@ -235,8 +240,12 @@ impl AutoqueuesRaftStorage {
     fn load_vote_from_file(&self, path: &PathBuf) -> Result<(), StorageError<u64>> {
         let file = std::fs::File::open(path)
             .map_err(|e| StorageError::from_io_error(ErrorSubject::Vote, ErrorVerb::Read, e))?;
-        let reader = std::io::BufReader::new(file);
-        let vote_data: SerializableVote = bincode::deserialize_from(reader)
+        let mut reader = std::io::BufReader::new(file);
+        let mut buffer = Vec::new();
+        reader.read_to_end(&mut buffer)
+            .map_err(|e| StorageError::from_io_error(ErrorSubject::Vote, ErrorVerb::Read, e))?;
+        let vote_data: SerializableVote = oxicode::serde::decode_owned_from_slice(&buffer, oxicode::config::standard())
+            .map(|(v, _)| v)
             .map_err(|e| StorageError::from_io_error(
                 ErrorSubject::Vote,
                 ErrorVerb::Read,
@@ -270,7 +279,8 @@ impl AutoqueuesRaftStorage {
         {
             let file = std::fs::File::create(&temp_path)
                 .map_err(|e| StorageError::from_io_error(ErrorSubject::Vote, ErrorVerb::Write, e))?;
-            bincode::serialize_into(std::io::BufWriter::new(file), &vote_data)
+            let mut writer = std::io::BufWriter::new(file);
+            oxicode::serde::encode_into_std_write(&vote_data, &mut writer, oxicode::config::standard())
                 .map_err(|e| StorageError::from_io_error(
                     ErrorSubject::Vote,
                     ErrorVerb::Write,
@@ -566,7 +576,8 @@ impl RaftStorage<TypeConfig> for AutoqueuesRaftStorage {
             ))?;
 
         if !data.is_empty() {
-            let state: OwnershipState = bincode::deserialize(&data)
+            let state: OwnershipState = oxicode::serde::decode_from_slice(&data, oxicode::config::standard())
+                .map(|(v, _)| v)
                 .map_err(|e| StorageError::from_io_error(
                     ErrorSubject::Snapshot(None),
                     ErrorVerb::Read,
@@ -650,7 +661,7 @@ impl RaftSnapshotBuilder<TypeConfig> for AutoqueuesRaftStorage {
 
         // Serialize ownership state
         let state = self.ownership_state.read().unwrap();
-        let snapshot_data = bincode::serialize(&*state)
+        let snapshot_data = oxicode::serde::encode_to_vec(&*state, oxicode::config::standard())
             .map_err(|e| StorageError::from_io_error(
                 ErrorSubject::Snapshot(None),
                 ErrorVerb::Write,

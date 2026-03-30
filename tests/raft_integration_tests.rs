@@ -540,10 +540,12 @@ fn test_serializable_log_entry_serialization() {
     let se = SerializableLogEntry::from(&entry);
 
     // Serialize
-    let serialized = bincode::serialize(&se).expect("Failed to serialize");
+    let serialized = oxicode::serde::encode_to_vec(&se, oxicode::config::standard()).expect("Failed to serialize");
 
     // Deserialize
-    let restored: SerializableLogEntry = bincode::deserialize(&serialized).expect("Failed to deserialize");
+    let restored: SerializableLogEntry = oxicode::serde::decode_from_slice(&serialized, oxicode::config::standard())
+        .map(|(v, _)| v)
+        .expect("Failed to deserialize");
 
     // Convert back
     let entry2: Entry<TypeConfig> = restored.into();
@@ -566,10 +568,12 @@ fn test_serializable_vote_serialization() {
     };
 
     // Serialize
-    let serialized = bincode::serialize(&sv).expect("Failed to serialize");
+    let serialized = oxicode::serde::encode_to_vec(&sv, oxicode::config::standard()).expect("Failed to serialize");
 
     // Deserialize
-    let restored: SerializableVote = bincode::deserialize(&serialized).expect("Failed to deserialize");
+    let restored: SerializableVote = oxicode::serde::decode_from_slice(&serialized, oxicode::config::standard())
+        .map(|(v, _)| v)
+        .expect("Failed to deserialize");
 
     // Create Vote from SerializableVote components
     let vote2 = Vote::new(restored.term, restored.node_id);
@@ -580,7 +584,7 @@ fn test_serializable_vote_serialization() {
 
 // Test 18: OwnershipState serialization
 #[test]
-fn test_ownership_state_bincode_serialization() {
+fn test_ownership_state_oxicode_serialization() {
     let mut state = OwnershipState::new();
     state.apply(&OwnershipCommand::ClaimTopic {
         topic: "topic1".to_string(),
@@ -594,10 +598,12 @@ fn test_ownership_state_bincode_serialization() {
     });
 
     // Serialize
-    let serialized = bincode::serialize(&state).expect("Failed to serialize");
+    let serialized = oxicode::serde::encode_to_vec(&state, oxicode::config::standard()).expect("Failed to serialize");
 
     // Deserialize
-    let restored: OwnershipState = bincode::deserialize(&serialized).expect("Failed to deserialize");
+    let restored: OwnershipState = oxicode::serde::decode_from_slice(&serialized, oxicode::config::standard())
+        .map(|(v, _)| v)
+        .expect("Failed to deserialize");
 
     assert_eq!(restored.get_owner("topic1"), Some(1));
     assert_eq!(restored.get_owner("topic2"), Some(2));
