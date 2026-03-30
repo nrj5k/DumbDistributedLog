@@ -380,3 +380,411 @@ async fn test_ddl_release_lease_standalone_returns_error() {
     let result = ddl.release_lease("test:key").await;
     assert!(result.is_err(), "Should fail in standalone mode");
 }
+
+// ============================================================================
+// SCORE Targeted Tests - Conflict, Expiry, Recovery
+// ============================================================================
+
+use ddl::cluster::LeaseError;
+
+/// Test: Lease conflict detection - Node B cannot acquire lease held by Node A
+#[test]
+fn test_lease_conflict_rejected() {
+    let mut state = OwnershipState::new();
+    let now = ddl::types::now_nanos();
+
+    // Node 1 acquires lease
+    let result = state.acquire_lease("score:vertex:123".to_string(), 1, 30, now);
+    assert!(result.is_ok(), "First acquire should succeed");
+
+    // Node 2 tries same key - should fail with LeaseHeld
+    let result = state.acquire_lease("score:vertex:123".to_string(), 2, 30, now);
+    assert!(result.is_err(), "Second acquire should fail");
+
+    match result.unwrap_err() {
+        LeaseError::LeaseHeld { key, owner } => {
+            assert_eq!(key, "score:vertex:123");
+            assert_eq!(owner, 1, "Should report Node 1 as owner");
+        }
+        other => panic!("Expected LeaseHeld error, got {:?}", other),
+    }
+}
+
+/// Test: Same owner cannot acquire existing lease - must use renew
+#[test]
+fn test_same_owner_acquire_returns_lease_held() {
+    let mut state = OwnershipState::new();
+    let now = ddl::types::now_nanos();
+
+    // Node 1 acquires
+    state.acquire_lease("score:vertex:456".to_string(), 1, 30, now).unwrap();
+    let original = state.get_lease_info("score:vertex:456").unwrap();
+
+    // Same owner tries acquire again - should return LeaseHeld error
+    let later = now + 10_000_000_000; // 10 seconds later, still within TTL
+    let result = state.acquire_lease("score:vertex:456".to_string(), 1, 30, later);
+    assert!(result.is_err(), "Same owner should get LeaseHeld for existing lease");
+
+    match result.unwrap_err() {
+        LeaseError::LeaseHeld { key, owner } => {
+            assert_eq!(key, "score:vertex:456");
+            assert_eq!(owner, 1, "Should report same owner");
+        }
+        other => panic!("Expected LeaseHeld error, got {:?}", other),
+    }
+
+    // Original lease should still exist unchanged
+    let current = state.get_lease_info("score:vertex:456").unwrap();
+    assert_eq!(current.id, original.id, "Lease ID should be unchanged");
+    assert_eq!(current.expires_at, original.expires_at, "Expiry should be unchanged");
+}
+
+/// Test: Expired lease can be acquired by different node
+#[test]
+fn test_expired_lease_reacquired_by_different_node() {
+    let mut state = OwnershipState::new();
+    let now = ddl::types::now_nanos();
+
+    // Node 1 acquires with 1 second TTL
+    state.acquire_lease("score:vertex:789".to_string(), 1, 1, now).unwrap();
+    assert!(state.get_lease_info("score:vertex:789").is_some());
+
+    // Expire leases (2 seconds later)
+    let later = now + 2_000_000_000;
+    let expired = state.expire_leases(later);
+    assert_eq!(expired, 1, "Should have expired 1 lease");
+
+    // Node 2 should now be able to acquire
+    let result = state.acquire_lease("score:vertex:789".to_string(), 2, 30, later);
+    assert!(result.is_ok(), "Different node can acquire after expiry");
+
+    let lease = state.get_lease_info("score:vertex:789").unwrap();
+    assert_eq!(lease.owner, 2, "New owner should be Node 2");
+}
+
+/// Test: Renewing expired lease fails silently (no-op)
+#[test]
+fn test_renew_expired_lease_no_op() {
+    let mut state = OwnershipState::new();
+    let now = ddl::types::now_nanos();
+
+    // Acquire with 1 second TTL
+    state.apply(&OwnershipCommand::AcquireLease {
+        key: "score:vertex:expired".to_string(),
+        owner: 1,
+        lease_id: 400,
+        ttl_secs: 1,
+        timestamp: now,
+    });
+
+    // Expire
+    state.expire_leases(now + 2_000_000_000);
+
+    // Lease should no longer exist
+    assert!(state.get_lease(400).is_none(), "Expired lease should not exist");
+
+    // Try to renew - should be a no-op since lease doesn't exist
+    state.apply(&OwnershipCommand::RenewLease {
+        lease_id: 400,
+        timestamp: now + 3_000_000_000,
+    });
+
+    // Lease still doesn't exist
+    assert!(state.get_lease(400).is_none(), "Lease should still not exist after renew attempt");
+}
+
+/// Test: Release always works (idempotent)
+#[test]
+fn test_release_is_idempotent() {
+    let mut state = OwnershipState::new();
+    let now = ddl::types::now_nanos();
+
+    // Node 1 acquires
+    state.acquire_lease("score:vertex:owned".to_string(), 1, 30, now).unwrap();
+
+    // Release works
+    state.apply(&OwnershipCommand::ReleaseLease {
+        key: "score:vertex:owned".to_string(),
+    });
+    assert!(state.get_lease_info("score:vertex:owned").is_none());
+
+    // Release again is idempotent (no error)
+    state.apply(&OwnershipCommand::ReleaseLease {
+        key: "score:vertex:owned".to_string(),
+    });
+}
+
+/// Test: List leases only returns active (non-expired) leases
+#[test]
+fn test_list_leases_excludes_expired() {
+    let mut state = OwnershipState::new();
+    let now = ddl::types::now_nanos();
+
+    // Node 1 acquires 3 leases, one with short TTL
+    state.acquire_lease("score:vertex:long1".to_string(), 1, 30, now).unwrap();
+    state.acquire_lease("score:vertex:short".to_string(), 1, 1, now).unwrap(); // 1 sec TTL
+    state.acquire_lease("score:vertex:long2".to_string(), 1, 30, now).unwrap();
+
+    // List should show 3 leases
+    let leases = state.list_leases(1);
+    assert_eq!(leases.len(), 3);
+
+    // Expire
+    state.expire_leases(now + 2_000_000_000);
+
+    // List should show 2 leases (short one expired)
+    let leases = state.list_leases(1);
+    assert_eq!(leases.len(), 2);
+
+    let keys: Vec<&str> = leases.iter().map(|l| l.key.as_str()).collect();
+    assert!(keys.contains(&"score:vertex:long1"));
+    assert!(keys.contains(&"score:vertex:long2"));
+    assert!(!keys.contains(&"score:vertex:short"));
+}
+
+/// Test: get_lease_info returns None for expired leases (after expire_leases called)
+#[test]
+fn test_get_lease_info_returns_none_after_expiry() {
+    let mut state = OwnershipState::new();
+    let now = ddl::types::now_nanos();
+
+    // Acquire with 1 second TTL
+    state.acquire_lease("score:vertex:temp".to_string(), 1, 1, now).unwrap();
+
+    // Should exist
+    assert!(state.get_lease_info("score:vertex:temp").is_some());
+
+    // Expire
+    state.expire_leases(now + 2_000_000_000);
+
+    // Should not exist after expiration cleanup
+    assert!(state.get_lease_info("score:vertex:temp").is_none());
+}
+
+/// Test: Lease ID monotonicity
+#[test]
+fn test_lease_ids_are_unique() {
+    let mut state = OwnershipState::new();
+
+    // Each call should increment
+    let id1 = state.next_lease_id();
+    let id2 = state.next_lease_id();
+    let id3 = state.next_lease_id();
+
+    assert!(id2 > id1, "Lease IDs should be monotonic");
+    assert!(id3 > id2, "Lease IDs should be monotonic");
+}
+
+/// Test: Multiple owners, correct listing
+#[test]
+fn test_list_leases_by_owner() {
+    let mut state = OwnershipState::new();
+    let now = ddl::types::now_nanos();
+
+    // Node 1 has 2 leases
+    state.acquire_lease("score:vertex:n1-a".to_string(), 1, 30, now).unwrap();
+    state.acquire_lease("score:vertex:n1-b".to_string(), 1, 30, now).unwrap();
+
+    // Node 2 has 1 lease
+    state.acquire_lease("score:vertex:n2-a".to_string(), 2, 30, now).unwrap();
+
+    // List for Node 1
+    let node1_leases = state.list_leases(1);
+    assert_eq!(node1_leases.len(), 2);
+
+    // List for Node 2
+    let node2_leases = state.list_leases(2);
+    assert_eq!(node2_leases.len(), 1);
+
+    // List for Node 3 (no leases)
+    let node3_leases = state.list_leases(3);
+    assert_eq!(node3_leases.len(), 0);
+}
+
+/// Test: Acquire lease with expiry calculation
+#[test]
+fn test_lease_expiry_calculation() {
+    let mut state = OwnershipState::new();
+    let now = ddl::types::now_nanos();
+
+    // Acquire with 30 second TTL
+    let lease_id = state.acquire_lease("score:vertex:calc".to_string(), 1, 30, now).unwrap();
+
+    let lease = state.get_lease_info("score:vertex:calc").unwrap();
+
+    // expires_at should be acquired_at + (ttl_secs * 1_000_000_000)
+    assert_eq!(lease.acquired_at, now);
+    assert_eq!(lease.ttl_secs, 30);
+    assert_eq!(lease.expires_at, now + (30 * 1_000_000_000));
+
+    // Should NOT be expired at t = acquired_at + 29 seconds
+    assert!(state.is_lease_valid(lease_id, now + (29 * 1_000_000_000)));
+
+    // Should BE expired at t = acquired_at + 31 seconds
+    assert!(!state.is_lease_valid(lease_id, now + (31 * 1_000_000_000)));
+}
+
+/// Test: Concurrent acquires on same key - first wins
+#[test]
+fn test_concurrent_acquire_same_key() {
+    let mut state = OwnershipState::new();
+    let now = ddl::types::now_nanos();
+
+    // Two "concurrent" acquires (same timestamp, but sequential application)
+    // First wins
+    let result1 = state.acquire_lease("score:vertex:concurrent".to_string(), 1, 30, now);
+    let result2 = state.acquire_lease("score:vertex:concurrent".to_string(), 2, 30, now);
+
+    assert!(result1.is_ok(), "First acquire should succeed");
+    assert!(result2.is_err(), "Second acquire should fail");
+
+    let lease = state.get_lease_info("score:vertex:concurrent").unwrap();
+    assert_eq!(lease.owner, 1, "First acquirer should be owner");
+}
+
+/// Test: Release then re-acquire by different node
+#[test]
+fn test_release_then_different_owner() {
+    let mut state = OwnershipState::new();
+    let now = ddl::types::now_nanos();
+
+    // Node 1 acquires
+    state.acquire_lease("score:vertex:transfer".to_string(), 1, 30, now).unwrap();
+
+    // Release
+    state.apply(&OwnershipCommand::ReleaseLease {
+        key: "score:vertex:transfer".to_string(),
+    });
+
+    // Node 2 acquires same key
+    let result = state.acquire_lease("score:vertex:transfer".to_string(), 2, 30, now);
+    assert!(result.is_ok(), "Different node should acquire after release");
+
+    let lease = state.get_lease_info("score:vertex:transfer").unwrap();
+    assert_eq!(lease.owner, 2, "New owner should be Node 2");
+}
+
+// ============================================================================
+// Edge Cases
+// ============================================================================
+
+/// Test: Empty key is allowed
+#[test]
+fn test_empty_key_allowed() {
+    let mut state = OwnershipState::new();
+    // Keys are not validated, empty should work
+    let result = state.acquire_lease("".to_string(), 1, 30, ddl::types::now_nanos());
+    assert!(result.is_ok());
+}
+
+/// Test: Very long key names
+#[test]
+fn test_long_key_name() {
+    let mut state = OwnershipState::new();
+    let long_key = "score:vertex:".repeat(100); // Very long key
+
+    let result = state.acquire_lease(long_key.clone(), 1, 30, ddl::types::now_nanos());
+    assert!(result.is_ok(), "Long keys should work");
+
+    let lease = state.get_lease_info(&long_key);
+    assert!(lease.is_some());
+}
+
+/// Test: Zero TTL (immediate expiry)
+#[test]
+fn test_zero_ttl_lease() {
+    let mut state = OwnershipState::new();
+    let now = ddl::types::now_nanos();
+
+    // Zero TTL - still acquirable but immediately expired
+    let result = state.acquire_lease("score:vertex:zero".to_string(), 1, 0, now);
+    assert!(result.is_ok(), "Zero TTL should still acquire");
+
+    // Lease exists
+    let lease = state.get_lease_info("score:vertex:zero");
+    assert!(lease.is_some(), "Lease should exist");
+
+    // But expires_at == acquired_at
+    let lease = lease.unwrap();
+    assert_eq!(lease.acquired_at, lease.expires_at, "Zero TTL = immediate expiry");
+
+    // Any expire call should clean it up (even with now as timestamp)
+    state.expire_leases(now);
+    assert!(state.get_lease_info("score:vertex:zero").is_none(), "Should be expired");
+}
+
+/// Test: Multiple acquires on different keys by different owners
+#[test]
+fn test_multiple_keys_multiple_owners() {
+    let mut state = OwnershipState::new();
+    let now = ddl::types::now_nanos();
+
+    // Node 1 acquires key A
+    state.acquire_lease("key:a".to_string(), 1, 30, now).unwrap();
+    // Node 2 acquires key B
+    state.acquire_lease("key:b".to_string(), 2, 30, now).unwrap();
+    // Node 3 acquires key C
+    state.acquire_lease("key:c".to_string(), 3, 30, now).unwrap();
+
+    // All leases should coexist
+    assert_eq!(state.lease_count(), 3);
+
+    // Each owner should see their own lease
+    assert_eq!(state.list_leases(1).len(), 1);
+    assert_eq!(state.list_leases(2).len(), 1);
+    assert_eq!(state.list_leases(3).len(), 1);
+
+    // All keys should be leased
+    assert!(state.get_lease_info("key:a").is_some());
+    assert!(state.get_lease_info("key:b").is_some());
+    assert!(state.get_lease_info("key:c").is_some());
+}
+
+/// Test: Lease validity check with exact boundary
+#[test]
+fn test_lease_validity_boundary() {
+    let mut state = OwnershipState::new();
+    let now = ddl::types::now_nanos();
+
+    // TTL = 10 seconds
+    let lease_id = state.acquire_lease("boundary:test".to_string(), 1, 10, now).unwrap();
+
+    // Expires at now + 10 * 1_000_000_000
+    let expires_at = now + 10_000_000_000;
+
+    // Valid exactly at expiry time? No - must be strictly greater
+    assert!(!state.is_lease_valid(lease_id, expires_at), "Should be expired at exact expiry time");
+    assert!(state.is_lease_valid(lease_id, expires_at - 1), "Should be valid one nano before expiry");
+}
+
+/// Test: Renew lease extends expiry correctly
+#[test]
+fn test_renew_extends_expiry() {
+    let mut state = OwnershipState::new();
+    let now = ddl::types::now_nanos();
+
+    // Acquire with 10 second TTL
+    state.apply(&OwnershipCommand::AcquireLease {
+        key: "renew:test".to_string(),
+        owner: 1,
+        lease_id: 4000,
+        ttl_secs: 10,
+        timestamp: now,
+    });
+
+    let original = state.get_lease(4000).unwrap();
+    let original_expires = original.expires_at;
+
+    // Renew at t = now + 5 seconds
+    let renew_time = now + 5_000_000_000;
+    state.apply(&OwnershipCommand::RenewLease {
+        lease_id: 4000,
+        timestamp: renew_time,
+    });
+
+    let renewed = state.get_lease(4000).unwrap();
+    // New expires = renew_time + (10 * 1_000_000_000)
+    let expected_new_expiry = renew_time + 10_000_000_000;
+    assert_eq!(renewed.expires_at, expected_new_expiry);
+    assert!(renewed.expires_at > original_expires);
+}
