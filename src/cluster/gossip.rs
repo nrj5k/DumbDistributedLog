@@ -53,14 +53,11 @@ pub struct FailureDetector {
     config: FailureDetectorConfig,
     /// Event broadcaster
     membership_tx: broadcast::Sender<MembershipEvent>,
-    /// Local node ID
-    local_node_id: u64,
 }
 
 impl FailureDetector {
     /// Create a new failure detector
     pub fn new(
-        local_node_id: u64,
         config: FailureDetectorConfig,
         membership_tx: broadcast::Sender<MembershipEvent>,
     ) -> Self {
@@ -68,7 +65,6 @@ impl FailureDetector {
             peers: Arc::new(RwLock::new(HashMap::new())),
             config,
             membership_tx,
-            local_node_id,
         }
     }
 
@@ -206,7 +202,7 @@ mod tests {
     #[tokio::test]
     async fn test_add_peer() {
         let (tx, _rx) = broadcast::channel(256);
-        let detector = FailureDetector::new(1, FailureDetectorConfig::default(), tx);
+        let detector = FailureDetector::new(FailureDetectorConfig::default(), tx);
         
         detector.add_peer(2, "localhost:9091".to_string()).await;
         
@@ -218,7 +214,7 @@ mod tests {
     #[tokio::test]
     async fn test_remove_peer() {
         let (tx, _rx) = broadcast::channel(256);
-        let detector = FailureDetector::new(1, FailureDetectorConfig::default(), tx);
+        let detector = FailureDetector::new(FailureDetectorConfig::default(), tx);
         
         detector.add_peer(2, "localhost:9091".to_string()).await;
         detector.remove_peer(2).await;
@@ -230,7 +226,7 @@ mod tests {
     #[tokio::test]
     async fn test_heartbeat_updates_timestamp() {
         let (tx, _rx) = broadcast::channel(256);
-        let detector = FailureDetector::new(1, FailureDetectorConfig::default(), tx);
+        let detector = FailureDetector::new(FailureDetectorConfig::default(), tx);
         
         detector.add_peer(2, "localhost:9091".to_string()).await;
         
@@ -252,7 +248,7 @@ mod tests {
             heartbeat_interval: Duration::from_millis(10),
         };
         
-        let detector = FailureDetector::new(1, config, tx);
+        let detector = FailureDetector::new(config, tx);
         detector.add_peer(2, "localhost:9091".to_string()).await;
         
         // Start failure detector
@@ -284,7 +280,7 @@ mod tests {
             heartbeat_interval: Duration::from_millis(10),
         };
         
-        let detector = FailureDetector::new(1, config, tx);
+        let detector = FailureDetector::new(config, tx);
         detector.add_peer(2, "localhost:9091".to_string()).await;
         
         // Initially not failed
@@ -298,7 +294,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_healthy_and_failed_peers() {
         let (tx, _rx) = broadcast::channel(256);
-        let detector = FailureDetector::new(1, FailureDetectorConfig::default(), tx);
+        let detector = FailureDetector::new(FailureDetectorConfig::default(), tx);
         
         detector.add_peer(2, "localhost:9091".to_string()).await;
         detector.add_peer(3, "localhost:9092".to_string()).await;
@@ -324,7 +320,7 @@ mod tests {
             heartbeat_interval: Duration::from_millis(10),
         };
         
-        let detector = FailureDetector::new(1, config.clone(), tx);
+        let detector = FailureDetector::new(config.clone(), tx);
         detector.add_peer(2, "localhost:9091".to_string()).await;
         
         // Manually mark as failed

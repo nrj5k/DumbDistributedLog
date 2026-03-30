@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2025-03-30
+
+### Added
+- **Membership API on DdlDistributed** - Three new methods:
+  - `subscribe_membership() -> Option<broadcast::Receiver<MembershipEvent>>`
+  - `membership() -> Option<MembershipView>`
+  - `metrics() -> Option<DdlMetrics>`
+- **Root-level exports for SCORE integration**:
+  - `MembershipEvent`
+  - `MembershipEventType`
+  - `MembershipView`
+  - `DdlMetrics`
+  - `NodeInfo`
+  - `RaftClusterNode`
+
+### Fixed
+- Fixed 6 failing Raft storage tests (snapshot metadata, persistence, purge tracking)
+- Fixed unused `local_node_id` field in FailureDetector
+
+### Documentation
+- Added SCORE integration guide to README
+- Enhanced doc comments for membership types
+- Documented Option vs Result design decision
+
 ## [1.0.0] - 2024-01-XX
 
 ### Added
