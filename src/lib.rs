@@ -206,6 +206,125 @@ pub use crate::network::pubsub::zmq::ZmqPubSubClient;
 /// Raft-based cluster coordination for shard assignment.
 pub use crate::cluster::raft_node::{ClusterConfig, RaftNode};
 
+// ============================================================================
+// Membership Types (for SCORE integration)
+// ============================================================================
+
+/// Membership event for cluster lifecycle tracking.
+///
+/// Emitted when nodes join, leave, fail, or recover in the cluster.
+/// Use with `DdlDistributed::subscribe_membership()` in Raft mode.
+///
+/// # Example
+///
+/// ```ignore
+/// let mut events = ddl.subscribe_membership()
+///     .expect("Raft mode required");
+///
+/// while let Ok(event) = events.recv().await {
+///     println!("[{:?}] {}", event.timestamp, event.event_type);
+/// }
+/// ```
+///
+/// See [`MembershipEventType`] for all event variants.
+pub use crate::cluster::MembershipEvent;
+
+/// Membership event type enumeration.
+///
+/// Variants represent the four possible membership changes:
+///
+/// - [`NodeJoined`] - A new node entered the cluster
+/// - [`NodeLeft`] - A node gracefully exited
+/// - [`NodeFailed`] - A node crashed or became unreachable
+/// - [`NodeRecovered`] - A previously failed node rejoined
+///
+/// # Example
+///
+/// ```ignore
+/// match event.event_type {
+///     MembershipEventType::NodeJoined { node_id, addr } => {
+///         println!("Node {} connected from {}", node_id, addr);
+///     }
+///     MembershipEventType::NodeFailed { node_id } => {
+///         eprintln!("Node {} failed - initiating failover", node_id);
+///     }
+///     _ => {} // Other event types
+/// }
+/// ```
+pub use crate::cluster::MembershipEventType;
+
+/// Current view of cluster membership.
+///
+/// Provides a snapshot of all known nodes, current leader, and local node ID.
+/// Available via `DdlDistributed::membership()` in Raft mode only.
+///
+/// # Fields
+///
+/// - `nodes` - HashMap of node_id → [`NodeInfo`]
+/// - `leader` - Current Raft leader node_id (None during election)
+/// - `local_node_id` - This node's ID
+///
+/// # Example
+///
+/// ```ignore
+/// if let Some(view) = ddl.membership() {
+///     println!("Cluster size: {} nodes", view.nodes.len());
+///     println!("Leader: {:?}", view.leader);
+/// }
+/// ```
+pub use crate::cluster::MembershipView;
+
+/// DDL metrics for monitoring and observability.
+///
+/// Contains operational metrics about the cluster state including
+/// active leases, Raft progress, and network statistics.
+/// Available via `DdlDistributed::metrics()` in Raft mode only.
+///
+/// # Metrics Provided
+///
+/// - **Membership**: `active_leases`, `membership_size`
+/// - **State**: `state_size_bytes`, `state_key_count`
+/// - **Raft**: `raft_commit_index`, `raft_applied_index`, `raft_leader`
+/// - **Network**: `pending_writes`, `pending_reads`
+///
+/// # Example
+///
+/// ```ignore
+/// if let Some(metrics) = ddl.metrics() {
+///     println!("Leases: {}, Membership: {}", metrics.active_leases, metrics.membership_size);
+///     println!("Raft: commit={}, applied={}", metrics.raft_commit_index, metrics.raft_applied_index);
+///     println!("Pending: writes={}, reads={}", metrics.pending_writes, metrics.pending_reads);
+/// }
+/// ```
+pub use crate::cluster::DdlMetrics;
+
+/// Node information in cluster membership.
+///
+/// Contains metadata about a single cluster node including
+/// network address, last seen timestamp, and leadership status.
+///
+/// # Fields
+///
+/// - `node_id` - Unique node identifier
+/// - `addr` - Network address (host:port)
+/// - `last_seen` - Timestamp of last heartbeat
+/// - `is_leader` - Whether this node is the current Raft leader
+pub use crate::cluster::NodeInfo;
+
+/// Raft-based cluster node for advanced coordination.
+///
+/// Provides direct access to Raft cluster operations including
+/// topic ownership management and membership subscriptions.
+///
+/// **Most users should use `DdlDistributed` methods instead.**
+/// Direct access is for advanced scenarios requiring:
+/// - Multi-node TCP networking
+/// - Custom Raft configuration
+/// - Low-level cluster operations
+///
+/// Available via `ddl.raft_cluster.as_ref()` when in Raft mode.
+pub use crate::cluster::RaftClusterNode;
+
 /// Node management and startup utilities.
 pub use crate::node::{start_node, AutoQueuesNode};
 

@@ -1,83 +1,324 @@
 //! Membership tracking and events for distributed coordination.
 //!
-//! Provides node lifecycle events for SCORE failover coordination.
+//! Provides node lifecycle events for SCORE (HPC metrics aggregation) failover
+//! coordination. This module defines the types used to track cluster membership,
+//! emit events when nodes join/leave/fail/recover, and monitor cluster health.
+//!
+//! # Overview
+//!
+//! The membership API enables:
+//!
+//! - **Event Streaming**: Subscribe to real-time membership changes
+//! - **State Snapshots**: Get current cluster membership view
+//! - **Metrics**: Monitor DDL operational metrics
+//!
+//! # Usage with DdlDistributed
+//!
+//! ```ignore
+//! use ddl::{DdlDistributed, MembershipEventType};
+//!
+//! // In Raft mode only - returns None otherwise
+//! if let Some(mut events) = ddl.subscribe_membership() {
+//!     while let Ok(event) = events.recv().await {
+//!         match event.event_type {
+//!             MembershipEventType::NodeFailed { node_id } => {
+//!                 // Handle failover
+//!             }
+//!             _ => {}
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! # SCORE Integration
+//!
+//! SCORE uses this API for:
+//!
+//! - Detecting failed compute nodes
+//! - Coordinating metric vertex ownership transfer
+//! - Monitoring cluster health and capacity
+//!
+//! See the [module-level documentation in the parent](super) for Phase 2
+//! lease patterns using `claim_topic()` with TTL-based renewal.
+//!
+//! # Architecture
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────┐
+//! │                    Membership Types                      │
+//! ├─────────────────────────────────────────────────────────┤
+//! │ MembershipEvent    → Single event (type + timestamp)    │
+//! │ MembershipEventType→ Enum: NodeJoined/Left/Failed/Rec.  │
+//! │ MembershipView     → Snapshot: nodes + leader + local   │
+//! │ NodeInfo           → Per-node: id + addr + last_seen    │
+//! │ DdlMetrics         → Cluster: leases + Raft + network   │
+//! └─────────────────────────────────────────────────────────┘
+//! ```
 
 use std::collections::HashMap;
 use std::time::SystemTime;
 
-/// Membership event types
+/// Membership event types for cluster lifecycle tracking.
+///
+/// Emitted via [`MembershipEvent`] when nodes join, leave, fail, or recover.
+/// Use with [`DdlDistributed::subscribe_membership()`] in Raft mode.
+///
+/// # SCORE Integration
+///
+/// SCORE uses these events for HPC cluster coordination:
+/// - `NodeFailed`: Trigger failover for owned metrics vertices
+/// - `NodeRecovered`: Rebalance load back to recovered node
+/// - `NodeJoined`: Update capacity planning
+/// - `NodeLeft`: Graceful scale-down
+///
+/// # Example
+///
+/// ```ignore
+/// match event.event_type {
+///     MembershipEventType::NodeFailed { node_id } => {
+///         // SCORE: Initiate vertex ownership transfer
+///         failover_vertices(node_id).await;
+///     }
+///     MembershipEventType::NodeJoined { node_id, addr } => {
+///         println!("Node {} online at {}", node_id, addr);
+///     }
+///     _ => {}
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MembershipEventType {
-    /// A new node joined the cluster
+    /// A new node joined the cluster.
+    ///
+    /// The node has successfully completed Raft handshake and is participating
+    /// in consensus. It may begin owning topics after claiming them.
     NodeJoined { node_id: u64, addr: String },
-    /// A node gracefully left the cluster
+
+    /// A node gracefully left the cluster.
+    ///
+    /// The node initiated shutdown and released all topic ownership before
+    /// leaving. No failover is required - ownership was already transferred.
     NodeLeft { node_id: u64 },
-    /// A node failed (crashed or network partition)
+
+    /// A node failed (crashed or network partition).
+    ///
+    /// The node became unreachable and is assumed crashed. Topics owned by
+    /// this node should be claimed by remaining nodes for continued operation.
+    /// **SCORE should trigger failover when receiving this event.**
     NodeFailed { node_id: u64 },
-    /// A node recovered after failure
+
+    /// A node recovered after failure.
+    ///
+    /// A previously failed node has rejoined the cluster. It may reclaim
+    /// previously owned topics or receive new assignments.
     NodeRecovered { node_id: u64 },
 }
 
-/// Membership event emitted when cluster membership changes
+/// A single membership event with timestamp.
+///
+/// Contains the event type and when it occurred. Use [`broadcast::Receiver::recv()`]
+/// to receive these events in a loop.
+///
+/// # Example
+///
+/// ```ignore
+/// use std::time::SystemTime;
+///
+/// // Receive events in async loop
+/// let mut events = ddl.subscribe_membership().unwrap();
+///
+/// while let Ok(event) = events.recv().await {
+///     println!("[{:?}] {:?}", event.timestamp, event.event_type);
+///
+///     match event.event_type {
+///         MembershipEventType::NodeFailed { node_id } => {
+///             handle_failure(node_id).await;
+///         }
+///         _ => {}
+///     }
+/// }
+/// ```
+///
+/// # Timestamp
+///
+/// The `timestamp` uses [`SystemTime`] and represents when the event was
+/// generated by the Raft layer. This is useful for ordering events and
+/// calculating detection latency.
 #[derive(Debug, Clone)]
 pub struct MembershipEvent {
-    /// Type of event
+    /// The type of membership change that occurred.
     pub event_type: MembershipEventType,
-    /// When the event occurred
+
+    /// When the event was generated, according to the Raft node.
+    ///
+    /// Uses [`SystemTime`] since UNIX epoch. Useful for:
+    /// - Event ordering across distributed nodes
+    /// - Latency calculations
+    /// - Audit trails
     pub timestamp: SystemTime,
 }
 
-/// Current view of cluster membership
+/// Current snapshot of cluster membership state.
+///
+/// Obtained via [`DdlDistributed::membership()`]. Provides a point-in-time
+/// view of the cluster's composition, leader, and local node ID.
+///
+/// # Example
+///
+/// ```ignore
+/// let view = ddl.membership().expect("Raft mode required");
+///
+/// println!("=== Membership View ===");
+/// println!("Local node: {}", view.local_node_id);
+/// println!("Current leader: {:?}", view.leader);
+/// println!("Cluster size: {} nodes", view.nodes.len());
+///
+/// for (node_id, info) in &view.nodes {
+///     let role = if Some(*node_id) == view.leader { "LEADER" } else { "FOLLOWER" };
+///     println!("  Node {} @ {} [{}]", node_id, info.addr, role);
+/// }
+/// ```
+///
+/// # Note
+///
+/// This is a **snapshot** - it reflects the state at call time. For
+/// real-time updates, use [`subscribe_membership()`] instead.
 #[derive(Debug, Clone)]
 pub struct MembershipView {
-    /// All known nodes in the cluster
+    /// All known nodes in the cluster, keyed by node ID.
+    ///
+    /// Contains information about each node's network address, last seen
+    /// timestamp, and leadership status.
     pub nodes: HashMap<u64, NodeInfo>,
-    /// Current Raft leader (if any)
+
+    /// The current Raft leader's node ID, or `None` during leader election.
+    ///
+    /// Use this to direct read/write operations to the leader when strong
+    /// consistency is required.
     pub leader: Option<u64>,
-    /// This node's ID
+
+    /// This node's own node ID.
+    ///
+    /// Useful for determining "am I the leader?" checks:
+    /// ```ignore
+    /// let view = ddl.membership()?;
+    /// let am_leader = view.leader == Some(view.local_node_id);
+    /// ```
     pub local_node_id: u64,
 }
 
-/// Information about a cluster node
+/// Information about a single cluster node.
+///
+/// Contained within [`MembershipView.nodes`]. Provides the metadata needed
+/// to connect to and communicate with a node.
 #[derive(Debug, Clone)]
 pub struct NodeInfo {
-    /// Node identifier
+    /// The node's unique identifier.
+    ///
+    /// Used in Raft operations and topic ownership tracking.
     pub node_id: u64,
-    /// Network address
+
+    /// The node's network address in `host:port` format.
+    ///
+    /// Use this address for direct node-to-node communication.
     pub addr: String,
-    /// Last seen time (for failed detection)
+
+    /// When this node was last seen alive.
+    ///
+    /// Updated via Raft heartbeats. Useful for detecting stale nodes.
     pub last_seen: SystemTime,
-    /// Is this node the leader?
+
+    /// Whether this node is currently the Raft leader.
+    ///
+    /// The leader handles all write operations and coordinates consensus.
+    /// Only one node can be leader at a time.
     pub is_leader: bool,
 }
 
-/// DDL metrics for monitoring
+/// DDL operational metrics for monitoring and observability.
+///
+/// Obtained via [`DdlDistributed::metrics()`]. Provides insight into:
+/// - Cluster health and capacity
+/// - Raft replication progress
+/// - Network load
+///
+/// # Example
+///
+/// ```ignore
+/// let metrics = ddl.metrics().expect("Raft mode required");
+///
+/// // Capacity planning
+/// println!("Nodes: {}, Topics: {}", metrics.membership_size, metrics.state_key_count);
+///
+/// // Raft health
+/// let lag = metrics.raft_commit_index - metrics.raft_applied_index;
+/// println!("Raft lag: {} entries", lag);
+///
+/// // Network load
+/// println!("Pending: {} writes, {} reads", metrics.pending_writes, metrics.pending_reads);
+/// ```
+///
+/// # Use Cases
+///
+/// - **Health checks**: Alert on high Raft lag or missing leader
+/// - **Capacity planning**: Monitor state growth and topic counts
+/// - **Performance tuning**: Identify backpressure from pending operations
 #[derive(Debug, Clone)]
 pub struct DdlMetrics {
-    // Membership
-    /// Number of active leases
+    // Membership metrics
+    /// Number of topics currently owned via Raft lease.
+    ///
+    /// Incremented on `claim_topic()`, decremented on `release_topic()`.
+    /// Useful for tracking ownership distribution.
     pub active_leases: usize,
-    /// Size of membership
+
+    /// Current number of nodes in the cluster.
+    ///
+    /// Use for capacity planning and quorum calculations:
+    /// `quorum = membership_size / 2 + 1`
     pub membership_size: usize,
 
-    // State
-    /// Size of state in bytes
+    // State metrics
+    /// Size of the Raft state machine in bytes.
+    ///
+    /// Includes all topic ownership records and metadata.
+    /// Monitor for memory growth and plan for compaction.
     pub state_size_bytes: usize,
-    /// Number of keys in state
+
+    /// Number of topics (keys) in the Raft state.
+    ///
+    /// Each claimed topic is one key. Useful for scale monitoring.
     pub state_key_count: usize,
 
-    // Raft
-    /// Raft commit index
+    // Raft metrics
+    /// Highest log index that has been committed (replicated to quorum).
+    ///
+    /// Entries below this index are guaranteed to survive failures.
+    /// Compare with `raft_applied_index` to detect replication lag.
     pub raft_commit_index: u64,
-    /// Raft applied index
+
+    /// Highest log index that has been applied to the state machine.
+    ///
+    /// Entries below this index have been processed and are durable.
+    /// A large gap from `raft_commit_index` indicates processing delay.
     pub raft_applied_index: u64,
-    /// Current Raft leader
+
+    /// Node ID of the current Raft leader, or `None` during election.
+    ///
+    /// `None` during leader transitions (normal in dynamic clusters).
+    /// Alert if leader is absent for extended periods.
     pub raft_leader: Option<u64>,
 
-    // Network
-    /// Number of pending writes
+    // Network metrics
+    /// Number of writes pending consensus.
+    ///
+    /// High values indicate backpressure or network congestion.
+    /// May trigger [`DdlError::BufferFull`] if sustained.
     pub pending_writes: usize,
-    /// Number of pending reads
+
+    /// Number of reads pending processing.
+    ///
+    /// High values indicate subscriber slow consumers.
+    /// May trigger backpressure based on subscription mode.
     pub pending_reads: usize,
 }
 

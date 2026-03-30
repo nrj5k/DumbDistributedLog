@@ -414,49 +414,173 @@ impl DdlDistributed {
 
     /// Subscribe to membership events (Raft mode only)
     ///
-    /// Returns a receiver that yields membership events when nodes
-    /// join, leave, or fail in the cluster.
+    /// Returns a [`tokio::sync::broadcast::Receiver`] that yields [`MembershipEvent`]
+    /// values when nodes join, leave, fail, or recover in the cluster.
     ///
-    /// Returns `None` if not in Raft mode (standalone or gossip-only).
+    /// # Returns
     ///
-    /// # Example
+    /// - `Some(Receiver)` - In Raft mode, receive events for cluster changes
+    /// - `None` - In standalone or gossip-only mode (membership tracking not needed)
+    ///
+    /// # Why Option<T> instead of Result<T, E>?
+    ///
+    /// Standalone mode is a valid deployment option, not an error condition.
+    /// Using `Option` allows seamless code paths for both modes:
     ///
     /// ```ignore
-    /// let mut events = ddl.subscribe_membership().await?;
-    /// while let Ok(event) = events.recv().await {
-    ///     match event.event_type {
-    ///         MembershipEventType::NodeFailed { node_id } => {
-    ///             // Handle failover
+    /// match ddl.subscribe_membership() {
+    ///     Some(mut events) => {
+    ///         // Cluster mode - process events
+    ///         while let Ok(event) = events.recv().await {
+    ///             handle_event(event);
     ///         }
-    ///         MembershipEventType::NodeJoined { node_id, addr } => {
-    ///             // New node joined
-    ///         }
-    ///         // ...
+    ///     }
+    ///     None => {
+    ///         // Standalone mode - no cluster to track
+    ///         // Single-node deployments don't need membership
     ///     }
     /// }
     /// ```
+    ///
+    /// # Example: SCORE Failover Pattern
+    ///
+    /// ```ignore
+    /// use ddl::MembershipEventType;
+    ///
+    /// let mut events = ddl.subscribe_membership()
+    ///     .expect("Raft mode required for SCORE integration");
+    ///
+    /// while let Ok(event) = events.recv().await {
+    ///     match event.event_type {
+    ///         MembershipEventType::NodeFailed { node_id } => {
+    ///             // SCORE: Initiate failover for vertices owned by failed node
+    ///             let topics = find_owned_topics(node_id, &ddl).await;
+    ///             for topic in topics {
+    ///                 let _ = ddl.claim_topic(&topic).await;
+    ///             }
+    ///         }
+    ///         MembershipEventType::NodeRecovered { node_id } => {
+    ///             // SCORE: Rebalance load back to recovered node
+    ///             rebalance_vertices(node_id, &ddl).await;
+    ///         }
+    ///         MembershipEventType::NodeJoined { node_id, addr } => {
+    ///             info!("Node {} ({}) joined cluster", node_id, addr);
+    ///         }
+    ///         MembershipEventType::NodeLeft { node_id } => {
+    ///             info!("Node {} left gracefully", node_id);
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Performance
+    ///
+    /// Events are delivered via a broadcast channel with configurable buffer size.
+    /// Slow consumers won't block cluster operations - old events are dropped
+    /// when the buffer is full (using `tokio::sync::broadcast` semantics).
     pub fn subscribe_membership(&self) -> Option<tokio::sync::broadcast::Receiver<MembershipEvent>> {
         self.raft_cluster.as_ref().map(|rc| rc.subscribe_membership())
     }
 
     /// Get current cluster membership view (Raft mode only)
     ///
-    /// Returns information about all known nodes in the cluster.
+    /// Returns a snapshot of the current cluster state including:
+    /// - All known nodes and their information
+    /// - Current Raft leader (if elected)
+    /// - Local node ID
     ///
-    /// Returns `None` if not in Raft mode (standalone or gossip-only).
+    /// # Returns
+    ///
+    /// - `Some(MembershipView)` - In Raft mode, cluster state is available
+    /// - `None` - In standalone or gossip-only mode
+    ///
+    /// # Use Cases
+    ///
+    /// - **Health monitoring**: Check cluster size and leader status
+    /// - **Load balancing**: Distribute work across nodes
+    /// - **Debugging**: Inspect cluster composition
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// if let Some(view) = ddl.membership() {
+    ///     println!("=== Cluster Status ===");
+    ///     println!("Nodes: {}", view.nodes.len());
+    ///     println!("Leader: {:?}", view.leader);
+    ///     println!("Local: {}", view.local_node_id);
+    ///
+    ///     for (node_id, info) in &view.nodes {
+    ///         let status = if info.is_leader { "leader" } else { "follower" };
+    ///         println!("  Node {} @ {} [{}]", node_id, info.addr, status);
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Note
+    ///
+    /// This is a **snapshot** - it reflects the state at the time of call.
+    /// For real-time updates, use [`subscribe_membership()`] instead.
     pub fn membership(&self) -> Option<crate::cluster::MembershipView> {
         self.raft_cluster.as_ref().map(|rc| rc.membership())
     }
 
-    /// Get DDL metrics for monitoring (Raft mode only)
+    /// Get DDL operational metrics for monitoring (Raft mode only)
     ///
-    /// Returns metrics about the cluster state including:
-    /// - Active leases
-    /// - Membership size
-    /// - Raft commit index
-    /// - Current leader
+    /// Returns a snapshot of DDL's internal metrics useful for:
+    /// - Cluster health monitoring
+    /// - Capacity planning
+    /// - Performance debugging
+    /// - Alerting thresholds
     ///
-    /// Returns `None` if not in Raft mode (standalone or gossip-only).
+    /// # Returns
+    ///
+    /// - `Some(DdlMetrics)` - In Raft mode, metrics are available
+    /// - `None` - In standalone or gossip-only mode
+    ///
+    /// # Metrics Reference
+    ///
+    /// | Metric | Description | Use Case |
+    /// |--------|-------------|----------|
+    /// | `active_leases` | Topics owned via Raft | Ownership tracking |
+    /// | `membership_size` | Number of nodes | Capacity planning |
+    /// | `state_size_bytes` | Raft state size | Memory monitoring |
+    /// | `state_key_count` | Number of topics | Scale monitoring |
+    /// | `raft_commit_index` | Raft log position | Replication lag |
+    /// | `raft_applied_index` | Applied log position | Progress tracking |
+    /// | `raft_leader` | Current leader ID | Failover detection |
+    /// | `pending_writes` | Outstanding writes | Backpressure detection |
+    /// | `pending_reads` | Outstanding reads | Load monitoring |
+    ///
+    /// # Example: Health Check
+    ///
+    /// ```ignore
+    /// fn check_cluster_health(ddl: &DdlDistributed) -> bool {
+    ///     let metrics = match ddl.metrics() {
+    ///         Some(m) => m,
+    ///         None => return true, // Standalone always healthy
+    ///     };
+    ///
+    ///     // Check Raft progress
+    ///     let lag = metrics.raft_commit_index.saturating_sub(metrics.raft_applied_index);
+    ///     if lag > 1000 {
+    ///         eprintln!("Warning: Raft lag is {}", lag);
+    ///         return false;
+    ///     }
+    ///
+    ///     // Check for leader
+    ///     if metrics.raft_leader.is_none() {
+    ///         eprintln!("Warning: No leader elected");
+    ///         return false;
+    ///     }
+    ///
+    ///     true
+    /// }
+    /// ```
+    ///
+    /// # Note
+    ///
+    /// Metrics are updated asynchronously and may be slightly stale.
+    /// For real-time alerting, combine with membership event streaming.
     pub fn metrics(&self) -> Option<crate::cluster::DdlMetrics> {
         self.raft_cluster.as_ref().map(|rc| rc.metrics())
     }

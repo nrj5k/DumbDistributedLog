@@ -178,24 +178,51 @@ ddl.claim_topic("metrics.cpu").await?;
 ddl.release_topic("metrics.cpu").await?;
 ```
 
-## Membership Events
+## Membership Events & SCORE Integration
 
-Subscribe to cluster membership changes:
+DDL provides a comprehensive membership API for cluster lifecycle tracking, designed specifically for SCORE (HPC metrics aggregation system) integration. This API enables failover coordination, cluster health monitoring, and dynamic resource management.
+
+### Overview
+
+The membership API provides three core operations:
+
+- **`subscribe_membership()`** - Subscribe to real-time cluster membership events
+- **`membership()`** - Get current cluster state snapshot
+- **`metrics()`** - Get DDL operational metrics for monitoring
+
+> **Important**: These APIs are only available in Raft mode. In standalone or gossip-only mode, they return `None`. This is intentional design - membership tracking is only needed when you have multiple nodes coordinating via Raft consensus.
+
+### Quick Start
 
 ```rust
-let mut events = ddl.membership().subscribe().await?;
+use ddl::{DdlDistributed, DdlConfig, MembershipEventType};
 
+// Initialize DDL in Raft mode
+let config = DdlConfig {
+    raft_enabled: true,
+    is_bootstrap: true,
+    owned_topics: vec!["metrics.cpu".to_string()],
+    ..Default::default()
+};
+let ddl = DdlDistributed::new_distributed(config).await?;
+
+// Subscribe to membership events
+let mut events = ddl.subscribe_membership()
+    .expect("Must be in Raft mode");
+
+// Process events
 while let Ok(event) = events.recv().await {
     match event.event_type {
         MembershipEventType::NodeFailed { node_id } => {
-            // Handle node failure - initiate failover
-            handle_failover(node_id).await;
+            eprintln!("Node {} failed - initiating failover", node_id);
+            initiate_failover(node_id, &ddl).await;
         }
         MembershipEventType::NodeJoined { node_id, addr } => {
-            println!("Node {} joined at {}", node_id, addr);
+            println!("Node {} joined from {}", node_id, addr);
         }
         MembershipEventType::NodeRecovered { node_id } => {
-            println!("Node {} recovered", node_id);
+            println!("Node {} recovered - rebalancing", node_id);
+            rebalance_topics(node_id, &ddl).await;
         }
         MembershipEventType::NodeLeft { node_id } => {
             println!("Node {} left gracefully", node_id);
@@ -203,6 +230,191 @@ while let Ok(event) = events.recv().await {
     }
 }
 ```
+
+### Understanding the Option Return Type
+
+All membership APIs return `Option<T>` instead of `Result<T, E>`:
+
+```rust
+// Why Option instead of Result?
+
+// Some(...) → Raft mode, full membership tracking available
+// None → Standalone mode, single node, no cluster needed
+
+match ddl.subscribe_membership() {
+    Some(mut events) => {
+        // We have a cluster, process membership events
+        while let Ok(event) = events.recv().await {
+            handle_event(event);
+        }
+    }
+    None => {
+        // Standalone mode - no other nodes to track
+        // This is a valid state, not an error
+        println!("Running in standalone mode");
+    }
+}
+```
+
+**Design Rationale**:
+- Standalone mode is a **valid, intentional deployment**, not a failure case
+- Returning `None` eliminates the need for error handling in single-node scenarios
+- Simplifies code for users who want to support both standalone and distributed modes
+- No exceptions to handle - just check if membership is available
+
+### Cluster Health Monitoring
+
+Use `membership()` and `metrics()` together for comprehensive health monitoring:
+
+```rust
+// Periodic health check
+fn print_cluster_health(ddl: &DdlDistributed) {
+    // Get membership view
+    let membership = match ddl.membership() {
+        Some(m) => m,
+        None => {
+            println!("Standalone mode - no cluster health to report");
+            return;
+        }
+    };
+
+    println!("=== Cluster Health ===");
+    println!("Local node: {}", membership.local_node_id);
+    println!("Current leader: {:?}", membership.leader);
+    println!("Cluster size: {} nodes", membership.nodes.len());
+
+    // Get metrics
+    let metrics = match ddl.metrics() {
+        Some(m) => m,
+        None => return,
+    };
+
+    println!("Active leases: {}", metrics.active_leases);
+    println!("Raft commit index: {}", metrics.raft_commit_index);
+    println!("Raft applied index: {}", metrics.raft_applied_index);
+    println!("Pending writes: {}", metrics.pending_writes);
+    println!("Pending reads: {}", metrics.pending_reads);
+}
+```
+
+### SCORE Integration Pattern
+
+SCORE (HPC metrics aggregation) uses DDL's membership API for:
+
+1. **Failover Coordination** - Detect failed nodes and reassign topic ownership
+2. **Dynamic Scaling** - Add/remove nodes based on cluster load
+3. **Vertex Ownership** - TTL-based lease pattern for metric collection
+
+#### Failover Coordination Example
+
+```rust
+async fn initiate_failover(failed_node_id: u64, ddl: &DdlDistributed) {
+    // Get current membership to find topics owned by failed node
+    let membership = match ddl.membership() {
+        Some(m) => m,
+        None => return,
+    };
+
+    // Find topics that were owned by the failed node
+    let owned_topics: Vec<String> = membership.nodes
+        .get(&failed_node_id)
+        .and_then(|info| info.owned_topics.clone())
+        .unwrap_or_default();
+
+    // Reclaim each topic
+    for topic in owned_topics {
+        match ddl.claim_topic(&topic).await {
+            Ok(()) => {
+                println!("Claimed {} after node {} failure", topic, failed_node_id);
+            }
+            Err(e) => {
+                eprintln!("Failed to claim {}: {}", topic, e);
+            }
+        }
+    }
+}
+```
+
+#### TTL-Based Vertex Ownership (Phase 2 Pattern)
+
+SCORE's approach to vertex ownership using TTL-based leases:
+
+```rust
+use std::time::Duration;
+use tokio::time::interval;
+
+pub struct VertexLease {
+    vertex: String,
+    node_id: u64,
+    ttl: Duration,
+    ddl: Arc<DdlDistributed>,
+    renewal_handle: JoinHandle<()>,
+}
+
+impl VertexLease {
+    /// Claim a vertex with automatic TTL renewal
+    pub async fn claim_with_ttl(
+        ddl: &Arc<DdlDistributed>,
+        vertex: &str,
+        node_id: u64,
+        ttl: Duration,
+    ) -> Result<Self, DdlError> {
+        // Claim the topic via Raft
+        ddl.claim_topic(vertex).await?;
+
+        let ddl = ddl.clone();
+        let vertex = vertex.to_string();
+
+        // Start renewal task
+        let renewal_handle = tokio::spawn(async move {
+            let mut interval = interval(ttl / 2);
+            loop {
+                interval.tick().await;
+                // Renewal logic here
+                if let Err(e) = ddl.claim_topic(&vertex).await {
+                    eprintln!("Lease renewal failed for {}: {}", vertex, e);
+                    break;
+                }
+            }
+        });
+
+        Ok(Self {
+            vertex,
+            node_id,
+            ttl,
+            ddl,
+            renewal_handle,
+        })
+    }
+
+    /// Release the vertex lease
+    pub async fn release(self) {
+        let _ = self.ddl.release_topic(&self.vertex).await;
+        self.renewal_handle.abort();
+    }
+}
+
+// Usage
+let lease = VertexLease::claim_with_ttl(&ddl, "metrics.gpu.0", node_id, Duration::from_secs(30)).await?;
+```
+
+### Design Principles
+
+The membership API follows DDL's KISS principles:
+
+1. **Simple** - Just three methods, clear purpose
+2. **Zero Overhead** - No overhead in standalone mode
+3. **Explicit** - `Option` makes mode requirements clear
+4. **Composable** - Works with standard Rust async patterns
+
+### When to Use
+
+| Deployment Mode | Use Membership API? |
+|-----------------|---------------------|
+| Single-node / testing | No (returns `None`) |
+| Gossip-only mode | No (returns `None`) |
+| Raft mode (production) | Yes (returns `Some`) |
+| SCORE integration | Yes - required for failover |
 
 ## Architecture Decisions
 
