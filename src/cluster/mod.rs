@@ -15,7 +15,8 @@ pub mod gossip;
 
 // Re-export ownership types from ownership_machine
 pub use ownership_machine::{
-    NodeId, OwnershipCommand, OwnershipQuery, OwnershipResponse, OwnershipState,
+    LeaseEntry, LeaseError, LeaseInfo, NodeId, OwnershipCommand, OwnershipQuery,
+    OwnershipResponse, OwnershipState,
 };
 
 pub use types::{NodeConfig, TypeConfig};

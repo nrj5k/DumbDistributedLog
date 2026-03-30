@@ -243,6 +243,19 @@ pub enum DdlError {
     
     #[error("Invalid topic name: {0}")]
     InvalidTopic(String),
+
+    // ========================================================================
+    // Lease Errors (TTL-based ownership for SCORE integration)
+    // ========================================================================
+
+    #[error("Lease for key {key} is held by node {owner}")]
+    LeaseHeld { key: String, owner: u64 },
+
+    #[error("Lease {0} has expired")]
+    LeaseExpired(u64),
+
+    #[error("Lease {0} not found")]
+    LeaseNotFound(u64),
 }
 
 /// Validate topic name for defense-in-depth

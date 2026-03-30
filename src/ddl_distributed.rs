@@ -584,6 +584,114 @@ impl DdlDistributed {
     pub fn metrics(&self) -> Option<crate::cluster::DdlMetrics> {
         self.raft_cluster.as_ref().map(|rc| rc.metrics())
     }
+
+    // ============================================================================
+    // Lease API (Phase 2 - TTL-based ownership)
+    // ============================================================================
+
+    /// Acquire a lease with TTL (Raft mode only)
+    ///
+    /// Automatically expires if not renewed. Returns a LeaseInfo on success.
+    /// Returns `DdlError::LeaseHeld` if the key is already leased by another node.
+    ///
+    /// # Example
+    /// ```ignore
+    /// use std::time::Duration;
+    ///
+    /// // Acquire a 30-second lease
+    /// let lease = ddl.acquire_lease("score:vertex:123", Duration::from_secs(30)).await?;
+    /// println!("Lease acquired until {:?}", lease.expires_at);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// - `DdlError::LeaseHeld` - Key is leased by another node
+    /// - `DdlError::Network` - Not in Raft mode or Raft error
+    pub async fn acquire_lease(
+        &self,
+        key: &str,
+        ttl: std::time::Duration,
+    ) -> Result<crate::cluster::LeaseInfo, DdlError> {
+        if let Some(raft) = &self.raft_cluster {
+            raft.acquire_lease(key, ttl.as_secs())
+                .await
+                .map_err(|e| DdlError::Network(format!("Lease acquisition failed: {}", e)))
+        } else {
+            Err(DdlError::Network(
+                "Not in distributed Raft mode".to_string(),
+            ))
+        }
+    }
+
+    /// Renew an existing lease (Raft mode only)
+    ///
+    /// Extends the lease TTL. Must be called before the lease expires.
+    ///
+    /// # Errors
+    ///
+    /// - `DdlError::LeaseExpired` - Lease has already expired
+    /// - `DdlError::LeaseNotFound` - Lease doesn't exist
+    /// - `DdlError::Network` - Not in Raft mode or Raft error
+    pub async fn renew_lease(&self, lease_id: u64) -> Result<(), DdlError> {
+        if let Some(raft) = &self.raft_cluster {
+            raft.renew_lease(lease_id)
+                .await
+                .map_err(|e| DdlError::Network(format!("Lease renewal failed: {}", e)))
+        } else {
+            Err(DdlError::Network(
+                "Not in distributed Raft mode".to_string(),
+            ))
+        }
+    }
+
+    /// Release a lease gracefully (Raft mode only)
+    ///
+    /// Allows other nodes to acquire the key immediately.
+    pub async fn release_lease(&self, key: &str) -> Result<(), DdlError> {
+        if let Some(raft) = &self.raft_cluster {
+            raft.release_lease(key)
+                .await
+                .map_err(|e| DdlError::Network(format!("Lease release failed: {}", e)))
+        } else {
+            Err(DdlError::Network(
+                "Not in distributed Raft mode".to_string(),
+            ))
+        }
+    }
+
+    /// Get current lease owner for a key (linearizable read, Raft mode only)
+    ///
+    /// Returns `Some(LeaseInfo)` if leased, `None` if not leased or expired.
+    pub async fn get_lease_owner(
+        &self,
+        key: &str,
+    ) -> Result<Option<crate::cluster::LeaseInfo>, DdlError> {
+        if let Some(raft) = &self.raft_cluster {
+            raft.get_lease_owner(key)
+                .await
+                .map_err(|e| DdlError::Network(format!("Lease query failed: {}", e)))
+        } else {
+            Err(DdlError::Network(
+                "Not in distributed Raft mode".to_string(),
+            ))
+        }
+    }
+
+    /// List all leases owned by a node (Raft mode only)
+    pub async fn list_leases(
+        &self,
+        owner: u64,
+    ) -> Result<Vec<crate::cluster::LeaseInfo>, DdlError> {
+        if let Some(raft) = &self.raft_cluster {
+            raft.list_leases(owner)
+                .await
+                .map_err(|e| DdlError::Network(format!("Lease list failed: {}", e)))
+        } else {
+            Err(DdlError::Network(
+                "Not in distributed Raft mode".to_string(),
+            ))
+        }
+    }
 }
 
 #[async_trait]

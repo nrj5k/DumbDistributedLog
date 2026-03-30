@@ -304,6 +304,146 @@ impl RaftClusterNode {
         Ok(())
     }
 
+    // ============================================================================
+    // Lease API (TTL-based ownership)
+    // ============================================================================
+
+    /// Acquire a lease with TTL - automatically expires if not renewed
+    ///
+    /// Returns a `LeaseInfo` with the lease details if successful.
+    /// Returns an error if the key is already leased by another node.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let lease = node.acquire_lease("score:vertex:123", Duration::from_secs(30)).await?;
+    /// println!("Lease acquired, expires at {:?}", lease.expires_at);
+    /// ```
+    pub async fn acquire_lease(
+        &self,
+        key: &str,
+        ttl_secs: u64,
+    ) -> Result<crate::cluster::LeaseInfo, String> {
+        let lease_id = self.storage.ownership_state.write().unwrap().next_lease_id();
+        let timestamp = crate::types::now_nanos();
+
+        // Propose the lease acquisition command
+        let cmd = OwnershipCommand::AcquireLease {
+            key: key.to_string(),
+            owner: self.node_id,
+            lease_id,
+            ttl_secs,
+            timestamp,
+        };
+
+        self.propose(cmd).await?;
+
+        // Read the lease info
+        self.storage
+            .ownership_state
+            .read()
+            .unwrap()
+            .get_lease_info(key)
+            .ok_or_else(|| format!("Lease {} was not created", lease_id))
+    }
+
+    /// Renew an existing lease
+    ///
+    /// Extends the lease TTL. Returns an error if the lease has expired or doesn't exist.
+    pub async fn renew_lease(&self, lease_id: u64) -> Result<(), String> {
+        let timestamp = crate::types::now_nanos();
+
+        let cmd = OwnershipCommand::RenewLease {
+            lease_id,
+            timestamp,
+        };
+
+        self.propose(cmd).await
+    }
+
+    /// Release a lease gracefully
+    ///
+    /// Removes the lease entry, allowing other nodes to acquire it.
+    pub async fn release_lease(&self, key: &str) -> Result<(), String> {
+        let cmd = OwnershipCommand::ReleaseLease {
+            key: key.to_string(),
+        };
+
+        self.propose(cmd).await
+    }
+
+    /// Get current lease owner for a key (linearizable read)
+    ///
+    /// Returns `Some(LeaseInfo)` if the key is leased (and not expired).
+    /// Returns `None` if the key is not leased or the lease has expired.
+    pub async fn get_lease_owner(&self, key: &str) -> Result<Option<crate::cluster::LeaseInfo>, String> {
+        // Ensure we're up-to-date
+        self.raft
+            .ensure_linearizable()
+            .await
+            .map_err(|e| format!("Linearizable read failed: {:?}", e))?;
+
+        let state = self.storage.ownership_state.read().unwrap();
+        Ok(state.get_lease_info(key))
+    }
+
+    /// List all leases owned by a node
+    pub async fn list_leases(&self, owner: u64) -> Result<Vec<crate::cluster::LeaseInfo>, String> {
+        let state = self.storage.ownership_state.read().unwrap();
+        Ok(state.list_leases(owner))
+    }
+
+    /// Expire all stale leases (typically called by background task)
+    pub async fn expire_leases(&self) -> Result<usize, String> {
+        let now = crate::types::now_nanos();
+
+        let cmd = OwnershipCommand::ExpireLeases { now };
+
+        // Propose and get count of expired leases from response
+        let result = self
+            .raft
+            .client_write(cmd)
+            .await
+            .map_err(|e| format!("Raft proposal failed: {:?}", e))?;
+
+        match result.data {
+            crate::cluster::OwnershipResponse::LeaseCount { count } => Ok(count),
+            _ => Err("Unexpected response type".to_string()),
+        }
+    }
+
+    /// Start a background task to periodically expire stale leases.
+    ///
+    /// This should be called after `initialize()` on the bootstrap node.
+    /// The task runs every `interval_secs` to clean up expired leases.
+    ///
+    /// This is a local expiration (doesn't go through Raft). For fully consistent
+    /// expiration, you'd want to propose an `ExpireLeases` command. But since
+    /// leases are checked at acquisition time anyway, local expiration is fine
+    /// for cleanup.
+    ///
+    /// Returns a handle to the background task. Drop the handle to stop the task.
+    pub fn start_lease_expiration(&self, interval_secs: u64) -> tokio::task::JoinHandle<()> {
+        let storage = self.storage.clone();
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+
+            loop {
+                interval.tick().await;
+
+                // Expire leases in the state machine
+                let now = crate::types::now_nanos();
+                let mut state = storage.ownership_state.write().unwrap();
+                let expired = state.expire_leases(now);
+                drop(state);
+
+                if expired > 0 {
+                    debug!("Expired {} stale leases", expired);
+                }
+            }
+        })
+    }
+
     /// Shutdown the Raft node
     pub async fn shutdown(&self) -> Result<(), String> {
         // Emit NodeLeft before shutdown

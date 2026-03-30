@@ -8,6 +8,65 @@ use std::collections::HashMap;
 /// Unique node identifier
 pub type NodeId = u64;
 
+/// Lease entry stored in the state machine
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LeaseEntry {
+    pub id: u64,
+    pub key: String,
+    pub owner: NodeId,
+    pub acquired_at: u64, // nanos since epoch
+    pub ttl_secs: u64,
+    pub expires_at: u64, // acquired_at + ttl_secs * 1_000_000_000
+}
+
+/// Public lease info (returned to callers)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LeaseInfo {
+    pub id: u64,
+    pub key: String,
+    pub owner: NodeId,
+    pub acquired_at: u64,
+    pub expires_at: u64,
+    pub ttl_secs: u64,
+}
+
+/// Result of lease operations
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LeaseError {
+    /// Lease for key is held by another node
+    LeaseHeld { key: String, owner: NodeId },
+    /// Lease has expired
+    LeaseExpired(u64),
+    /// Lease not found
+    LeaseNotFound(u64),
+}
+
+impl From<LeaseEntry> for LeaseInfo {
+    fn from(entry: LeaseEntry) -> Self {
+        Self {
+            id: entry.id,
+            key: entry.key,
+            owner: entry.owner,
+            acquired_at: entry.acquired_at,
+            expires_at: entry.expires_at,
+            ttl_secs: entry.ttl_secs,
+        }
+    }
+}
+
+impl From<&LeaseEntry> for LeaseInfo {
+    fn from(entry: &LeaseEntry) -> Self {
+        Self {
+            id: entry.id,
+            key: entry.key.clone(),
+            owner: entry.owner,
+            acquired_at: entry.acquired_at,
+            expires_at: entry.expires_at,
+            ttl_secs: entry.ttl_secs,
+        }
+    }
+}
+
 /// Topic ownership command (applied via Raft)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum OwnershipCommand {
@@ -27,6 +86,27 @@ pub enum OwnershipCommand {
         from_node: NodeId,
         to_node: NodeId,
     },
+
+    // ========================================================================
+    // Lease Commands (TTL-based ownership for SCORE integration)
+    // ========================================================================
+    /// Acquire a lease with TTL - auto-expires if not renewed
+    AcquireLease {
+        key: String,
+        owner: NodeId,
+        lease_id: u64, // Monotonically increasing
+        ttl_secs: u64,
+        timestamp: u64,
+    },
+
+    /// Renew an existing lease
+    RenewLease { lease_id: u64, timestamp: u64 },
+
+    /// Release a lease gracefully
+    ReleaseLease { key: String },
+
+    /// Expire all stale leases (called periodically)
+    ExpireLeases { now: u64 },
 }
 
 /// Query for ownership state
@@ -40,6 +120,18 @@ pub enum OwnershipQuery {
 
     /// List all ownership mappings
     ListAll,
+
+    // ========================================================================
+    // Lease Queries (TTL-based ownership for SCORE integration)
+    // ========================================================================
+    /// Get current lease holder for a key
+    GetLeaseOwner { key: String },
+
+    /// List all leases owned by a node
+    ListLeases { owner: NodeId },
+
+    /// Get lease by ID
+    GetLease { lease_id: u64 },
 }
 
 /// Query response
@@ -55,6 +147,28 @@ pub enum OwnershipResponse {
     All {
         ownership: HashMap<String, NodeId>,
     },
+
+    // ========================================================================
+    // Lease Responses (TTL-based ownership for SCORE integration)
+    // ========================================================================
+    /// Lease owner for a key
+    LeaseOwner {
+        key: String,
+        info: Option<LeaseInfo>,
+    },
+    /// List of leases for a node
+    Leases {
+        leases: Vec<LeaseInfo>,
+    },
+    /// Lease entry result
+    LeaseResult {
+        lease: Option<LeaseEntry>,
+        error: Option<LeaseError>,
+    },
+    /// Count of expired leases
+    LeaseCount {
+        count: usize,
+    },
 }
 
 /// Ownership state (the state machine)
@@ -64,6 +178,14 @@ pub struct OwnershipState {
     ownership: HashMap<String, NodeId>,
     /// node_id -> topics (reverse index for fast lookup)
     node_topics: HashMap<NodeId, Vec<String>>,
+
+    // Lease management for SCORE integration
+    /// lease_id -> lease entry
+    leases: HashMap<u64, LeaseEntry>,
+    /// key -> lease_id (one lease per key invariant)
+    key_leases: HashMap<String, u64>,
+    /// Monotonic counter for lease IDs
+    next_lease_id: u64,
 }
 
 impl OwnershipState {
@@ -121,6 +243,80 @@ impl OwnershipState {
                         .push(topic.clone());
                 }
             }
+
+            // ====================================================================
+            // Lease Commands
+            // ====================================================================
+            OwnershipCommand::AcquireLease {
+                key,
+                owner,
+                lease_id,
+                ttl_secs,
+                timestamp,
+            } => {
+                // Check if key already has a lease
+                if let Some(existing_id) = self.key_leases.get(key) {
+                    if let Some(existing) = self.leases.get(existing_id) {
+                        // If lease is still valid, don't acquire
+                        if existing.expires_at > *timestamp {
+                            return; // Lease held, command rejected
+                        }
+                        // Lease expired, will be cleaned up by AcquireLease
+                    }
+                }
+
+                // Create new lease
+                let expires_at = timestamp.saturating_add(ttl_secs.saturating_mul(1_000_000_000));
+                let lease = LeaseEntry {
+                    id: *lease_id,
+                    key: key.clone(),
+                    owner: *owner,
+                    acquired_at: *timestamp,
+                    ttl_secs: *ttl_secs,
+                    expires_at,
+                };
+
+                self.leases.insert(*lease_id, lease);
+                self.key_leases.insert(key.clone(), *lease_id);
+
+                // Update next_lease_id if this ID is higher
+                if *lease_id >= self.next_lease_id {
+                    self.next_lease_id = lease_id + 1;
+                }
+            }
+
+            OwnershipCommand::RenewLease {
+                lease_id,
+                timestamp,
+            } => {
+                if let Some(lease) = self.leases.get_mut(lease_id) {
+                    // Only renew if lease hasn't expired
+                    if lease.expires_at > *timestamp {
+                        lease.expires_at =
+                            timestamp.saturating_add(lease.ttl_secs.saturating_mul(1_000_000_000));
+                    }
+                }
+            }
+
+            OwnershipCommand::ReleaseLease { key } => {
+                if let Some(lease_id) = self.key_leases.remove(key) {
+                    self.leases.remove(&lease_id);
+                }
+            }
+
+            OwnershipCommand::ExpireLeases { now } => {
+                let expired_keys: Vec<String> = self
+                    .leases
+                    .values()
+                    .filter(|lease| lease.expires_at <= *now)
+                    .map(|lease| lease.key.clone())
+                    .collect();
+
+                for key in expired_keys {
+                    self.key_leases.remove(&key);
+                    self.leases.retain(|_, lease| lease.key != key);
+                }
+            }
         }
     }
 
@@ -138,6 +334,26 @@ impl OwnershipState {
 
             OwnershipQuery::ListAll => OwnershipResponse::All {
                 ownership: self.ownership.clone(),
+            },
+
+            // ==================================================================
+            // Lease Queries
+            // ==================================================================
+            OwnershipQuery::GetLeaseOwner { key } => {
+                let info = self.get_lease_info(key);
+                OwnershipResponse::LeaseOwner {
+                    key: key.clone(),
+                    info,
+                }
+            }
+
+            OwnershipQuery::ListLeases { owner } => OwnershipResponse::Leases {
+                leases: self.list_leases(*owner),
+            },
+
+            OwnershipQuery::GetLease { lease_id } => OwnershipResponse::LeaseResult {
+                lease: self.leases.get(lease_id).cloned(),
+                error: None,
             },
         }
     }
@@ -160,6 +376,107 @@ impl OwnershipState {
     /// Get total number of topics with ownership
     pub fn topic_count(&self) -> usize {
         self.ownership.len()
+    }
+
+    // ========================================================================
+    // Lease Helper Methods
+    // ========================================================================
+
+    /// Get lease info for a key (checks expiration)
+    pub fn get_lease_info(&self, key: &str) -> Option<LeaseInfo> {
+        let lease_id = self.key_leases.get(key)?;
+        let lease = self.leases.get(lease_id)?;
+        Some(LeaseInfo::from(lease.clone()))
+    }
+
+    /// List all leases for a node
+    pub fn list_leases(&self, owner: NodeId) -> Vec<LeaseInfo> {
+        self.leases
+            .values()
+            .filter(|lease| lease.owner == owner)
+            .map(|lease| LeaseInfo::from(lease.clone()))
+            .collect()
+    }
+
+    /// Check if a lease is valid (not expired)
+    pub fn is_lease_valid(&self, lease_id: u64, now: u64) -> bool {
+        self.leases
+            .get(&lease_id)
+            .map(|lease| lease.expires_at > now)
+            .unwrap_or(false)
+    }
+
+    /// Expire stale leases and return count
+    pub fn expire_leases(&mut self, now: u64) -> usize {
+        let expired_keys: Vec<String> = self
+            .leases
+            .values()
+            .filter(|lease| lease.expires_at <= now)
+            .map(|lease| lease.key.clone())
+            .collect();
+
+        let count = expired_keys.len();
+        for key in expired_keys {
+            self.key_leases.remove(&key);
+            self.leases.retain(|_, lease| lease.key != key);
+        }
+        count
+    }
+
+    /// Get lease entry by ID
+    pub fn get_lease(&self, lease_id: u64) -> Option<&LeaseEntry> {
+        self.leases.get(&lease_id)
+    }
+
+    /// Get total number of active leases
+    pub fn lease_count(&self) -> usize {
+        self.leases.len()
+    }
+
+    /// Generate next lease ID
+    pub fn next_lease_id(&mut self) -> u64 {
+        let id = self.next_lease_id;
+        self.next_lease_id += 1;
+        id
+    }
+
+    /// Acquire a lease programmatically (with auto-generated ID)
+    /// Returns the lease ID if successful
+    pub fn acquire_lease(
+        &mut self,
+        key: String,
+        owner: NodeId,
+        ttl_secs: u64,
+        timestamp: u64,
+    ) -> Result<u64, LeaseError> {
+        // Check if key already has a valid lease
+        if let Some(existing_id) = self.key_leases.get(&key) {
+            if let Some(existing) = self.leases.get(existing_id) {
+                if existing.expires_at > timestamp {
+                    return Err(LeaseError::LeaseHeld {
+                        key,
+                        owner: existing.owner,
+                    });
+                }
+            }
+        }
+
+        let lease_id = self.next_lease_id();
+        let expires_at = timestamp.saturating_add(ttl_secs.saturating_mul(1_000_000_000));
+
+        let lease = LeaseEntry {
+            id: lease_id,
+            key: key.clone(),
+            owner,
+            acquired_at: timestamp,
+            ttl_secs,
+            expires_at,
+        };
+
+        self.leases.insert(lease_id, lease);
+        self.key_leases.insert(key, lease_id);
+
+        Ok(lease_id)
     }
 }
 
@@ -374,5 +691,224 @@ mod tests {
         let topics = state.get_node_topics(1);
         assert_eq!(topics.len(), 3);
         assert_eq!(state.topic_count(), 3);
+    }
+
+    // ========================================================================
+    // Lease Tests
+    // ========================================================================
+
+    #[test]
+    fn test_acquire_lease() {
+        let mut state = OwnershipState::new();
+
+        // Acquire a lease
+        let key = "shard-0".to_string();
+        let lease_id = state.acquire_lease(key.clone(), 1, 10, 1000).unwrap();
+
+        assert_eq!(lease_id, 0); // First lease ID
+        assert_eq!(state.lease_count(), 1);
+
+        // Get lease info
+        let info = state.get_lease_info(&key).unwrap();
+        assert_eq!(info.key, key);
+        assert_eq!(info.owner, 1);
+        assert_eq!(info.acquired_at, 1000);
+        // expires_at = 1000 + 10 * 1_000_000_000 = 10_000_000_1000
+        assert_eq!(info.expires_at, 1000 + 10_000_000_000);
+    }
+
+    #[test]
+    fn test_lease_conflict() {
+        let mut state = OwnershipState::new();
+
+        let key = "shard-0".to_string();
+        let _ = state.acquire_lease(key.clone(), 1, 10, 1000).unwrap();
+
+        // Try to acquire same key before expiration (same owner should fail too)
+        let result = state.acquire_lease(key.clone(), 1, 10, 2000);
+        assert!(matches!(result, Err(LeaseError::LeaseHeld { .. })));
+
+        // Try with different owner
+        let result = state.acquire_lease(key.clone(), 2, 10, 2000);
+        assert!(matches!(
+            result,
+            Err(LeaseError::LeaseHeld { owner: 1, .. })
+        ));
+    }
+
+    #[test]
+    fn test_lease_expiration() {
+        let mut state = OwnershipState::new();
+
+        let key = "shard-0".to_string();
+        // TTL=10 seconds, acquired at t=1000, expires at t=10_000_000_1000
+        let _ = state.acquire_lease(key.clone(), 1, 10, 1000).unwrap();
+
+        // Expire at time before expiration
+        let count = state.expire_leases(5000);
+        assert_eq!(count, 0);
+        assert_eq!(state.lease_count(), 1);
+
+        // Expire at time after expiration
+        let count = state.expire_leases(10_000_000_2000);
+        assert_eq!(count, 1);
+        assert_eq!(state.lease_count(), 0);
+
+        // Can now acquire the key again
+        let result = state.acquire_lease(key.clone(), 2, 10, 10_000_000_2000);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_lease_renewal() {
+        let mut state = OwnershipState::new();
+
+        // Create lease via command (to test renew)
+        state.apply(&OwnershipCommand::AcquireLease {
+            key: "shard-0".to_string(),
+            owner: 1,
+            lease_id: 42,
+            ttl_secs: 10,
+            timestamp: 1000,
+        });
+
+        // Check initial expiration
+        let lease = state.get_lease(42).unwrap();
+        assert_eq!(lease.expires_at, 1000 + 10_000_000_000);
+
+        // Renew the lease
+        state.apply(&OwnershipCommand::RenewLease {
+            lease_id: 42,
+            timestamp: 5_000_000_000,
+        });
+
+        // Check renewed expiration
+        let lease = state.get_lease(42).unwrap();
+        assert_eq!(lease.expires_at, 5_000_000_000 + 10_000_000_000);
+    }
+
+    #[test]
+    fn test_lease_release() {
+        let mut state = OwnershipState::new();
+
+        // Create lease via command
+        state.apply(&OwnershipCommand::AcquireLease {
+            key: "shard-0".to_string(),
+            owner: 1,
+            lease_id: 42,
+            ttl_secs: 10,
+            timestamp: 1000,
+        });
+
+        assert_eq!(state.lease_count(), 1);
+
+        // Release the lease
+        state.apply(&OwnershipCommand::ReleaseLease {
+            key: "shard-0".to_string(),
+        });
+
+        assert_eq!(state.lease_count(), 0);
+        assert!(state.get_lease_info("shard-0").is_none());
+    }
+
+    #[test]
+    fn test_lease_commands_integration() {
+        let mut state = OwnershipState::new();
+
+        // Acquire via command
+        state.apply(&OwnershipCommand::AcquireLease {
+            key: "shard-0".to_string(),
+            owner: 1,
+            lease_id: 100,
+            ttl_secs: 60,
+            timestamp: 1000,
+        });
+
+        // Query lease owner
+        let response = state.query(&OwnershipQuery::GetLeaseOwner {
+            key: "shard-0".to_string(),
+        });
+
+        match response {
+            OwnershipResponse::LeaseOwner { key, info } => {
+                assert_eq!(key, "shard-0");
+                let info = info.unwrap();
+                assert_eq!(info.owner, 1);
+            }
+            _ => panic!("Expected LeaseOwner response"),
+        }
+
+        // List leases for node 1
+        let response = state.query(&OwnershipQuery::ListLeases { owner: 1 });
+
+        match response {
+            OwnershipResponse::Leases { leases } => {
+                assert_eq!(leases.len(), 1);
+                assert_eq!(leases[0].key, "shard-0");
+            }
+            _ => panic!("Expected Leases response"),
+        }
+
+        // Get lease by ID
+        let response = state.query(&OwnershipQuery::GetLease { lease_id: 100 });
+
+        match response {
+            OwnershipResponse::LeaseResult { lease, error } => {
+                assert!(error.is_none());
+                let lease = lease.unwrap();
+                assert_eq!(lease.key, "shard-0");
+                assert_eq!(lease.owner, 1);
+            }
+            _ => panic!("Expected LeaseResult response"),
+        }
+    }
+
+    #[test]
+    fn test_next_lease_id_monotonic() {
+        let mut state = OwnershipState::new();
+
+        let id1 = state.next_lease_id();
+        let id2 = state.next_lease_id();
+        let id3 = state.next_lease_id();
+
+        assert_eq!(id1, 0);
+        assert_eq!(id2, 1);
+        assert_eq!(id3, 2);
+    }
+
+    #[test]
+    fn test_acquire_lease_command_updates_next_id() {
+        let mut state = OwnershipState::new();
+
+        // Apply with explicit ID
+        state.apply(&OwnershipCommand::AcquireLease {
+            key: "shard-0".to_string(),
+            owner: 1,
+            lease_id: 100, // Explicit high ID
+            ttl_secs: 10,
+            timestamp: 1000,
+        });
+
+        // Next ID should be 101
+        assert_eq!(state.next_lease_id, 101);
+    }
+
+    #[test]
+    fn test_is_lease_valid() {
+        let mut state = OwnershipState::new();
+
+        let _ = state
+            .acquire_lease("shard-0".to_string(), 1, 10, 1000)
+            .unwrap();
+        let lease_id = 0; // First lease
+
+        // Valid before expiration
+        assert!(state.is_lease_valid(lease_id, 5000));
+
+        // Invalid after expiration
+        assert!(!state.is_lease_valid(lease_id, 10_000_000_1001));
+
+        // Non-existent lease
+        assert!(!state.is_lease_valid(99999, 1000));
     }
 }

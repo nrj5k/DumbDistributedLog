@@ -477,17 +477,41 @@ impl RaftStorage<TypeConfig> for AutoqueuesRaftStorage {
 
             match &entry.payload {
                 openraft::entry::EntryPayload::Normal(cmd) => {
-                    let topic = match cmd {
-                        OwnershipCommand::ClaimTopic { topic, .. } => topic.clone(),
-                        OwnershipCommand::ReleaseTopic { topic, .. } => topic.clone(),
-                        OwnershipCommand::TransferTopic { topic, .. } => topic.clone(),
-                    };
-
+                    // Apply the command to the state machine
                     state.apply(cmd);
                     self.dirty.store(true, Ordering::Release);
 
-                    let owner = state.get_owner(&topic);
-                    result.push(OwnershipResponse::Owner { topic, owner });
+                    // Return appropriate response based on command type
+                    let response = match cmd {
+                        OwnershipCommand::ClaimTopic { topic, .. } => {
+                            let owner = state.get_owner(topic);
+                            OwnershipResponse::Owner { topic: topic.clone(), owner }
+                        }
+                        OwnershipCommand::ReleaseTopic { topic, .. } => {
+                            let owner = state.get_owner(topic);
+                            OwnershipResponse::Owner { topic: topic.clone(), owner }
+                        }
+                        OwnershipCommand::TransferTopic { topic, .. } => {
+                            let owner = state.get_owner(topic);
+                            OwnershipResponse::Owner { topic: topic.clone(), owner }
+                        }
+                        OwnershipCommand::AcquireLease { key, .. } => {
+                            let info = state.get_lease_info(key);
+                            OwnershipResponse::LeaseOwner { key: key.clone(), info }
+                        }
+                        OwnershipCommand::RenewLease { lease_id, .. } => {
+                            let lease = state.get_lease(*lease_id).cloned();
+                            OwnershipResponse::LeaseResult { lease, error: None }
+                        }
+                        OwnershipCommand::ReleaseLease { key } => {
+                            OwnershipResponse::LeaseOwner { key: key.clone(), info: None }
+                        }
+                        OwnershipCommand::ExpireLeases { now } => {
+                            let count = state.expire_leases(*now);
+                            OwnershipResponse::LeaseCount { count }
+                        }
+                    };
+                    result.push(response);
                 }
                 openraft::entry::EntryPayload::Membership(_membership) => {
                     // Handle membership changes - update stored membership if needed

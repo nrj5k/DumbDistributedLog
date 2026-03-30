@@ -325,6 +325,9 @@ pub use crate::cluster::NodeInfo;
 /// Available via `ddl.raft_cluster.as_ref()` when in Raft mode.
 pub use crate::cluster::RaftClusterNode;
 
+// Lease Types (for SCORE integration)
+pub use crate::cluster::ownership_machine::{LeaseEntry, LeaseInfo, LeaseError};
+
 /// Node management and startup utilities.
 pub use crate::node::{start_node, AutoQueuesNode};
 
