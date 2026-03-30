@@ -5,6 +5,7 @@
 //! - Distributed with Gossip: Uses gossip for node discovery only
 //! - Distributed with Raft: Uses Raft for strongly consistent topic ownership
 
+use crate::cluster::membership::MembershipEvent;
 use crate::cluster::raft_cluster::RaftClusterNode;
 use crate::cluster::types::NodeConfig;
 use crate::gossip::GossipCoordinator;
@@ -409,6 +410,55 @@ impl DdlDistributed {
     /// Check if running in Raft mode (strongly consistent ownership)
     pub fn is_raft_enabled(&self) -> bool {
         self.raft_cluster.is_some()
+    }
+
+    /// Subscribe to membership events (Raft mode only)
+    ///
+    /// Returns a receiver that yields membership events when nodes
+    /// join, leave, or fail in the cluster.
+    ///
+    /// Returns `None` if not in Raft mode (standalone or gossip-only).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut events = ddl.subscribe_membership().await?;
+    /// while let Ok(event) = events.recv().await {
+    ///     match event.event_type {
+    ///         MembershipEventType::NodeFailed { node_id } => {
+    ///             // Handle failover
+    ///         }
+    ///         MembershipEventType::NodeJoined { node_id, addr } => {
+    ///             // New node joined
+    ///         }
+    ///         // ...
+    ///     }
+    /// }
+    /// ```
+    pub fn subscribe_membership(&self) -> Option<tokio::sync::broadcast::Receiver<MembershipEvent>> {
+        self.raft_cluster.as_ref().map(|rc| rc.subscribe_membership())
+    }
+
+    /// Get current cluster membership view (Raft mode only)
+    ///
+    /// Returns information about all known nodes in the cluster.
+    ///
+    /// Returns `None` if not in Raft mode (standalone or gossip-only).
+    pub fn membership(&self) -> Option<crate::cluster::MembershipView> {
+        self.raft_cluster.as_ref().map(|rc| rc.membership())
+    }
+
+    /// Get DDL metrics for monitoring (Raft mode only)
+    ///
+    /// Returns metrics about the cluster state including:
+    /// - Active leases
+    /// - Membership size
+    /// - Raft commit index
+    /// - Current leader
+    ///
+    /// Returns `None` if not in Raft mode (standalone or gossip-only).
+    pub fn metrics(&self) -> Option<crate::cluster::DdlMetrics> {
+        self.raft_cluster.as_ref().map(|rc| rc.metrics())
     }
 }
 

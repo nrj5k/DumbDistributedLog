@@ -3,6 +3,7 @@
 //! Tests for SCORE failover coordination membership tracking.
 
 use ddl::cluster::{RaftClusterNode, MembershipEventType, MembershipEvent, NodeConfig};
+use ddl::{DdlDistributed, DdlConfig};
 use std::collections::HashMap;
 use tokio::time::{timeout, Duration};
 
@@ -326,4 +327,35 @@ async fn test_ddl_metrics_structure() {
     assert_eq!(metrics.raft_leader, Some(1));
     assert_eq!(metrics.pending_writes, 10);
     assert_eq!(metrics.pending_reads, 5);
+}
+
+// ============================================================================
+// DdlDistributed Membership API Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_ddl_distributed_subscribe_membership_standalone_returns_none() {
+    let ddl = DdlDistributed::new_standalone(DdlConfig::default());
+    
+    // In standalone mode, subscribe_membership should return None
+    let result = ddl.subscribe_membership();
+    assert!(result.is_none(), "subscribe_membership should return None in standalone mode");
+}
+
+#[tokio::test]
+async fn test_ddl_distributed_membership_standalone_returns_none() {
+    let ddl = DdlDistributed::new_standalone(DdlConfig::default());
+    
+    // In standalone mode, membership should return None
+    let result = ddl.membership();
+    assert!(result.is_none(), "membership should return None in standalone mode");
+}
+
+#[tokio::test]
+async fn test_ddl_distributed_metrics_standalone_returns_none() {
+    let ddl = DdlDistributed::new_standalone(DdlConfig::default());
+    
+    // In standalone mode, metrics should return None
+    let result = ddl.metrics();
+    assert!(result.is_none(), "metrics should return None in standalone mode");
 }
