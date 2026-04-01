@@ -11,21 +11,19 @@ const MAX_POISON_RECOVERIES: usize = 3;
 
 /// Error during lock acquisition
 #[derive(Debug)]
-pub enum LockError<T> {
-    /// Lock is poisoned and data validation failed
-    Poisoned { guard: RwLockWriteGuard<'static, T> },
+pub enum LockError {
     /// Would block (for try_lock operations)
     WouldBlock,
     /// Data validation failed after recovery
     DataValidationFailed { reason: String },
     /// Too many poison recoveries (cascading failures)
     TooManyPoisons { count: usize },
+    // Note: Poisoned variant removed - never constructed, caused lifetime issues
 }
 
-impl<T> std::fmt::Display for LockError<T> {
+impl std::fmt::Display for LockError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LockError::Poisoned { .. } => write!(f, "Lock is poisoned"),
             LockError::WouldBlock => write!(f, "Lock acquisition would block"),
             LockError::DataValidationFailed { reason } => {
                 write!(f, "Data validation failed: {}", reason)
@@ -37,7 +35,7 @@ impl<T> std::fmt::Display for LockError<T> {
     }
 }
 
-impl<T: std::fmt::Debug> std::error::Error for LockError<T> {}
+impl std::error::Error for LockError {}
 
 /// Validation error types
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,22 +81,19 @@ pub trait Validate {
 /// Trait for safe lock acquisition with validation
 pub trait SafeLock<T>: Sized {
     /// Acquire read lock, recovering from poison if necessary
-    fn read_recover(&self) -> Result<RwLockReadGuard<'_, T>, LockError<T>>;
+    fn read_recover(&self) -> Result<RwLockReadGuard<'_, T>, LockError>;
 
     /// Acquire write lock, recovering from poison and validating data
-    fn write_recover(
-        &self,
-        location: &'static str,
-    ) -> Result<RwLockWriteGuard<'_, T>, LockError<T>>;
+    fn write_recover(&self, location: &'static str) -> Result<RwLockWriteGuard<'_, T>, LockError>;
 
     /// Try to acquire read lock (non-blocking)
-    fn try_read_recover(&self) -> Result<RwLockReadGuard<'_, T>, LockError<T>>;
+    fn try_read_recover(&self) -> Result<RwLockReadGuard<'_, T>, LockError>;
 
     /// Try to acquire write lock (non-blocking)  
     fn try_write_recover(
         &self,
         location: &'static str,
-    ) -> Result<RwLockWriteGuard<'_, T>, LockError<T>>;
+    ) -> Result<RwLockWriteGuard<'_, T>, LockError>;
 }
 
 /// Wrapper around RwLock with poison counter for cascade prevention
@@ -139,14 +134,31 @@ impl<T> RecoverableLock<T> {
     pub fn into_inner(self) -> RwLock<T> {
         self.lock
     }
+
+    /// Direct read access (matches RwLock::read API)
+    /// Bypasses validation - use read_recover() for safe recovery
+    pub fn read(
+        &self,
+    ) -> Result<RwLockReadGuard<'_, T>, std::sync::PoisonError<RwLockReadGuard<'_, T>>> {
+        self.lock.read()
+    }
+
+    /// Direct write access (matches RwLock::write API)
+    /// Bypasses validation - use write_recover() for safe recovery
+    pub fn write(
+        &self,
+    ) -> Result<RwLockWriteGuard<'_, T>, std::sync::PoisonError<RwLockWriteGuard<'_, T>>> {
+        self.lock.write()
+    }
 }
 
 impl<T: Validate + Send + Sync> SafeLock<T> for RecoverableLock<T> {
-    fn read_recover(&self) -> Result<RwLockReadGuard<'_, T>, LockError<T>> {
+    fn read_recover(&self) -> Result<RwLockReadGuard<'_, T>, LockError> {
         match self.lock.read() {
             Ok(guard) => Ok(guard),
             Err(poisoned) => {
-                let thread_name = std::thread::current().name().unwrap_or("unknown");
+                let thread = std::thread::current();
+                let thread_name = thread.name().unwrap_or("unknown");
 
                 let poison_count = self.poison_count.fetch_add(1, Ordering::AcqRel);
 
@@ -169,14 +181,12 @@ impl<T: Validate + Send + Sync> SafeLock<T> for RecoverableLock<T> {
         }
     }
 
-    fn write_recover(
-        &self,
-        location: &'static str,
-    ) -> Result<RwLockWriteGuard<'_, T>, LockError<T>> {
+    fn write_recover(&self, location: &'static str) -> Result<RwLockWriteGuard<'_, T>, LockError> {
         match self.lock.write() {
             Ok(guard) => Ok(guard),
             Err(poisoned) => {
-                let thread_name = std::thread::current().name().unwrap_or("unknown");
+                let thread = std::thread::current();
+                let thread_name = thread.name().unwrap_or("unknown");
 
                 let poison_count = self.poison_count.fetch_add(1, Ordering::AcqRel);
 
@@ -225,12 +235,13 @@ impl<T: Validate + Send + Sync> SafeLock<T> for RecoverableLock<T> {
         }
     }
 
-    fn try_read_recover(&self) -> Result<RwLockReadGuard<'_, T>, LockError<T>> {
+    fn try_read_recover(&self) -> Result<RwLockReadGuard<'_, T>, LockError> {
         match self.lock.try_read() {
             Ok(guard) => Ok(guard),
             Err(std::sync::TryLockError::WouldBlock) => Err(LockError::WouldBlock),
             Err(std::sync::TryLockError::Poisoned(poisoned)) => {
-                let thread_name = std::thread::current().name().unwrap_or("unknown");
+                let thread = std::thread::current();
+                let thread_name = thread.name().unwrap_or("unknown");
 
                 let poison_count = self.poison_count.fetch_add(1, Ordering::AcqRel);
 
@@ -255,12 +266,13 @@ impl<T: Validate + Send + Sync> SafeLock<T> for RecoverableLock<T> {
     fn try_write_recover(
         &self,
         location: &'static str,
-    ) -> Result<RwLockWriteGuard<'_, T>, LockError<T>> {
+    ) -> Result<RwLockWriteGuard<'_, T>, LockError> {
         match self.lock.try_write() {
             Ok(guard) => Ok(guard),
             Err(std::sync::TryLockError::WouldBlock) => Err(LockError::WouldBlock),
             Err(std::sync::TryLockError::Poisoned(poisoned)) => {
-                let thread_name = std::thread::current().name().unwrap_or("unknown");
+                let thread = std::thread::current();
+                let thread_name = thread.name().unwrap_or("unknown");
 
                 let poison_count = self.poison_count.fetch_add(1, Ordering::AcqRel);
 
@@ -484,7 +496,8 @@ mod tests {
             if i < MAX_POISON_RECOVERIES - 1 {
                 // Should be able to recover for first MAX_POISON_RECOVERIES-1 times
                 let result = lock2.write_recover("main");
-                assert!(result.is_ok() || matches!(result, Err(LockError::Poisoned { .. })));
+                // Recovery should succeed unless limit is reached
+                assert!(result.is_ok());
             }
         }
 
