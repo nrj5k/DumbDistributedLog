@@ -12,6 +12,7 @@ pub mod tcp_network;
 pub mod raft_router;
 pub mod membership;
 pub mod gossip;
+pub mod lock_utils;
 
 // Re-export ownership types from ownership_machine
 pub use ownership_machine::{

@@ -466,7 +466,7 @@ impl RaftClusterNode {
         network_config: crate::network::tcp_network::TcpNetworkConfig,
         data_dir: impl AsRef<std::path::Path>,
     ) -> Result<(Self, crate::network::TcpNetworkFactory), String> {
-        use crate::network::{TcpNetworkFactory, TcpRaftServer, create_raft_handler};
+        use crate::network::{TcpNetworkFactory, TcpRaftServer};
         use crate::cluster::raft_router::RaftMessageRouter;
 
         // Create storage with persistence
@@ -505,11 +505,10 @@ impl RaftClusterNode {
         // Start TCP server in background
         let bind_addr = network_config.bind_addr.clone();
         tokio::spawn(async move {
-            let handler = create_raft_handler(router);
             match TcpRaftServer::bind(&bind_addr, node_id).await {
                 Ok(server) => {
                     info!("TCP Raft server started on {}", bind_addr);
-                    server.run(handler).await;
+                    server.run(router).await;
                 }
                 Err(e) => {
                     error!("Failed to start TCP server: {}", e);

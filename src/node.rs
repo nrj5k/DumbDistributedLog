@@ -33,7 +33,7 @@ pub struct MetricMessage {
 }
 
 /// Aggregation helper functions
-mod aggregation {
+pub mod aggregation {
 
     /// Compute average of values
     pub fn avg(values: &[f64]) -> f64 {
@@ -442,4 +442,365 @@ pub async fn start_node(path: &str) -> Result<(), Box<dyn std::error::Error + Se
     let config = Config::load(path)?;
     let node = AutoQueuesNode::new(&config).await?;
     node.run(&config).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- Aggregation function tests (in addition to coverage_tests.rs) ---
+
+    #[test]
+    fn test_aggregation_avg_zeros() {
+        let values = vec![0.0, 0.0, 0.0];
+        assert_eq!(aggregation::avg(&values), 0.0);
+    }
+
+    #[test]
+    fn test_aggregation_percentile_p0() {
+        let mut values = vec![10.0, 20.0, 30.0, 40.0, 50.0];
+        let p0 = aggregation::percentile(&mut values, 0.0);
+        assert_eq!(p0, 10.0);
+    }
+
+    #[test]
+    fn test_aggregation_percentile_p100() {
+        let mut values = vec![10.0, 20.0, 30.0, 40.0, 50.0];
+        let p100 = aggregation::percentile(&mut values, 100.0);
+        assert_eq!(p100, 50.0);
+    }
+
+    #[test]
+    fn test_aggregation_percentile_with_negative() {
+        let mut values = vec![-10.0, -20.0, -30.0, -40.0, -50.0];
+        let p50 = aggregation::percentile(&mut values, 50.0);
+        assert_eq!(p50, -30.0);
+    }
+
+    #[test]
+    fn test_aggregation_health_score_various_cpu() {
+        // Test various combinations
+        assert_eq!(aggregation::health_score(25.0, 75.0), 150.0); // (100-25) + 75 = 150
+        assert_eq!(aggregation::health_score(75.0, 25.0), 50.0);  // (100-75) + 25 = 50
+        assert_eq!(aggregation::health_score(50.0, 50.0), 100.0); // (100-50) + 50 = 100
+    }
+
+    // --- collect_all_values tests ---
+
+    #[test]
+    fn test_collect_all_values_empty() {
+        let local = HashMap::new();
+        let remote = HashMap::new();
+        let sources: Vec<String> = vec![];
+
+        let values = AutoQueuesNode::collect_all_values(&local, &remote, &sources);
+        assert!(values.is_empty());
+    }
+
+    #[test]
+    fn test_collect_all_values_local_only() {
+        let mut local = HashMap::new();
+        local.insert("cpu".to_string(), 50.0);
+        local.insert("memory".to_string(), 75.0);
+
+        let remote = HashMap::new();
+        let sources = vec!["cpu".to_string()];
+
+        let values = AutoQueuesNode::collect_all_values(&local, &remote, &sources);
+        assert_eq!(values.len(), 1);
+        assert!(values.contains(&50.0));
+    }
+
+    #[test]
+    fn test_collect_all_values_multiple_sources() {
+        let mut local = HashMap::new();
+        local.insert("cpu".to_string(), 40.0);
+        local.insert("memory".to_string(), 60.0);
+
+        let remote = HashMap::new();
+        let sources = vec!["cpu".to_string(), "memory".to_string()];
+
+        let values = AutoQueuesNode::collect_all_values(&local, &remote, &sources);
+        assert_eq!(values.len(), 2);
+        assert!(values.contains(&40.0));
+        assert!(values.contains(&60.0));
+    }
+
+    #[test]
+    fn test_collect_all_values_remote_only() {
+        let local = HashMap::new();
+
+        let mut remote: HashMap<String, HashMap<u64, f64>> = HashMap::new();
+        let mut nodes: HashMap<u64, f64> = HashMap::new();
+        nodes.insert(1, 30.0);
+        nodes.insert(2, 40.0);
+        remote.insert("cpu".to_string(), nodes);
+
+        let sources = vec!["cpu".to_string()];
+
+        let values = AutoQueuesNode::collect_all_values(&local, &remote, &sources);
+        assert_eq!(values.len(), 2);
+        assert!(values.contains(&30.0));
+        assert!(values.contains(&40.0));
+    }
+
+    #[test]
+    fn test_collect_all_values_local_and_remote() {
+        let mut local = HashMap::new();
+        local.insert("cpu".to_string(), 50.0);
+
+        let mut remote: HashMap<String, HashMap<u64, f64>> = HashMap::new();
+        let mut nodes: HashMap<u64, f64> = HashMap::new();
+        nodes.insert(1, 30.0);
+        nodes.insert(2, 40.0);
+        remote.insert("cpu".to_string(), nodes);
+
+        let sources = vec!["cpu".to_string()];
+
+        let values = AutoQueuesNode::collect_all_values(&local, &remote, &sources);
+        assert_eq!(values.len(), 3);
+        assert!(values.contains(&50.0));
+        assert!(values.contains(&30.0));
+        assert!(values.contains(&40.0));
+    }
+
+    #[test]
+    fn test_collect_all_values_multiple_metrics() {
+        let mut local = HashMap::new();
+        local.insert("cpu".to_string(), 50.0);
+        local.insert("temperature".to_string(), 65.0);
+
+        let mut remote: HashMap<String, HashMap<u64, f64>> = HashMap::new();
+        let mut cpu_nodes: HashMap<u64, f64> = HashMap::new();
+        cpu_nodes.insert(1, 30.0);
+        cpu_nodes.insert(2, 35.0);
+        remote.insert("cpu".to_string(), cpu_nodes);
+
+        // Temperature also has node 2's value, which we're including
+        let mut temp_nodes: HashMap<u64, f64> = HashMap::new();
+        temp_nodes.insert(1, 60.0);
+        remote.insert("temperature".to_string(), temp_nodes);
+
+        // Using only cpu as source to get exactly 3 values
+        let sources = vec!["cpu".to_string()];
+
+        let values = AutoQueuesNode::collect_all_values(&local, &remote, &sources);
+        assert_eq!(values.len(), 3);
+        assert!(values.contains(&50.0));
+        assert!(values.contains(&30.0));
+        assert!(values.contains(&35.0));
+    }
+
+    #[test]
+    fn test_collect_all_values_missing_source() {
+        let mut local = HashMap::new();
+        local.insert("cpu".to_string(), 50.0);
+
+        let remote = HashMap::new();
+        let sources = vec!["cpu".to_string(), "nonexistent".to_string()];
+
+        let values = AutoQueuesNode::collect_all_values(&local, &remote, &sources);
+        assert_eq!(values.len(), 1);
+        assert!(values.contains(&50.0));
+    }
+
+    // --- compute_expression tests ---
+
+    #[test]
+    fn test_compute_expression_basic() {
+        let mut local = HashMap::new();
+        local.insert("cpu".to_string(), 40.0);
+        local.insert("memory_free".to_string(), 60.0);
+
+        let remote = HashMap::new();
+        let expression = "(100 - cpu) + memory_free";  // This matches the health_score pattern
+        let sources: Vec<String> = vec![];
+
+        let result = AutoQueuesNode::compute_expression(&local, &remote, expression, &sources);
+
+        // compute_expression calls eval_expression locally and averages with remote values
+        // local_value = (100 - 40) + 60 = 120
+        // all_values = [120]
+        // avg([120]) = 120
+        assert_eq!(result, 120.0);
+    }
+
+    #[test]
+    fn test_compute_expression_with_remote_values() {
+        let mut local = HashMap::new();
+        local.insert("cpu".to_string(), 40.0);
+
+        let mut remote: HashMap<String, HashMap<u64, f64>> = HashMap::new();
+        let mut nodes: HashMap<u64, f64> = HashMap::new();
+        nodes.insert(1, 30.0);
+        nodes.insert(2, 35.0);
+        remote.insert("cpu".to_string(), nodes);
+
+        let expression = "cpu + memory";  // Sum pattern
+        let sources = vec!["cpu".to_string()];
+
+        let result = AutoQueuesNode::compute_expression(&local, &remote, expression, &sources);
+
+        // Local: only cpu found (40), memory doesn't exist so sum is 40
+        // Remote: adds 30 and 35 to values
+        // all_values = [40, 30, 35]
+        // avg([40, 30, 35]) = 35
+        let expected = (40.0 + 30.0 + 35.0) / 3.0;
+        assert!((result - expected).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_compute_expression_empty_sources() {
+        let mut local = HashMap::new();
+        local.insert("cpu".to_string(), 50.0);
+
+        let remote = HashMap::new();
+        let expression = "(100 - cpu) + memory_free";
+        let sources: Vec<String> = vec![];
+
+        let result = AutoQueuesNode::compute_expression(&local, &remote, expression, &sources);
+
+        // eval_expression: matches pattern, cpu=50, memory_free=0 (not found)
+        // local_value = (100 - 50) + 0 = 50
+        // all_values = [50]
+        // avg([50]) = 50
+        assert_eq!(result, 50.0);
+    }
+
+    // --- eval_expression tests ---
+
+    #[test]
+    fn test_eval_expression_health_score_pattern() {
+        let mut local = HashMap::new();
+        local.insert("cpu".to_string(), 40.0);
+        local.insert("memory_free".to_string(), 60.0);
+
+        let expression = "(100 - cpu) + memory_free";
+        let result = AutoQueuesNode::eval_expression(&local, expression);
+        assert_eq!(result, 120.0);
+    }
+
+    #[test]
+    fn test_eval_expression_health_score_no_cpu() {
+        let mut local = HashMap::new();
+        local.insert("memory_free".to_string(), 50.0);
+
+        let expression = "(100 - cpu) + memory_free";
+        let result = AutoQueuesNode::eval_expression(&local, expression);
+        // cpu defaults to 0.0, so (100 - 0) + 50 = 150
+        assert_eq!(result, 150.0);
+    }
+
+    #[test]
+    fn test_eval_expression_sum_sources() {
+        let mut local = HashMap::new();
+        local.insert("cpu".to_string(), 40.0);
+        local.insert("memory".to_string(), 60.0);
+        local.insert("temperature".to_string(), 70.0);
+
+        let expression = "cpu + memory + temperature";
+        let result = AutoQueuesNode::eval_expression(&local, expression);
+        assert_eq!(result, 170.0);
+    }
+
+    #[test]
+    fn test_eval_expression_partial_sources() {
+        let mut local = HashMap::new();
+        local.insert("cpu".to_string(), 30.0);
+
+        let expression = "cpu + missing_metric";
+        let result = AutoQueuesNode::eval_expression(&local, expression);
+        // Only cpu found, missing_metric defaults to 0
+        assert_eq!(result, 30.0);
+    }
+
+    #[test]
+    fn test_eval_expression_empty_local() {
+        let local = HashMap::new();
+        let expression = "cpu + memory";
+        let result = AutoQueuesNode::eval_expression(&local, expression);
+        assert_eq!(result, 0.0);
+    }
+
+    #[test]
+    fn test_eval_expression_all_sources() {
+        let mut local = HashMap::new();
+        local.insert("cpu".to_string(), 10.0);
+        local.insert("memory".to_string(), 20.0);
+        local.insert("temperature".to_string(), 30.0);
+        local.insert("vibration".to_string(), 40.0);
+
+        let expression = "cpu + memory + temperature + vibration";
+        let result = AutoQueuesNode::eval_expression(&local, expression);
+        assert_eq!(result, 100.0);
+    }
+
+    #[test]
+    fn test_eval_expression_vibration_pattern() {
+        let mut local = HashMap::new();
+        local.insert("vibration".to_string(), 15.0);
+
+        let expression = "vibration";
+        let result = AutoQueuesNode::eval_expression(&local, expression);
+        assert_eq!(result, 15.0);
+    }
+
+    #[test]
+    fn test_eval_expression_temperature_pattern() {
+        let mut local = HashMap::new();
+        local.insert("temperature".to_string(), 75.0);
+
+        let expression = "temperature";
+        let result = AutoQueuesNode::eval_expression(&local, expression);
+        assert_eq!(result, 75.0);
+    }
+
+    // --- Integration-style tests ---
+
+    #[test]
+    fn test_collect_all_values_with_typical_cluster_setup() {
+        // Simulate a 3-node cluster
+        let mut local = HashMap::new();
+        local.insert("cpu".to_string(), 45.0);
+        local.insert("memory".to_string(), 60.0);
+        local.insert("temperature".to_string(), 65.0);
+
+        let mut remote: HashMap<String, HashMap<u64, f64>> = HashMap::new();
+
+        // Node 1 (local) is already in local
+        // Node 2
+        let mut node2_values: HashMap<u64, f64> = HashMap::new();
+        node2_values.insert(2, 50.0); // cpu from node 2
+        remote.insert("cpu".to_string(), node2_values);
+
+        let mut node2_mem: HashMap<u64, f64> = HashMap::new();
+        node2_mem.insert(2, 55.0); // memory from node 2
+        remote.insert("memory".to_string(), node2_mem);
+
+        let mut node2_temp: HashMap<u64, f64> = HashMap::new();
+        node2_temp.insert(2, 70.0); // temperature from node 2
+        remote.insert("temperature".to_string(), node2_temp);
+
+        let sources = vec!["cpu".to_string()];
+
+        let values = AutoQueuesNode::collect_all_values(&local, &remote, &sources);
+        assert_eq!(values.len(), 2);
+        assert!(values.contains(&45.0));
+        assert!(values.contains(&50.0));
+    }
+
+    #[test]
+    fn test_aggregation_integration_with_collected_values() {
+        // Test that aggregations work correctly with collected values
+        let values = vec![10.0, 20.0, 30.0, 40.0, 50.0];
+
+        assert_eq!(aggregation::avg(&values), 30.0);
+        assert_eq!(aggregation::max(&values), 50.0);
+        assert_eq!(aggregation::min(&values), 10.0);
+        assert_eq!(aggregation::sum(&values), 150.0);
+
+        let mut sorted_values = values.clone();
+        let p50 = aggregation::percentile(&mut sorted_values, 50.0);
+        assert_eq!(p50, 30.0);
+    }
 }

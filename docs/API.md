@@ -27,22 +27,23 @@ use async_trait::async_trait;
 pub trait DDL: Send + Sync {
     /// Push data to a topic
     async fn push(&self, topic: &str, payload: Vec<u8>) -> Result<u64, DdlError>;
-    
+
     /// Subscribe to topics matching a pattern
     async fn subscribe(&self, pattern: &str) -> Result<EntryStream, DdlError>;
-    
+
     /// Acknowledge an entry has been processed
     async fn ack(&self, topic: &str, entry_id: u64) -> Result<(), DdlError>;
-    
+
     /// Get current position for a topic
     async fn position(&self, topic: &str) -> Result<u64, DdlError>;
-    
+
     /// Check if this node owns a topic
     fn owns_topic(&self, topic: &str) -> bool;
 }
 ```
 
 **Thread Safety:**
+
 - The trait is `Send + Sync` for safe concurrent access
 - Implementations must be thread-safe
 - All methods are async and can be called from any task
@@ -56,13 +57,13 @@ For more advanced subscription scenarios, the `EntryStream` trait provides addit
 pub trait EntryStream {
     /// Receive the next entry (blocking)
     async fn next(&mut self) -> Result<Option<Entry>, DdlError>;
-    
+
     /// Try to receive the next entry (non-blocking)
     fn try_next(&self) -> Result<Option<Entry>, DdlError>;
-    
+
     /// Acknowledge processing of an entry
     async fn ack(&mut self, entry_id: u64) -> Result<(), DdlError>;
-    
+
     /// Subscribe to additional patterns
     async fn add_pattern(&mut self, pattern: &str) -> Result<(), DdlError>;
 }
@@ -81,16 +82,19 @@ async fn push(&self, topic: &str, payload: Vec<u8>) -> Result<u64, DdlError>
 ```
 
 **Parameters:**
+
 - `topic`: The topic name to push to (e.g., `"metrics.cpu"`)
 - `payload`: The data to store (any `Vec<u8>`)
 
 **Returns:**
+
 - `Ok(u64)`: The unique entry ID for this push
 - `Err(DdlError::NotOwner)`: If this node doesn't own the topic
 - `Err(DdlError::BufferFull)`: If the topic buffer is full
 - `Err(DdlError::Network)`: If there's a network error
 
 **Example:**
+
 ```rust
 use ddl::DDL;
 
@@ -109,6 +113,7 @@ let entry_id = ddl.push("metrics.system", data).await?;
 ```
 
 **Behavior:**
+
 - The entry is appended to the topic's ring buffer
 - A monotonically increasing ID is assigned
 - If WAL is enabled, the entry is written to disk before returning
@@ -125,18 +130,22 @@ async fn subscribe(&self, pattern: &str) -> Result<EntryStream, DdlError>
 ```
 
 **Parameters:**
+
 - `pattern`: Topic pattern with glob-style wildcards (e.g., `"metrics.*"`)
 
 **Returns:**
+
 - `Ok(EntryStream)`: A stream for receiving matching entries
 - `Err(DdlError::TopicNotFound)`: If no topics match the pattern
 
 **Pattern Syntax:**
+
 - `*` matches any sequence of characters (e.g., `"metrics.*"` matches `"metrics.cpu"`, `"metrics.memory"`)
 - `?` matches any single character (e.g., `"metrics.?"` matches `"metrics.c"` but not `"metrics.cpu"`)
 - Patterns are case-sensitive
 
 **Example:**
+
 ```rust
 use ddl::DDL;
 
@@ -153,13 +162,14 @@ let mut stream = ddl.subscribe("metrics.*").await?;
 while let Some(entry) = stream.next().await {
     println!("Topic: {}, ID: {}, Payload: {:?}",
              entry.topic, entry.id, entry.payload);
-    
+
     // Acknowledge processing
     stream.ack(entry.id).await?;
 }
 ```
 
 **Behavior:**
+
 - Creates connections to all nodes owning matching topics
 - Streams entries from all matching topics in parallel
 - Entries are interleaved as they arrive
@@ -176,15 +186,18 @@ async fn ack(&self, topic: &str, entry_id: u64) -> Result<(), DdlError>
 ```
 
 **Parameters:**
+
 - `topic`: The topic containing the entry
 - `entry_id`: The ID of the entry to acknowledge
 
 **Returns:**
+
 - `Ok(())`: Acknowledgment successful
 - `Err(DdlError::NotOwner)`: If this node doesn't own the topic
 - `Err(DdlError::EntryNotFound)`: If the entry ID is not found
 
 **Example:**
+
 ```rust
 use ddl::DDL;
 
@@ -195,13 +208,14 @@ let mut stream = ddl.subscribe("metrics.*").await?;
 while let Some(entry) = stream.next().await {
     // Process the entry
     process_entry(&entry);
-    
+
     // Acknowledge when done
     ddl.ack(&entry.topic, entry.id).await?;
 }
 ```
 
 **Behavior:**
+
 - Marks the entry as processed
 - Advances the acknowledgment cursor
 - Allows buffer space to be reclaimed
@@ -218,13 +232,16 @@ async fn position(&self, topic: &str) -> Result<u64, DdlError>
 ```
 
 **Parameters:**
+
 - `topic`: The topic to query
 
 **Returns:**
+
 - `Ok(u64)`: The current position (last entry ID)
 - `Err(DdlError::TopicNotFound)`: If the topic doesn't exist
 
 **Example:**
+
 ```rust
 use ddl::DDL;
 
@@ -252,15 +269,18 @@ println!("Current position: {}", pos); // Outputs: Current position: 2
 
 Check if this node owns a specific topic.
 
-```fn owns_topic(&self, topic: &str) -> bool```
+`fn owns_topic(&self, topic: &str) -> bool`
 
 **Parameters:**
+
 - `topic`: The topic to check
 
 **Returns:**
+
 - `bool`: `true` if this node owns the topic, `false` otherwise
 
 **Example:**
+
 ```rust
 use ddl::DDL;
 
@@ -288,11 +308,13 @@ async fn next(&mut self) -> Result<Option<Entry>, DdlError>
 ```
 
 **Returns:**
+
 - `Ok(Some(Entry))`: The next entry
 - `Ok(None)`: The stream has been closed
 - `Err(DdlError::Network)`: If there's an error receiving
 
 **Example:**
+
 ```rust
 let mut stream = ddl.subscribe("metrics.*").await?;
 
@@ -312,11 +334,13 @@ fn try_next(&self) -> Result<Option<Entry>, DdlError>
 ```
 
 **Returns:**
+
 - `Ok(Some(Entry))`: An entry is available
 - `Ok(None)`: No entry available currently
 - `Err(DdlError::Network)`: If there's an error
 
 **Example:**
+
 ```rust
 loop {
     if let Some(entry) = stream.try_next()? {
@@ -339,9 +363,11 @@ async fn ack(&mut self, entry_id: u64) -> Result<(), DdlError>
 ```
 
 **Parameters:**
+
 - `entry_id`: The ID of the entry to acknowledge
 
 **Example:**
+
 ```rust
 while let Some(entry) = stream.next().await {
     process_entry(&entry);
@@ -382,6 +408,7 @@ pub struct DdlConfig {
 ```
 
 **Default Values:**
+
 ```rust
 impl Default for DdlConfig {
     fn default() -> Self {
@@ -401,6 +428,7 @@ impl Default for DdlConfig {
 ```
 
 **Example:**
+
 ```rust
 use ddl::DdlConfig;
 
@@ -506,22 +534,22 @@ All errors returned by DDL operations:
 pub enum DdlError {
     #[error("Topic {0} not owned by this node")]
     NotOwner(String),
-    
+
     #[error("Topic {0} not found")]
     TopicNotFound(String),
-    
+
     #[error("Entry {0} not found in topic {1}")]
     EntryNotFound(u64, String),
-    
-    #[error("Buffer full for topic {0}")]  
+
+    #[error("Buffer full for topic {0}")]
     BufferFull(String),
-    
+
     #[error("Network error: {0}")]
     Network(String),
-    
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    
+
     #[error("Serialization error: {0}")]
     Serialization(String),
 }
@@ -562,6 +590,7 @@ match ddl.push("metrics.cpu", data).await {
 DDL supports multiple transport implementations. Choose based on your requirements:
 
 **TCP Transport** - Default, production-ready:
+
 ```rust
 use ddl::transport::TcpTransport;
 
@@ -569,6 +598,7 @@ let transport = TcpTransport::new("0.0.0.0:6969").await?;
 ```
 
 **ZMQ Transport** - High performance:
+
 ```rust
 use ddl::transport::ZmqTransport;
 
@@ -576,6 +606,7 @@ let transport = ZmqTransport::new("tcp://*:6969")?;
 ```
 
 **Hybrid Transport** - Best of both:
+
 ```rust
 use ddl::transport::HybridTransport;
 
@@ -599,21 +630,21 @@ use std::sync::Arc;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create DDL instance
     let ddl: Arc<dyn DDL> = Arc::new(DdlInMemory::new());
-    
+
     // Create a topic
     ddl.create_topic("metrics.cpu", 10000).await?;
-    
+
     // Push some data
     let entry_id = ddl.push("metrics.cpu", vec![1, 2, 3, 4]).await?;
     println!("Pushed entry: {}", entry_id);
-    
+
     // Subscribe and receive
     let mut stream = ddl.subscribe("metrics.cpu").await?;
     while let Some(entry) = stream.next().await {
         println!("Received: {:?}", entry);
         stream.ack(entry.id).await?;
     }
-    
+
     Ok(())
 }
 ```
@@ -637,15 +668,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         data_dir: std::path::PathBuf::from("/data/ddl"),
         wal_enabled: true,
     };
-    
+
     let ddl: Arc<dyn DDL> = Arc::new(DdlDistributed::new(config).await?);
-    
+
     // Start listening
     ddl.listen("0.0.0.0:6969").await?;
-    
+
     // Run forever
     std::future::pending::<()>().await;
-    
+
     Ok(())
 }
 ```
@@ -679,7 +710,7 @@ async fn safe_push(
     max_retries: u32,
 ) -> Result<u64, DdlError> {
     let mut retries = 0;
-    
+
     loop {
         match ddl.push(topic, payload.clone()).await {
             Ok(entry_id) => return Ok(entry_id),
@@ -707,3 +738,4 @@ The DDL API provides:
 - **Flexible configuration**: customize transport, storage, and behavior
 
 All operations are async and thread-safe, suitable for high-concurrency environments.
+

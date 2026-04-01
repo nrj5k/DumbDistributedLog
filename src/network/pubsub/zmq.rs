@@ -435,7 +435,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_broker_publish() {
-        let broker = ZmqPubSubBroker::new().expect("Failed to create broker");
+        // Use dynamic port (0) to avoid port conflicts
+        let broker = ZmqPubSubBroker::with_bind_addr("tcp://*:0")
+            .expect("Failed to create broker");
         
         let message = TestMessage {
             content: "test".to_string(),

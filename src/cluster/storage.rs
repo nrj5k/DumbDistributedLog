@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::sync::RwLock;
 use tokio::sync::Mutex;
 
+use crate::cluster::lock_utils::{RecoverableLock, SafeLock, Validate};
 use crate::cluster::ownership_machine::{OwnershipCommand, OwnershipResponse, OwnershipState};
 use crate::cluster::types::{SerializableLogEntry, SerializableVote, TypeConfig};
 
@@ -40,8 +41,8 @@ pub struct AutoqueuesRaftStorage {
     snapshot_meta: RwLock<Option<SnapshotMeta<u64, BasicNode>>>,
     /// Snapshot data
     snapshot: RwLock<Option<Snapshot<TypeConfig>>>,
-    /// Shared ownership state - Arc for sharing across clones
-    pub ownership_state: Arc<RwLock<OwnershipState>>,
+    /// Shared ownership state with safe lock recovery - Arc for sharing across clones
+    pub ownership_state: Arc<RecoverableLock<OwnershipState>>,
     /// Current membership
     membership: RwLock<StoredMembership<u64, BasicNode>>,
     /// Path to persistence file (optional)
@@ -67,7 +68,7 @@ impl AutoqueuesRaftStorage {
             committed: RwLock::new(None),
             snapshot_meta: RwLock::new(None),
             snapshot: RwLock::new(None),
-            ownership_state: Arc::new(RwLock::new(OwnershipState::new())),
+            ownership_state: Arc::new(RecoverableLock::new(OwnershipState::new())),
             membership: RwLock::new(StoredMembership::default()),
             data_file: None,
             dirty: Arc::new(AtomicBool::new(false)),
@@ -93,7 +94,7 @@ impl AutoqueuesRaftStorage {
             committed: RwLock::new(None),
             snapshot_meta: RwLock::new(None),
             snapshot: RwLock::new(None),
-            ownership_state: Arc::new(RwLock::new(OwnershipState::new())),
+            ownership_state: Arc::new(RecoverableLock::new(OwnershipState::new())),
             membership: RwLock::new(StoredMembership::default()),
             data_file: Some(data_file.clone()),
             dirty: Arc::new(AtomicBool::new(false)),

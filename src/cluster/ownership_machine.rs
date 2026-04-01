@@ -5,6 +5,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use super::lock_utils::Validate;
+
 /// Unique node identifier
 pub type NodeId = u64;
 
@@ -477,6 +479,126 @@ impl OwnershipState {
         self.key_leases.insert(key, lease_id);
 
         Ok(lease_id)
+    }
+}
+
+impl Validate for OwnershipState {
+    fn validate(&self) -> Result<(), super::lock_utils::ValidationError> {
+        use super::lock_utils::ValidationError;
+
+        // Check lease consistency: every key_lease should have a valid lease
+        for (key, lease_id) in &self.key_leases {
+            if !self.leases.contains_key(lease_id) {
+                tracing::error!(
+                    key = %key,
+                    lease_id = %lease_id,
+                    "Orphaned key_lease: key references non-existent lease"
+                );
+                return Err(ValidationError::OrphanedKeyLease);
+            }
+        }
+
+        // Check lease consistency: every lease should be in key_leases
+        for (lease_id, lease) in &self.leases {
+            if let Some(mapped_id) = self.key_leases.get(&lease.key) {
+                if *mapped_id != *lease_id {
+                    tracing::error!(
+                        lease_id = %lease_id,
+                        mapped_id = %mapped_id,
+                        key = %lease.key,
+                        "Lease ID inconsistency in key_leases"
+                    );
+                    return Err(ValidationError::LeaseIdInconsistency);
+                }
+            } else {
+                tracing::error!(
+                    lease_id = %lease_id,
+                    key = %lease.key,
+                    "Dangling lease: lease not tracked in key_leases"
+                );
+                return Err(ValidationError::DanglingLease);
+            }
+        }
+
+        // Check lease expiration consistency
+        for (_, lease) in &self.leases {
+            let expected_expires = lease
+                .acquired_at
+                .saturating_add(lease.ttl_secs.saturating_mul(1_000_000_000));
+            if lease.expires_at != expected_expires {
+                tracing::error!(
+                    lease_id = %lease.id,
+                    expires_at = %lease.expires_at,
+                    expected = %expected_expires,
+                    "Invalid lease expiration time"
+                );
+                return Err(ValidationError::InvalidLeaseExpiration);
+            }
+        }
+
+        // Check ownership consistency: topics in ownership should be in node_topics
+        for (topic, owner) in &self.ownership {
+            if let Some(topics) = self.node_topics.get(owner) {
+                if !topics.contains(topic) {
+                    tracing::error!(
+                        topic = %topic,
+                        owner = %owner,
+                        "Ownership inconsistency: topic not in owner's topic list"
+                    );
+                    // This is a custom check, not in ValidationError enum yet
+                    return Err(ValidationError::Custom(format!(
+                        "Topic {} owned by {} not in owner's topic list",
+                        topic, owner
+                    )));
+                }
+            } else {
+                tracing::error!(
+                    topic = %topic,
+                    owner = %owner,
+                    "Ownership inconsistency: owner has no topic list"
+                );
+                return Err(ValidationError::Custom(format!(
+                    "Owner {} has no topic list but owns topic {}",
+                    owner, topic
+                )));
+            }
+        }
+
+        // Check node_topics consistency: all topics should be in ownership
+        for (node_id, topics) in &self.node_topics {
+            for topic in topics {
+                match self.ownership.get(topic) {
+                    Some(owner) if *owner == *node_id => {
+                        // Correct ownership
+                    }
+                    Some(owner) => {
+                        tracing::error!(
+                            topic = %topic,
+                            expected_owner = %node_id,
+                            actual_owner = %owner,
+                            "Node topics inconsistency: topic owned by different node"
+                        );
+                        return Err(ValidationError::Custom(format!(
+                            "Topic {} in node {}'s list but owned by {}",
+                            topic, node_id, owner
+                        )));
+                    }
+                    None => {
+                        tracing::error!(
+                            topic = %topic,
+                            node_id = %node_id,
+                            "Node topics inconsistency: topic has no owner"
+                        );
+                        return Err(ValidationError::Custom(format!(
+                            "Topic {} in node {}'s list but has no owner",
+                            topic, node_id
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 

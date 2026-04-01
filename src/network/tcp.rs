@@ -330,10 +330,237 @@ async fn handle_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[tokio::test]
     async fn test_tcp_transport_creation() {
         let transport = TcpTransport::new("127.0.0.1:0", 100).await;
         assert!(transport.is_ok());
+    }
+
+    // === NetworkMessage Serialization Tests ===
+
+    #[test]
+    fn test_network_message_push_serialization() {
+        let entry = Entry::with_timestamp(
+            1,
+            12345,
+            "test.topic",
+            vec![1, 2, 3],
+        );
+        let msg = NetworkMessage::Push {
+            topic: "test.topic".to_string(),
+            entry: entry.clone(),
+        };
+
+        // Serialize
+        let json = serde_json::to_string(&msg).expect("Should serialize Push");
+        assert!(json.contains("test.topic"));
+        assert!(json.contains("\"Push\""));
+
+        // Deserialize
+        let decoded: NetworkMessage = serde_json::from_str(&json).expect("Should deserialize Push");
+        match decoded {
+            NetworkMessage::Push { topic, entry: decoded_entry } => {
+                assert_eq!(topic, "test.topic");
+                assert_eq!(decoded_entry.id, 1);
+                assert_eq!(&*decoded_entry.payload, &[1, 2, 3]);
+            }
+            _ => panic!("Expected Push variant"),
+        }
+    }
+
+    #[test]
+    fn test_network_message_batch_push_serialization() {
+        let entries = vec![
+            Entry::with_timestamp(1, 100, "batch.topic", vec![1]),
+            Entry::with_timestamp(2, 200, "batch.topic", vec![2]),
+        ];
+        let msg = NetworkMessage::BatchPush {
+            topic: "batch.topic".to_string(),
+            entries: entries.clone(),
+        };
+
+        let json = serde_json::to_string(&msg).expect("Should serialize BatchPush");
+        assert!(json.contains("batch.topic"));
+        assert!(json.contains("\"BatchPush\""));
+
+        let decoded: NetworkMessage = serde_json::from_str(&json).expect("Should deserialize BatchPush");
+        match decoded {
+            NetworkMessage::BatchPush { topic, entries } => {
+                assert_eq!(topic, "batch.topic");
+                assert_eq!(entries.len(), 2);
+                assert_eq!(entries[0].id, 1);
+                assert_eq!(entries[1].id, 2);
+            }
+            _ => panic!("Expected BatchPush variant"),
+        }
+    }
+
+    #[test]
+    fn test_network_message_subscribe_serialization() {
+        let msg = NetworkMessage::Subscribe {
+            topic: "subscribe.topic".to_string(),
+            subscriber_id: "node-123".to_string(),
+        };
+
+        let json = serde_json::to_string(&msg).expect("Should serialize Subscribe");
+        assert!(json.contains("subscribe.topic"));
+        assert!(json.contains("node-123"));
+        assert!(json.contains("\"Subscribe\""));
+
+        let decoded: NetworkMessage = serde_json::from_str(&json).expect("Should deserialize Subscribe");
+        match decoded {
+            NetworkMessage::Subscribe { topic, subscriber_id } => {
+                assert_eq!(topic, "subscribe.topic");
+                assert_eq!(subscriber_id, "node-123");
+            }
+            _ => panic!("Expected Subscribe variant"),
+        }
+    }
+
+    #[test]
+    fn test_network_message_ack_serialization() {
+        let msg = NetworkMessage::Ack {
+            topic: "ack.topic".to_string(),
+            entry_id: 42,
+        };
+
+        let json = serde_json::to_string(&msg).expect("Should serialize Ack");
+        assert!(json.contains("ack.topic"));
+        assert!(json.contains("42"));
+        assert!(json.contains("\"Ack\""));
+
+        let decoded: NetworkMessage = serde_json::from_str(&json).expect("Should deserialize Ack");
+        match decoded {
+            NetworkMessage::Ack { topic, entry_id } => {
+                assert_eq!(topic, "ack.topic");
+                assert_eq!(entry_id, 42);
+            }
+            _ => panic!("Expected Ack variant"),
+        }
+    }
+
+    #[test]
+    fn test_network_message_heartbeat_serialization() {
+        let msg = NetworkMessage::Heartbeat;
+
+        let json = serde_json::to_string(&msg).expect("Should serialize Heartbeat");
+        assert!(json.contains("\"Heartbeat\""));
+
+        let decoded: NetworkMessage = serde_json::from_str(&json).expect("Should deserialize Heartbeat");
+        match decoded {
+            NetworkMessage::Heartbeat => {}
+            _ => panic!("Expected Heartbeat variant"),
+        }
+    }
+
+    #[test]
+    fn test_network_message_all_variants_roundtrip() {
+        let messages = vec![
+            NetworkMessage::Push {
+                topic: "t1".to_string(),
+                entry: Entry::new(0, "t1", vec![]),
+            },
+            NetworkMessage::BatchPush {
+                topic: "t2".to_string(),
+                entries: vec![],
+            },
+            NetworkMessage::Subscribe {
+                topic: "t3".to_string(),
+                subscriber_id: "sub".to_string(),
+            },
+            NetworkMessage::Ack {
+                topic: "t4".to_string(),
+                entry_id: 99,
+            },
+            NetworkMessage::Heartbeat,
+        ];
+
+        for msg in messages {
+            let json = serde_json::to_string(&msg).expect("Should serialize");
+            let decoded: NetworkMessage = serde_json::from_str(&json).expect("Should deserialize");
+            // Ensure roundtrip works - just verify no errors
+            let _ = decoded;
+        }
+    }
+
+    #[test]
+    fn test_max_message_size() {
+        // Verify the constant is 10MB as documented
+        assert_eq!(MAX_MESSAGE_SIZE, 10 * 1024 * 1024);
+        assert_eq!(MAX_MESSAGE_SIZE, 10_485_760);
+    }
+
+    #[test]
+    fn test_entry_serialization() {
+        let entry = Entry::with_timestamp(
+            12345,
+            999888777,
+            "test.entry",
+            vec![0, 255, 128, 64, 32],
+        );
+
+        let json = serde_json::to_string(&entry).expect("Should serialize Entry");
+        assert!(json.contains("12345"));
+        assert!(json.contains("999888777"));
+
+        let decoded: Entry = serde_json::from_str(&json).expect("Should deserialize Entry");
+        assert_eq!(decoded.id, entry.id);
+        assert_eq!(&*decoded.payload, &*entry.payload);
+        assert_eq!(decoded.timestamp, entry.timestamp);
+    }
+
+    #[test]
+    fn test_network_message_empty_payload() {
+        // Test with empty payload
+        let msg = NetworkMessage::Push {
+            topic: "empty".to_string(),
+            entry: Entry::new(0, "empty", vec![]),
+        };
+
+        let json = serde_json::to_string(&msg).expect("Should serialize empty payload");
+        let decoded: NetworkMessage = serde_json::from_str(&json).expect("Should deserialize");
+        match decoded {
+            NetworkMessage::Push { entry, .. } => {
+                assert!(entry.payload.is_empty());
+            }
+            _ => panic!("Expected Push variant"),
+        }
+    }
+
+    #[test]
+    fn test_network_message_large_entry_id() {
+        // Test with large entry ID
+        let msg = NetworkMessage::Ack {
+            topic: "test".to_string(),
+            entry_id: u64::MAX,
+        };
+
+        let json = serde_json::to_string(&msg).expect("Should serialize");
+        let decoded: NetworkMessage = serde_json::from_str(&json).expect("Should deserialize");
+        match decoded {
+            NetworkMessage::Ack { entry_id, .. } => {
+                assert_eq!(entry_id, u64::MAX);
+            }
+            _ => panic!("Expected Ack variant"),
+        }
+    }
+
+    #[test]
+    fn test_network_message_unicode_topic() {
+        // Test with unicode topic name
+        let msg = NetworkMessage::Subscribe {
+            topic: "topic-日本語-🚀".to_string(),
+            subscriber_id: "sub".to_string(),
+        };
+
+        let json = serde_json::to_string(&msg).expect("Should serialize unicode");
+        let decoded: NetworkMessage = serde_json::from_str(&json).expect("Should deserialize");
+        match decoded {
+            NetworkMessage::Subscribe { topic, .. } => {
+                assert_eq!(topic, "topic-日本語-🚀");
+            }
+            _ => panic!("Expected Subscribe variant"),
+        }
     }
 }

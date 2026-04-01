@@ -1367,4 +1367,176 @@ mod tests {
         // Different topics should produce different IDs
         assert_ne!(id1.as_bytes(), id3.as_bytes());
     }
+
+    // === Synchronous Helper Function Tests ===
+
+    #[test]
+    fn test_topic_id_to_bytes() {
+        let topic_id = derive_iroh_topic_id("test");
+        let bytes = topic_id_to_bytes(&topic_id);
+
+        // Should produce 32 bytes
+        assert_eq!(bytes.len(), 32);
+
+        // Should be same as original
+        assert_eq!(bytes, *topic_id.as_bytes());
+    }
+
+    #[test]
+    fn test_bytes_to_topic_id() {
+        // Create a topic ID and convert to bytes
+        let original_id = derive_iroh_topic_id("my.topic");
+        let bytes = topic_id_to_bytes(&original_id);
+
+        // Convert back
+        let restored_id = bytes_to_topic_id(bytes);
+
+        // Should be identical
+        assert_eq!(original_id.as_bytes(), restored_id.as_bytes());
+    }
+
+    #[test]
+    fn test_roundtrip_topic_id_conversion() {
+        // Test with various topic names
+        let topics = vec![
+            "simple",
+            "dotted.topic",
+            "deeply.nested.topic.name",
+            "unicode-日本語",
+            "emoji-🚀",
+            "numbers-123",
+            "special-chars_underscore",
+        ];
+
+        for topic in topics {
+            let id1 = derive_iroh_topic_id(topic);
+            let bytes = topic_id_to_bytes(&id1);
+            let id2 = bytes_to_topic_id(bytes);
+
+            // Roundtrip should preserve exact bytes
+            assert_eq!(id1.as_bytes(), id2.as_bytes(), "Failed for topic: {}", topic);
+        }
+    }
+
+    #[test]
+    fn test_bytes_to_topic_id_all_zeros() {
+        // Test with all zeros
+        let zeros = [0u8; 32];
+        let id = bytes_to_topic_id(zeros);
+        assert_eq!(id.as_bytes(), &zeros);
+    }
+
+    #[test]
+    fn test_bytes_to_topic_id_all_ff() {
+        // Test with all 0xFF
+        let ones = [0xFFu8; 32];
+        let id = bytes_to_topic_id(ones);
+        assert_eq!(id.as_bytes(), &ones);
+    }
+
+    #[test]
+    fn test_topic_id_deterministic() {
+        // Same topic name should always produce same ID
+        let topic = "deterministic.test";
+
+        for _ in 0..10 {
+            let id1 = derive_iroh_topic_id(topic);
+            let id2 = derive_iroh_topic_id(topic);
+            assert_eq!(id1.as_bytes(), id2.as_bytes());
+        }
+    }
+
+    #[test]
+    fn test_topic_id_different_for_different_topics() {
+        // Different topics should (very likely) produce different IDs
+        let topics: Vec<String> = (0..100).map(|i| format!("topic.{}", i)).collect();
+
+        let mut ids = std::collections::HashSet::new();
+        for topic in topics.iter() {
+            let id = derive_iroh_topic_id(topic);
+            let bytes = topic_id_to_bytes(&id);
+            // Each ID should be unique
+            assert!(ids.insert(bytes), "Duplicate ID for topic: {}", topic);
+        }
+    }
+
+    // === GossipError Display Tests ===
+
+    #[test]
+    fn test_gossip_error_io() {
+        let err = GossipError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "file not found"));
+        let display = format!("{}", err);
+        assert!(display.contains("IO error"));
+        assert!(display.contains("file not found"));
+    }
+
+    #[test]
+    fn test_gossip_error_serialization() {
+        let err = GossipError::Serialization("serde error".to_string());
+        let display = format!("{}", err);
+        assert!(display.contains("Serialization error"));
+        assert!(display.contains("serde error"));
+    }
+
+    #[test]
+    fn test_gossip_error_gossip() {
+        let err = GossipError::Gossip("gossip failure".to_string());
+        let display = format!("{}", err);
+        assert!(display.contains("Gossip error"));
+        assert!(display.contains("gossip failure"));
+    }
+
+    #[test]
+    fn test_gossip_error_parse() {
+        let err = GossipError::Parse("invalid format".to_string());
+        let display = format!("{}", err);
+        assert!(display.contains("Parse error"));
+        assert!(display.contains("invalid format"));
+    }
+
+    #[test]
+    fn test_gossip_error_topic_not_found() {
+        let err = GossipError::TopicNotFound("missing.topic".to_string());
+        let display = format!("{}", err);
+        assert!(display.contains("Topic not found"));
+        assert!(display.contains("missing.topic"));
+    }
+
+    #[test]
+    fn test_gossip_error_not_subscribed() {
+        let err = GossipError::NotSubscribed("topic-abc123".to_string());
+        let display = format!("{}", err);
+        assert!(display.contains("Not subscribed to topic"));
+        assert!(display.contains("topic-abc123"));
+    }
+
+    #[test]
+    fn test_gossip_error_channel() {
+        let err = GossipError::Channel("channel closed".to_string());
+        let display = format!("{}", err);
+        assert!(display.contains("Channel error"));
+        assert!(display.contains("channel closed"));
+    }
+
+    #[test]
+    fn test_gossip_error_already_shutdown() {
+        let err = GossipError::AlreadyShutdown;
+        let display = format!("{}", err);
+        assert!(display.contains("Already shutdown"));
+    }
+
+    #[test]
+    fn test_gossip_error_from_serde_json() {
+        // Test the From<serde_json::Error> impl
+        let json_err = serde_json::from_str::<i32>("not a number");
+        assert!(json_err.is_err());
+        let gossip_err: GossipError = json_err.unwrap_err().into();
+        match gossip_err {
+            GossipError::Serialization(msg) => {
+                // Just verify the error message exists
+                assert!(!msg.is_empty());
+            }
+            _ => panic!("Expected Serialization variant"),
+        }
+    }
 }

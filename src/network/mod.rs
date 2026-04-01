@@ -10,7 +10,7 @@ pub use transport_traits::{ConnectionInfo, Transport, TransportError, TransportT
 pub use raft_transport::ZmqRaftNetwork;
 pub use tcp::{TcpTransport, NetworkMessage};
 pub use hybrid::TransportConfig;
-pub use tcp_network::{TcpNetwork, TcpNetworkConfig, TcpNetworkFactory, TcpRaftServer, create_raft_handler};
+pub use tcp_network::{TcpNetwork, TcpNetworkConfig, TcpNetworkFactory, TcpRaftServer};
 
 pub mod pubsub;
 
