@@ -52,48 +52,42 @@ DDL follows a **KISS (Keep It Simple, Stupid)** approach to distributed systems:
 
 ### Component Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           DDL System                                     │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐                 │
-│  │   Client    │    │   Client    │    │   Client    │                 │
-│  │  (Producer) │    │ (Consumer)  │    │ (Producer)  │                 │
-│  └──────┬──────┘    └──────┬──────┘    └──────┬──────┘                 │
-│         │                   │                   │                         │
-│         └───────────────────┴───────────────────┘                         │
-│                           │                                               │
-│                           ▼                                               │
-│              ┌─────────────────────────────┐                              │
-│              │    Transport Layer          │                              │
-│              │  (TCP / ZMQ / Hybrid)       │                              │
-│              └─────────────┬───────────────┘                              │
-│                            │                                             │
-│         ┌──────────────────┼──────────────────┐                           │
-│         │                  │                  │                           │
-│         ▼                  ▼                  ▼                           │
-│  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐                     │
-│  │    Node 1   │   │    Node 2   │   │    Node 3   │                     │
-│  │  ┌───────┐  │   │  ┌───────┐  │   │  ┌───────┐  │                     │
-│  │  │ Queue │  │   │  │ Queue │  │   │  │ Queue │  │                     │
-│  │  │       │  │   │  │       │  │   │  │       │  │                     │
-│  │  │ WAL   │  │   │  │ WAL   │  │   │  │ WAL   │  │                     │
-│  │  └───────┘  │   │  └───────┘  │   │  └───────┘  │                     │
-│  │  ┌───────┐  │   │  ┌───────┐  │   │  ┌───────┐  │                     │
-│  │  │ Gossip│  │   │  │ Gossip│  │   │  │ Gossip│  │                     │
-│  │  └───────┘  │   │  └───────┘  │   │  └───────┘  │                     │
-│  └─────────────┘   └─────────────┘   └─────────────┘                     │
-│         │                  │                  │                           │
-│         └──────────────────┼──────────────────┘                           │
-│                            │                                             │
-│                            ▼                                             │
-│              ┌─────────────────────────────┐                              │
-│              │   Cluster Coordination      │                              │
-│              │       (Raft + Gossip)       │                              │
-│              └─────────────────────────────┘                              │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Clients["Clients"]
+        P["Producer"]
+        C["Consumer"]
+    end
+
+    subgraph Transport["Transport Layer"]
+        T["TCP / ZMQ / Hybrid"]
+    end
+
+    subgraph Nodes["Cluster Nodes"]
+        subgraph Node1["Node 1"]
+            Q1["Queue"]
+            W1["WAL"]
+            G1["Gossip"]
+        end
+        subgraph Node2["Node 2"]
+            Q2["Queue"]
+            W2["WAL"]
+            G2["Gossip"]
+        end
+        subgraph Node3["Node 3"]
+            Q3["Queue"]
+            W3["WAL"]
+            G3["Gossip"]
+        end
+    end
+
+    subgraph Coordination["Cluster Coordination"]
+        R["Raft + Gossip"]
+    end
+
+    P & C --> T
+    T --> Node1 & Node2 & Node3
+    Node1 & Node2 & Node3 --> R
 ```
 
 ### DDL Trait (Core Interface)
@@ -181,62 +175,59 @@ Multiple transport implementations:
 
 ### Push Flow (Producer to Topic)
 
-```
-┌──────────┐     ┌──────────────┐     ┌─────────────┐     ┌─────────────┐
-│ Producer │────▶│ Topic Lookup │────▶│   Owner     │────▶│    Queue    │
-│          │     │ (Gossip)     │     │  Selection  │     │  (Buffer)   │
-└──────────┘     └──────────────┘     └─────────────┘     └─────────────┘
-                                                   │
-                                                   ▼
-                                            ┌─────────────┐
-                                            │   WAL (if   │
-                                            │  enabled)   │
-                                            └─────────────┘
-```
+```mermaid
+sequenceDiagram
+    participant Producer
+    participant Lookup as Topic Lookup
+    participant Owner as Owner Selection
+    participant Queue as Queue Buffer
+    participant WAL as WAL (optional)
 
-Steps:
-1. Producer determines topic owner via gossip or cached mapping
-2. Producer connects directly to owner node via TCP
-3. Entry is appended to topic's ring buffer
-4. If WAL enabled, entry is written to disk
-5. Entry ID is returned to producer
+    Producer->>Lookup: Determine topic owner via gossip
+    Lookup-->>Producer: Owner node address
+    Producer->>Owner: Connect via TCP
+    Owner->>Queue: Append entry to ring buffer
+    alt WAL enabled
+        Queue->>WAL: Write to disk
+    end
+    Owner-->>Producer: Return entry ID
+```
 
 ### Subscribe Flow (Consumer from Topics)
 
-```
-┌──────────┐     ┌──────────────┐     ┌─────────────┐     ┌─────────────┐
-│Consumer  │────▶│ Topic Match  │────▶│  Matching   │────▶│  Entry      │
-│          │     │   (Pattern)  │     │   Owners    │     │   Stream    │
-└──────────┘     └──────────────┘     └─────────────┘     └─────────────┘
-                                                   │
-                    ┌──────────────────────────────┘
-                    ▼
-              ┌───────────┐      ┌─────────────┐
-              │   Pull    │◀─────│   Queue     │
-              │   Entries │      │  (Buffer)   │
-              └───────────┘      └─────────────┘
-```
+```mermaid
+sequenceDiagram
+    participant Consumer
+    participant DDL as DDL Service
+    participant Matcher as Pattern Matcher
+    participant Owners as Topic Owners
+    participant Queue as Queue Buffer
 
-Steps:
-1. Consumer specifies topic pattern (e.g., `metrics.*`)
-2. DDL determines which topics match the pattern
-3. For each matching topic, DDL connects to the owner node
-4. Owner streams entries matching the subscription
-5. Consumer processes entries and sends acknowledgments
+    Consumer->>DDL: Subscribe to pattern (e.g., "metrics.*")
+    DDL->>Matcher: Match pattern to topics
+    Matcher-->>DDL: List of matching topics and owners
+    DDL->>Owners: Connect to each owner node
+    loop For each matching topic
+        Owners->>Queue: Pull entries from buffer
+        Queue-->>Owners: Stream entries
+    end
+    Owners->>Consumer: Entry stream (parallel)
+    Consumer-->>Owners: Send acknowledgments
+```
 
 ### Ack Flow (Reliability)
 
-```
-┌──────────┐     ┌──────────────┐     ┌─────────────┐     ┌─────────────┐
-│ Consumer │────▶│   Ack Send   │────▶│   Owner     │────▶│ Position    │
-│          │     │              │     │   Node      │     │  Update     │
-└──────────┘     └──────────────┘     └─────────────┘     └─────────────┘
-                                                   │
-                                                   ▼
-                                            ┌─────────────┐
-                                            │   Buffer    │
-                                            │  Advancement│
-                                            └─────────────┘
+```mermaid
+sequenceDiagram
+    participant Consumer
+    participant DDL as DDL Service
+    participant Owner as Owner Node
+    participant Buffer as Buffer Advancement
+
+    Consumer->>DDL: Send acknowledgment
+    DDL->>Owner: Forward acknowledgment
+    Owner->>Buffer: Advance acknowledged position
+    Note over Buffer: Enables buffer space reclamation
 ```
 
 Purpose:
@@ -477,104 +468,70 @@ What Raft does NOT handle:
 
 ### Discovery Flow
 
-```
-┌─────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   Node A    │     │   Gossip         │     │     Node B      │
-│   Starts    │────▶│   Bootstrap      │────▶│   Discovers     │
-│             │     │   (UDP multicast │     │                 │
-│             │     │    or seed)      │     │                 │
-└─────────────┘     └──────────────────┘     └─────────────────┘
-                                                   │
-                                                   ▼
-                                             ┌─────────────┐
-                                             │   Raft      │
-                                             │   Cluster   │
-                                             └─────────────┘
-                                                   │
-                                                   ▼
-                                             ┌─────────────┐
-                                             │   Topic     │
-                                             │  Ownership  │
-                                             │   Decided   │
-                                             └─────────────┘
-```
+```mermaid
+sequenceDiagram
+    participant A as Node A
+    participant G as Gossip Bootstrap
+    participant B as Node B
+    participant Raft as Raft Cluster
+    participant Topics as Topic Ownership
 
----
-
-## Component Interactions
+    A->>G: Start with seed peers
+    G-->>B: Node B discovers via UDP multicast or seed
+    B->>Raft: Join Raft cluster
+    Raft->>Topics: Establish topic ownership
+    Topics-->>A & B: Consistent ownership view
+```
 
 ### Push Interaction Sequence
 
-```
-1. Producer                    2. Topic Owner                  3. Storage
-   ───────────                    ────────────                  ────────
-   ddl.push(
-     "metrics.cpu",
-     data
-   ) ─────────────────────────────▶
-                                  Validate topic ownership
-                                  ◀────────────────────────────────────────
-                                  (via Raft/gossip)
-                                  
-                                  Append to ring buffer
-                                  ◀────────────────────────────────────────
-                                  (lock-free SPMC)
-                                  
-                                  Write to WAL (if enabled)
-                                  ◀────────────────────────────────────────
-                                  (disk sync)
-                                  
-                                  Return entry ID
-   ◀────────────────────────────────────────
-   entry_id = 42
+```mermaid
+sequenceDiagram
+    participant P as Producer
+    participant O as Topic Owner
+    participant S as Storage
+
+    P->>O: ddl.push("metrics.cpu", data)
+    Note over O: Validate topic ownership<br/>(via Raft/gossip)
+    O->>S: Append to ring buffer<br/>(lock-free SPMC)
+    alt WAL enabled
+        S->>S: Write to WAL (disk sync)
+    end
+    O-->>P: Return entry_id = 42
 ```
 
 ### Subscribe Interaction Sequence
 
-```
-1. Consumer                    2. DDL                          3. Topic Owners
-   ─────────                    ────                            ────────────
-   ddl.subscribe(
-     "metrics.*"
-   ) ─────────────────────────────────────▶
-                                    Match pattern to topics
-                                    ◀──────────────────────────────────────
-                                    (local metadata)
-                                    
-                                    Connect to each owner
-                                    ◀──────────────────────────────────────
-                                    (TCP direct)
-                                    
-   Receive entries ◀───────────────────────
-   for each matching topic
-   (parallel streams)
-   
-   Consumer processes
-   and acknowledges entries
-   ─────────────────────────────────────▶
+```mermaid
+sequenceDiagram
+    participant C as Consumer
+    participant D as DDL
+    participant O as Topic Owners
+
+    C->>D: ddl.subscribe("metrics.*")
+    D->>D: Match pattern to topics (local metadata)
+    D->>O: Connect to each owner (TCP direct)
+    loop Parallel streams
+        O-->>C: Receive entries for matching topics
+    end
+    C->>O: Process and acknowledge entries
 ```
 
 ### Cluster Membership Change
 
-```
-1. New Node              2. Existing Cluster              3. Gossip Convergence
-   ─────────                ─────────────────                ──────────────────
-   Start with
-   seed peers ─────────────▶
-                              Gossip membership
-                              ◀────────────────────
-                              (periodic exchange)
-                              
-                              Raft membership change
-                              ◀────────────────────
-                              (add as non-voting)
-                              
-                              Topic reassignment
-                              ◀────────────────────
-                              (if needed)
-                              
-   Full cluster
-   membership ──────────────▶
+```mermaid
+sequenceDiagram
+    participant N as New Node
+    participant E as Existing Cluster
+    participant G as Gossip Convergence
+    participant R as Raft
+    participant T as Topic Reassignment
+
+    N->>E: Start with seed peers
+    E->>G: Gossip membership (periodic exchange)
+    G->>R: Raft membership change (add as non-voting)
+    R->>T: Topic reassignment (if needed)
+    T-->>N: Full cluster membership
 ```
 
 ---

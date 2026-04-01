@@ -12,27 +12,32 @@ A minimal, high-performance distributed append-only log for HPC clusters.
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      DdlDistributed                             │
-│  ┌─────────────────┐  ┌───────────────────────────────────────┐│
-│  │   TopicQueue    │  │         RaftClusterNode              ││
-│  │   SPMC ring      │  │  ┌────────────────────────────────────┐│
-│  │   lock-free      │  │  │      openraft::Raft               │││
-│  │                 │  │  │  ┌────────────────────────────────┐ │ ││
-│  │                 │  │  │  │   AutoqueuesRaftStorage        │ │││
-│  │                 │  │  │  │   ┌──────────────────────────┐ │ │││
-│  │                 │  │  │  │   │Arc<RwLock<OwnershipState>│ │ │││
-│  └─────────────────┘  │  │  │   └──────────────────────────┘ │ │││
-│                       │  │  └────────────────────────────────────┘││
-│  ┌─────────────────┐  │                                      ││
-│  │ GossipCoordinator│  │  ┌──────────────────────────────────┐ │ │
-│  │ (node discovery) │  │  │        TcpNetwork               │ │ │
-│  │ (NOT ownership)   │  │  │  ┌──────────────────────────────┐ │ │ │
-│  └─────────────────┘  │  │  │  TcpRaftServer              │ │ │ │
-│                       │  │  └──────────────────────────────┘ │ │ │
-│                       │  └──────────────────────────────────┘ │ │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph DdlDistributed["DdlDistributed"]
+        subgraph Topics["Topic Management"]
+            TQ["TopicQueue<br/>SPMC ring buffer<br/>lock-free"]
+        end
+
+        subgraph Raft["RaftClusterNode"]
+            RC["openraft::Raft"]
+            subgraph Storage["AutoqueuesRaftStorage"]
+                OS["Arc&lt;RwLock&lt;OwnershipState&gt;&gt;"]
+            end
+            subgraph Network["TcpNetwork"]
+                TS["TcpRaftServer"]
+            end
+        end
+
+        subgraph Gossip["GossipCoordinator<br/>(node discovery, NOT ownership)"]
+            GC["Gossip"]
+        end
+    end
+
+    TQ --> RC
+    RC --> OS
+    RC --> TS
+    GC --> RC
 ```
 
 ## Quick Start
