@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// Maximum number of poison recoveries before giving up
-const MAX_POISON_RECOVERIES: usize = 3;
+pub const MAX_POISON_RECOVERIES: usize = 3;
 
 /// Error during lock acquisition
 #[derive(Debug)]
@@ -189,12 +189,13 @@ impl<T: Validate + Send + Sync> SafeLock<T> for RecoverableLock<T> {
                 let thread_name = thread.name().unwrap_or("unknown");
 
                 let poison_count = self.poison_count.fetch_add(1, Ordering::AcqRel);
+                let backtrace = std::backtrace::Backtrace::capture();
 
                 tracing::error!(
                     location = %location,
                     thread = %thread_name,
                     poison_count = poison_count,
-                    backtrace = tracing::field::debug(std::backtrace::Backtrace::capture()),
+                    backtrace = tracing::field::debug(backtrace),
                     "Lock poisoned, attempting recovery"
                 );
 
@@ -275,12 +276,13 @@ impl<T: Validate + Send + Sync> SafeLock<T> for RecoverableLock<T> {
                 let thread_name = thread.name().unwrap_or("unknown");
 
                 let poison_count = self.poison_count.fetch_add(1, Ordering::AcqRel);
+                let backtrace = std::backtrace::Backtrace::capture();
 
                 tracing::error!(
                     location = %location,
                     thread = %thread_name,
                     poison_count = poison_count,
-                    backtrace = tracing::field::debug(std::backtrace::Backtrace::capture()),
+                    backtrace = tracing::field::debug(backtrace),
                     "Lock poisoned during try_write, attempting recovery"
                 );
 
