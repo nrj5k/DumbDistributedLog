@@ -41,6 +41,9 @@ pub struct BenchmarkConfig {
     pub concurrent_ops: usize,
     /// Number of iterations for each test
     pub iterations: usize,
+    /// Use real TCP networking instead of in-memory
+    /// When true, uses TestCluster::setup_tcp() for real network benchmarks
+    pub use_tcp: bool,
 }
 
 impl Default for BenchmarkConfig {
@@ -52,6 +55,7 @@ impl Default for BenchmarkConfig {
             topic_count: 100,
             concurrent_ops: 100,
             iterations: 3,
+            use_tcp: false,  // Default to in-memory for backwards compat
         }
     }
 }
@@ -59,8 +63,13 @@ impl Default for BenchmarkConfig {
 impl BenchmarkConfig {
     /// Create config from environment variables or defaults
     pub fn from_env() -> Self {
+        let use_tcp = std::env::var("DDL_BENCHMARK_TCP")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
+        
         Self {
             node_spec: get_node_spec_or_default("localhost:[8080-8082]"),
+            use_tcp,
             ..Self::default()
         }
     }
@@ -265,6 +274,19 @@ impl BenchmarkRunner {
         }
     }
 
+    /// Create test cluster based on config (TCP or in-memory)
+    async fn create_cluster(&self) -> Result<TestCluster, String> {
+        if self.config.use_tcp {
+            println!("Creating TCP cluster (real networking)...");
+            TestCluster::setup_tcp(&self.config.node_spec).await
+        } else {
+            println!("Creating in-memory cluster...");
+            let cluster = TestCluster::setup(&self.config.node_spec).await?;
+            cluster.initialize().await?;
+            Ok(cluster)
+        }
+    }
+
     /// Run the complete benchmark suite
     pub async fn run_full_suite(&mut self) -> Result<BenchmarkResults, String> {
         let suite_start = Instant::now();
@@ -304,7 +326,7 @@ impl BenchmarkRunner {
     /// Benchmark A: Cluster Setup
     async fn benchmark_cluster_setup(&mut self) -> Result<(), String> {
         println!("\n--------------------------------------------------------------------------------");
-        println!("CLUSTER SETUP");
+        println!("CLUSTER SETUP ({})", if self.config.use_tcp { "TCP" } else { "IN-MEMORY" });
         println!("--------------------------------------------------------------------------------");
 
         let nodes = parse_node_spec(&self.config.node_spec)?;
@@ -330,7 +352,7 @@ impl BenchmarkRunner {
 
         // Time: Cluster initialization (single-node for benchmark)
         let init_start = Instant::now();
-        let cluster = TestCluster::setup(&self.config.node_spec).await?;
+        let cluster = self.create_cluster().await?;
         let init_time = init_start.elapsed();
         self.results.cluster_setup.init_time_ms = init_time.as_millis() as u64;
 
@@ -376,8 +398,7 @@ impl BenchmarkRunner {
         println!("--------------------------------------------------------------------------------");
 
         // Setup cluster for topic operations
-        let cluster = TestCluster::setup(&self.config.node_spec).await?;
-        cluster.initialize().await?;
+        let cluster = self.create_cluster().await?;
 
         // Get reference to bootstrap node
         let node = cluster.get_node(cluster.bootstrap_id)
@@ -496,8 +517,7 @@ impl BenchmarkRunner {
         println!("CONSENSUS OPERATIONS");
         println!("--------------------------------------------------------------------------------");
 
-        let cluster = TestCluster::setup(&self.config.node_spec).await?;
-        cluster.initialize().await?;
+        let cluster = self.create_cluster().await?;
 
         let node = cluster.get_node(cluster.bootstrap_id)
             .ok_or("Bootstrap node not found")?;
@@ -554,8 +574,7 @@ impl BenchmarkRunner {
         println!("CONCURRENT LOAD");
         println!("--------------------------------------------------------------------------------");
 
-        let cluster = Arc::new(TestCluster::setup(&self.config.node_spec).await?);
-        Arc::clone(&cluster).initialize().await?;
+        let cluster = Arc::new(self.create_cluster().await?);
 
         let node_id = cluster.bootstrap_id;
         let node_ref = &cluster.nodes.iter()
@@ -662,6 +681,15 @@ impl BenchmarkRunner {
             0.0
         };
 
+        // Print TCP networking info if applicable
+        if self.config.use_tcp {
+            println!();
+            println!("TCP NETWORKING MODE:");
+            println!("  Real network latency measured (not simulated)");
+            println!("  Actual TCP connections between nodes");
+            println!("  Real RPC serialization/deserialization overhead");
+        }
+        
         // Print summary with status indicators
         let setup_status = if setup_ok { "✓" } else { "✗" };
         let election_status = if election_ok { "✓" } else { "✗" };
@@ -914,6 +942,9 @@ pub fn parse_args() -> BenchmarkConfig {
                     i += 1;
                 }
             }
+            "--tcp" => {
+                config.use_tcp = true;
+            }
             "--help" | "-h" => {
                 println!("DDL Benchmark Tool");
                 println!();
@@ -924,6 +955,7 @@ pub fn parse_args() -> BenchmarkConfig {
                 println!("  --duration, -d <SEC>   Benchmark duration in seconds (default: 60)");
                 println!("  --topics, -t <COUNT>   Number of topics (default: 100)");
                 println!("  --threads, -T <COUNT>  Concurrent threads (default: 100)");
+                println!("  --tcp                  Use real TCP networking (default: in-memory)");
                 println!("  --help, -h             Show this help message");
                 println!();
                 println!("Node Specification Examples:");

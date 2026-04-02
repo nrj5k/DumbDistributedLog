@@ -108,6 +108,18 @@ impl TcpNetworkConfig {
     pub fn add_peer(&mut self, node_id: u64, addr: String) {
         self.peers.insert(node_id, addr);
     }
+
+    /// Set bind address (for custom host)
+    pub fn with_bind_addr(mut self, addr: &str) -> Self {
+        self.bind_addr = addr.to_string();
+        self
+    }
+
+    /// Set connection timeout
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
 }
 
 /// TCP network factory for creating client connections to Raft peers

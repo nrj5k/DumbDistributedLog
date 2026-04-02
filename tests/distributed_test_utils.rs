@@ -5,7 +5,7 @@
 
 use ddl::cluster::raft_cluster::RaftClusterNode;
 use ddl::cluster::types::NodeConfig;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::env;
 
 /// Default port for node communication (same as constants.rs)
@@ -320,11 +320,15 @@ impl NodeSpecBuilder {
                 self.coord_port_offset,
             )?;
             
+            // Each node gets a unique port by incrementing based on index
+            // This allows multiple nodes on the same machine (localhost)
+            let port_increment = idx as u16;
+            
             let config = NodeConfig {
                 node_id,
                 host,
-                communication_port: comm_port,
-                coordination_port: coord_port,
+                communication_port: comm_port + port_increment,
+                coordination_port: coord_port + port_increment,
             };
             
             configs.insert(node_id, config);
@@ -368,6 +372,8 @@ pub struct TestCluster {
     pub configs: HashMap<u64, NodeConfig>,
     /// Bootstrap node ID (first node)
     pub bootstrap_id: u64,
+    /// Temporary directories for persistence (TCP mode only)
+    temp_dirs: Vec<tempfile::TempDir>,
 }
 
 impl TestCluster {
@@ -415,6 +421,161 @@ impl TestCluster {
             nodes,
             configs,
             bootstrap_id,
+            temp_dirs: Vec::new(),  // No temp dirs for in-memory
+        })
+    }
+    
+    /// Create REAL distributed cluster with TCP networking
+    /// 
+    /// This spawns actual TCP servers on unique ports for each node,
+    /// creating a true multi-node cluster (not in-memory simulation).
+    /// 
+    /// # Example
+    /// ```ignore
+    /// let cluster = TestCluster::setup_tcp("node[1-3]").await?;
+    /// // All nodes are connected via TCP on real network ports
+    /// ```
+    pub async fn setup_tcp(spec: &str) -> Result<Self, String> {
+        Self::setup_tcp_with_options(spec, DEFAULT_COMMUNICATION_PORT + 10000, 1).await
+    }
+    
+    /// Create TCP cluster with custom options
+    pub async fn setup_tcp_with_options(
+        spec: &str,
+        base_port: u16,
+        starting_id: u64,
+    ) -> Result<Self, String> {
+        eprintln!("setup_tcp_with_options: Parsing node spec '{}'", spec);
+        
+        // Parse node specifications
+        let base_configs = NodeSpecBuilder::new(spec)
+            .base_port(base_port)
+            .starting_id(starting_id)
+            .build()?;
+        
+        eprintln!("setup_tcp: Parsed {} nodes", base_configs.len());
+        
+        // Use high ports for TCP coordination (avoid conflicts with default ports)
+        // If base_port is 6967, TCP coordination uses 16967
+        let tcp_coord_port_offset = 10000u16;
+        
+        // Adjust configs to reflect actual TCP ports and replace hostnames with localhost
+        // For TCP testing, all nodes run on the same machine
+        let mut configs = base_configs.clone();
+        for (_, config) in configs.iter_mut() {
+            config.host = "127.0.0.1".to_string();
+            config.coordination_port += tcp_coord_port_offset;
+        }
+        
+        let mut nodes = Vec::new();
+        let bootstrap_id = starting_id;
+        
+        eprintln!("setup_tcp: Creating temp directories");
+        
+        // Create temporary directories for persistence
+        let temp_dirs: Vec<tempfile::TempDir> = (0..configs.len())
+            .map(|_| tempfile::TempDir::new().unwrap())
+            .collect();
+        
+        eprintln!("setup_tcp: Creating {} nodes", configs.len());
+        
+        // Create all nodes with TCP networking
+        for (idx, (node_id, config)) in configs.iter().enumerate() {
+            eprintln!("setup_tcp: Creating node {} at {}:{}", node_id, config.host, config.coordination_port);
+            
+            let mut network_config = ddl::network::TcpNetworkConfig::new(*node_id, config.coordination_port);
+            
+            // Add all other peers
+            for (peer_id, peer_config) in &configs {
+                if peer_id != node_id {
+                    network_config.add_peer(*peer_id, format!("{}:{}", peer_config.host, peer_config.coordination_port));
+                }
+            }
+            
+            let (node, _network_factory) = ddl::cluster::RaftClusterNode::new_tcp(
+                *node_id,
+                configs.clone(),
+                network_config,
+                temp_dirs[idx].path()
+            ).await.map_err(|e| format!("Failed to create node {}: {:?}", node_id, e))?;
+            
+            eprintln!("setup_tcp: Node {} created successfully", node_id);
+            nodes.push(node);
+        }
+        
+        // Wait for TCP servers to start
+        eprintln!("setup_tcp: Waiting for TCP servers to start");
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        
+        // Initialize bootstrap node
+        eprintln!("setup_tcp: Finding bootstrap node");
+        let bootstrap = nodes.iter()
+            .find(|n| n.node_id == bootstrap_id)
+            .ok_or_else(|| "Bootstrap node not found")?;
+        
+        eprintln!("setup_tcp: Initializing bootstrap node {}", bootstrap_id);
+        bootstrap.initialize().await
+            .map_err(|e| format!("Failed to initialize bootstrap: {:?}", e))?;
+        
+        eprintln!("setup_tcp: Waiting for leader election");
+        // Wait for leader election
+        let is_leader = tokio::time::timeout(
+            tokio::time::Duration::from_secs(10),
+            async {
+                loop {
+                    if bootstrap.is_leader().await {
+                        eprintln!("setup_tcp: Bootstrap is leader!");
+                        return true;
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                }
+            }
+        ).await.map_err(|_| "Leader election timeout")?;
+        
+        if !is_leader {
+            return Err("Bootstrap failed to become leader".to_string());
+        }
+        
+        eprintln!("setup_tcp: Adding learner nodes");
+        // Add other nodes as learners and promote to voters
+        for (node_id, _config) in &configs {
+            if *node_id != bootstrap_id {
+                let addr = format!("{}:{}", 
+                    configs.get(node_id).unwrap().host,
+                    configs.get(node_id).unwrap().coordination_port
+                );
+                eprintln!("setup_tcp: Adding learner {} at {}", node_id, addr);
+                bootstrap.add_learner(*node_id, addr).await
+                    .map_err(|e| format!("Failed to add learner {}: {:?}", node_id, e))?;
+            }
+        }
+        
+        eprintln!("setup_tcp: Changing membership to include all nodes");
+        // Promote all to voters
+        let members: BTreeSet<u64> = configs.keys().cloned().collect();
+        bootstrap.change_membership(members, true).await
+            .map_err(|e| format!("Failed to change membership: {:?}", e))?;
+        
+        eprintln!("setup_tcp: Waiting for membership propagation");
+        // Wait for membership change to propagate
+        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+        
+        eprintln!("setup_tcp: Verifying cluster");
+        // Verify cluster
+        for node in &nodes {
+            let leader = node.current_leader().await;
+            if leader.is_none() {
+                return Err(format!("Node {} has no leader", node.node_id));
+            }
+            eprintln!("setup_tcp: Node {} sees leader {:?}", node.node_id, leader);
+        }
+        
+        eprintln!("setup_tcp: Cluster setup complete");
+        Ok(Self {
+            nodes,
+            configs,
+            bootstrap_id,
+            temp_dirs,  // Keep temp dirs alive for persistence
         })
     }
     

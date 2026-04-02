@@ -275,6 +275,11 @@ impl RaftClusterNode {
     pub async fn get_leader(&self) -> Option<u64> {
         self.raft.metrics().borrow().current_leader
     }
+    
+    /// Get current leader (alias for get_leader)
+    pub async fn current_leader(&self) -> Option<u64> {
+        self.get_leader().await
+    }
 
     /// Get current Raft term
     pub fn current_term(&self) -> u64 {
@@ -463,6 +468,7 @@ impl RaftClusterNode {
     /// The TCP server is started automatically to listen for incoming RPCs.
     pub async fn new_tcp(
         node_id: u64,
+        nodes: HashMap<u64, NodeConfig>,
         network_config: crate::network::tcp_network::TcpNetworkConfig,
         data_dir: impl AsRef<std::path::Path>,
     ) -> Result<(Self, crate::network::TcpNetworkFactory), String> {
@@ -520,7 +526,7 @@ impl RaftClusterNode {
             node_id,
             raft,
             storage,
-            nodes: HashMap::new(),
+            nodes,
             shutdown_tx,
             membership_tx,
             initialized: AtomicBool::new(false),
@@ -549,6 +555,17 @@ impl RaftClusterNode {
         ));
 
         Ok(())
+    }
+    
+    /// Change cluster membership (promote learners to voters)
+    pub async fn change_membership(
+        &self,
+        members: BTreeSet<u64>,
+        retain: bool,
+    ) -> Result<(), String> {
+        self.raft.change_membership(members, retain).await
+            .map(|_| ())
+            .map_err(|e| format!("Failed to change membership: {:?}", e))
     }
 
     /// Subscribe to membership events

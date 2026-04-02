@@ -76,6 +76,7 @@ n0-future = "0.3.2"
 bytes = "1.11.1"
 hex = "0.4.3"
 oxicode = { version = "0.2.1", features = ["serde"] }
+tracing-subscriber = "0.3.23"
 
 [dev-dependencies]
 tempfile = "3.27"
@@ -83,6 +84,13 @@ criterion = { version = "0.8.2", features = ["async_tokio"] }
 futures = "0.3"
 structopt = "0.3.26"
 quickcheck = "1.0"
+
+[features]
+default = []
+# Local in-memory tests (no network)
+local-tests = []
+# Integration tests with real network
+integration-tests = []
 
 [profile.release]
 opt-level = 3
