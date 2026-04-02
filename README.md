@@ -80,6 +80,25 @@ ddl = { git = "https://github.com/nrj5k/DumbDistributedLog", branch = "main" }
 
 DDL provides deployment scripts for running multi-node clusters across remote machines.
 
+### Configuration
+
+Before using the cluster scripts, create your configuration:
+
+```bash
+# Copy template
+cp scripts/cluster-config.sh.template scripts/cluster-config.local.sh
+
+# Edit configuration
+vim scripts/cluster-config.local.sh
+
+# Customize:
+# - REMOTE_DIR: Path to DDL code on remote nodes
+# - PORT_BASE: Base port for cluster communication
+# - DEFAULT_NODE_SPEC: Default cluster topology
+```
+
+Configuration is gitignored to allow per-environment customization.
+
 ### Quick Start (Single Machine Testing)
 
 For local testing without SSH, use the local cluster scripts:

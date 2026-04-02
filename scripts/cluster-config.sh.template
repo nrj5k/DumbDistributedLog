@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# DDL Cluster Configuration Template
+# Copy this to cluster-config.local.sh and customize
+
+# ============================================================================
+# Remote Environment Configuration
+# ============================================================================
+
+# Remote directory where DDL code exists (already built)
+REMOTE_DIR="${REMOTE_DIR:-/mnt/common/nrajesh/DumbDistributedLog}"
+
+# Data directory for persistent storage
+DATA_DIR="${DATA_DIR:-${REMOTE_DIR}/ddl-data}"
+
+# Path to ddl-node binary (relative to REMOTE_DIR)
+BINARY_PATH="${BINARY_PATH:-./target/release/ddl-node}"
+
+# ============================================================================
+# Network Configuration
+# ============================================================================
+
+# Base port for coordination (Raft RPCs)
+PORT_BASE="${PORT_BASE:-7000}"
+
+# Bootstrap node ID (first node in cluster)
+BOOTSTRAP_ID="${BOOTSTRAP_ID:-1}"
+
+# ============================================================================
+# Cluster Topology
+# ============================================================================
+
+# Default node specification (can be overridden via --spec)
+DEFAULT_NODE_SPEC="${DEFAULT_NODE_SPEC:-ares-comp-[13-16]}"
+
+# ============================================================================
+# Timing Configuration
+# ============================================================================
+
+# Seconds to wait for bootstrap initialization
+BOOTSTRAP_WAIT="${BOOTSTRAP_WAIT:-10}"
+
+# Seconds to wait after cluster start before verification
+CLUSTER_READY_WAIT="${CLUSTER_READY_WAIT:-5}"
+
+# ============================================================================
+# Logging Configuration
+# ============================================================================
+
+# Number of log lines to show in status
+LOG_LINES="${LOG_LINES:-10}"
+
+# ============================================================================
+# Advanced Configuration (rarely changed)
+# ============================================================================
+
+# SSH connection timeout (seconds)
+SSH_TIMEOUT="${SSH_TIMEOUT:-10}"
+
+# Process kill timeout (seconds)
+KILL_TIMEOUT="${KILL_TIMEOUT:-5}"
+
+# ============================================================================
+# Color Configuration
+# ============================================================================
+# Colors for terminal output (set to empty strings to disable)
+RED="${RED:-\033[0;31m}"
+GREEN="${GREEN:-\033[0;32m}"
+YELLOW="${YELLOW:-\033[1;33m}"
+BLUE="${BLUE:-\033[0;34m}"
+NC="${NC:-\033[0m}" # No Color
+
+# ============================================================================
+# Validation
+# ============================================================================
+
+# Function to validate configuration
+validate_config() {
+    local errors=0
+    
+    if [ ! -n "$REMOTE_DIR" ]; then
+        echo "ERROR: REMOTE_DIR must be set"
+        ((errors++))
+    fi
+    
+    if [ ! -n "$PORT_BASE" ]; then
+        echo "ERROR: PORT_BASE must be set"
+        ((errors++))
+    fi
+    
+    if [ "$PORT_BASE" -lt 1024 ] || [ "$PORT_BASE" -gt 65535 ]; then
+        echo "ERROR: PORT_BASE must be between 1024 and 65535"
+        ((errors++))
+    fi
+    
+    if [ "$BOOTSTRAP_ID" -lt 1 ]; then
+        echo "ERROR: BOOTSTRAP_ID must be >= 1"
+        ((errors++))
+    fi
+    
+    return $errors
+}
