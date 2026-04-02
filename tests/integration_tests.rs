@@ -57,14 +57,12 @@ fn test_cluster_partition_recovery() {
 
     // Copy partition A state
     {
-        let guard = states[0].read_recover().unwrap();
-        let _ = guard; // Just ensure we can read
+        let _guard = states[0].read_recover().unwrap();
     }
 
     // Copy partition B state
     {
-        let guard = states[2].read_recover().unwrap();
-        let _ = guard;
+        let _guard = states[2].read_recover().unwrap();
     }
 
     // Merge by applying all state to one canonical state
@@ -200,7 +198,7 @@ fn test_raft_consensus_with_majority() {
     let mut voting_nodes = 0;
 
     for state in &states {
-        let _ = (|| {
+        let _: Result<(), LockError> = (|| {
             let mut guard = state.write_recover("vote")?;
             guard.apply(&proposal);
             Ok(())
@@ -230,7 +228,7 @@ fn test_snapshot_transfer_graceful_error() {
     // Create multiple small topics that individually are fine
     // but their serialized form could be large
     for i in 0..100 {
-        let _ = (|| {
+        let _: Result<(), LockError> = (|| {
             let mut guard = ownership_state.write_recover("small_snap")?;
             guard.apply(&OwnershipCommand::ClaimTopic {
                 topic: format!("small_topic_{}", i),

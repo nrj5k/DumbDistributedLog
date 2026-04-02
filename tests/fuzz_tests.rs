@@ -3,6 +3,7 @@
 //! Tests for handling malformed RPC types, boundary messages,
 //! and property-based testing with QuickCheck.
 
+use ddl::cluster::lock_utils::LockError;
 use ddl::cluster::lock_utils::{RecoverableLock, SafeLock, Validate, ValidationError};
 use ddl::cluster::ownership_machine::{OwnershipCommand, OwnershipState};
 use quickcheck::TestResult;
@@ -46,22 +47,22 @@ fn test_fuzz_rpc_types() {
 fn test_fuzz_message_sizes() {
     let ownership_state = RecoverableLock::new(OwnershipState::new());
 
-    let test_cases = vec![
+    let test_cases: Vec<(usize, &str)> = vec![
         (0, "empty"),
         (1, "min_nonempty"),
-        (u16::MAX - 1, "max_usize-1"),
-        (u16::MAX, "max_usize"),
-        (u16::MAX + 1, "oversize"),
+        ((u16::MAX as usize) - 1, "max_usize-1"),
+        (u16::MAX as usize, "max_usize"),
+        ((u16::MAX as usize) + 1, "oversize"),
     ];
 
     for (size, desc) in test_cases {
         let topic = format!("fuzz_size_{}_{}", size, desc);
 
         // Try to create topic of different simulated sizes
-        let result = (|| {
+        let result: Result<(), LockError> = (|| {
             let mut guard = ownership_state.write_recover("fuzzy_size")?;
             guard.apply(&OwnershipCommand::ClaimTopic {
-                topic,
+                topic: topic.clone(),
                 node_id: 1,
                 timestamp: 1000,
             });
@@ -90,28 +91,31 @@ fn test_fuzz_concurrent_operations() {
     impl Arbitrary for RandomOp {
         fn arbitrary(g: &mut quickcheck::Gen) -> Self {
             Self {
-                op_type: g.arbitrary(),
-                node_id: g.arbitrary(),
-                value: g.arbitrary(),
+                op_type: u8::arbitrary(g),
+                node_id: u64::arbitrary(g),
+                value: u64::arbitrary(g),
             }
         }
     }
 
-    // Run QuickCheck test
-    quickcheck::quickcheck(|ops: Vec<RandomOp>| {
+    fn prop_random_ops(ops: Vec<RandomOp>) -> TestResult {
         let ownership_state = RecoverableLock::new(OwnershipState::new());
 
         for op in ops {
-            let mut guard = ownership_state.write_recover("fuzz_check").ok()?;
-            guard.apply(&OwnershipCommand::ClaimTopic {
-                topic: format!("fuzz_{}", op.node_id),
-                node_id: op.node_id,
-                timestamp: op.value,
-            });
+            if let Ok(mut guard) = ownership_state.write_recover("fuzz_check") {
+                guard.apply(&OwnershipCommand::ClaimTopic {
+                    topic: format!("fuzz_{}", op.node_id),
+                    node_id: op.node_id,
+                    timestamp: op.value,
+                });
+            }
         }
 
         TestResult::from_bool(true)
-    });
+    }
+
+    // Run QuickCheck test
+    quickcheck::quickcheck(prop_random_ops as fn(Vec<RandomOp>) -> TestResult);
 }
 
 /// Test all possible byte combinations for simple data
@@ -125,7 +129,7 @@ fn test_fuzz_byte_arrays() {
 
         let topic = format!("fuzz_bytes_{}", size);
 
-        let result = (|| {
+        let result: Result<(), LockError> = (|| {
             let mut guard = lock.write_recover("fuzz_byte_array")?;
             guard.value = size as u64;
             Ok(())
@@ -171,19 +175,19 @@ fn test_fuzz_lease_operations() {
     impl Arbitrary for LeaseOp {
         fn arbitrary(g: &mut quickcheck::Gen) -> Self {
             Self {
-                ttl: g.arbitrary_range(0..1000),
-                owner: g.arbitrary(),
-                timestamp: g.arbitrary(),
+                ttl: u64::arbitrary(g) % 1000,
+                owner: u64::arbitrary(g),
+                timestamp: u64::arbitrary(g),
             }
         }
     }
 
-    quickcheck::quickcheck(|ops: Vec<LeaseOp>| {
+    fn prop_lease_ops(ops: Vec<LeaseOp>) -> TestResult {
         let ownership_state = RecoverableLock::new(OwnershipState::new());
 
         for op in ops {
             // Create a lease with arbitrary parameters
-            let result = (|| {
+            let result: Result<(), LockError> = (|| {
                 let mut guard = ownership_state.write_recover("fuzz_lease")?;
 
                 // Cap TTL to avoid overflow
@@ -199,7 +203,9 @@ fn test_fuzz_lease_operations() {
         }
 
         TestResult::from_bool(true)
-    });
+    }
+
+    quickcheck::quickcheck(prop_lease_ops as fn(Vec<LeaseOp>) -> TestResult);
 }
 
 #[test]
@@ -217,11 +223,11 @@ fn test_fuzz_lease_expiration() {
     ];
 
     for (ttl, check) in test_cases {
-        let _result = (|| {
+        let _result: Result<(), LockError> = (|| {
             let mut guard = lock.write_recover("fuzz_expiration")?;
             let key = format!("expiration_{}", check);
 
-            let _ = guard.acquire_lease(key, 1, ttl, 1000);
+            let _ = guard.acquire_lease(key, 1, ttl as u64, 1000);
             Ok(())
         })();
     }

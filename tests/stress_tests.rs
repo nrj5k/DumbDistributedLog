@@ -51,6 +51,12 @@ impl Clone for ChaosState {
     }
 }
 
+impl Validate for ChaosState {
+    fn validate(&self) -> Result<(), ValidationError> {
+        Ok(())
+    }
+}
+
 #[test]
 fn test_high_concurrent_topic_creation() {
     // Test 100 threads creating topics concurrently
@@ -147,8 +153,10 @@ fn test_rapid_lease_operations() {
             // Acquire lease
             if let Ok(mut guard) = state_clone.write_recover("acquire_thread") {
                 guard.apply(&OwnershipCommand::AcquireLease {
-                    node_id: i as u64,
-                    ttl_seconds: 60,
+                    key: format!("lease_{}", i),
+                    owner: i as u64,
+                    lease_id: i as u64,
+                    ttl_secs: 60,
                     timestamp: 1000,
                 });
             }
@@ -156,8 +164,7 @@ fn test_rapid_lease_operations() {
             // Quick renew
             if let Ok(mut guard) = state_clone.write_recover("renew_thread") {
                 guard.apply(&OwnershipCommand::RenewLease {
-                    node_id: i as u64,
-                    ttl_seconds: 60,
+                    lease_id: i as u64,
                     timestamp: 2000,
                 });
             }
@@ -252,7 +259,7 @@ fn test_rapid_lock_recovery() {
         let lock_clone = Arc::clone(&lock);
         let handle = thread::spawn(move || {
             for _ in 0..100 {
-                let _ = lock_clone.write_recover("rapid_thread");
+                drop(lock_clone.write_recover("rapid_thread"));
             }
         });
         handles.push(handle);
