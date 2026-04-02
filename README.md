@@ -76,6 +76,220 @@ Add to your `Cargo.toml`:
 ddl = { git = "https://github.com/nrj5k/DumbDistributedLog", branch = "main" }
 ```
 
+## Multi-Node Cluster Deployment
+
+DDL provides deployment scripts for running multi-node clusters across remote machines.
+
+### Quick Start (Single Machine Testing)
+
+For local testing without SSH, use the local cluster scripts:
+
+```bash
+# Terminal 1: Bootstrap node
+./target/release/ddl-node --id 1 --port 7000 --bootstrap
+
+# Terminal 2: Joining node
+./target/release/ddl-node --id 2 --port 7001 --peers 1@localhost:7000
+
+# Terminal 3: Another joining node  
+./target/release/ddl-node --id 3 --port 7002 --peers 1@localhost:7000
+
+# Or use the local cluster script
+./scripts/start-cluster.sh 3 7000
+./scripts/stop-cluster.sh
+```
+
+### Production Deployment (Multiple Machines)
+
+For production clusters across multiple machines, use the remote deployment scripts:
+
+#### Prerequisites
+
+1. **SSH Access**: Passwordless SSH to all cluster nodes
+   ```bash
+   # Configure SSH for passwordless access
+   ssh-copy-id user@ares-comp-13
+   ssh-copy-id user@ares-comp-14
+   ssh-copy-id user@ares-comp-15
+   ssh-copy-id user@ares-comp-16
+   ```
+
+2. **Build Binary**: Build on all nodes or copy
+   ```bash
+   # On each node:
+   cargo build --release --bin ddl-node
+   
+   # Or copy from one node:
+   scp target/release/ddl-node user@ares-comp-13:~/ddl/target/release/
+   ```
+
+#### Deploy Cluster
+
+```bash
+# Deploy entire cluster in one command
+./scripts/deploy-cluster-remote.sh --spec "ares-comp-[13-16]" --port-base 7000 --user neeraj
+
+# This will:
+# 1. Copy deployment script to all nodes
+# 2. Start bootstrap node (ares-comp-13 by default)
+# 3. Wait for bootstrap to initialize
+# 4. Start joining nodes in parallel
+# 5. Monitor startup progress
+```
+
+#### Manual Deployment (Per Node)
+
+Or deploy manually on each node:
+
+```bash
+# On ares-comp-13 (bootstrap node):
+./scripts/start-cluster-remote.sh --spec "ares-comp-[13-16]" --port-base 7000
+
+# On ares-comp-14 (joining node):
+./scripts/start-cluster-remote.sh --spec "ares-comp-[13-16]" --port-base 7000
+
+# On ares-comp-15 (joining node):
+./scripts/start-cluster-remote.sh --spec "ares-comp-[13-16]" --port-base 7000
+
+# On ares-comp-16 (joining node):
+./scripts/start-cluster-remote.sh --spec "ares-comp-[13-16]" --port-base 7000
+```
+
+#### Cluster Management
+
+```bash
+# Stop all nodes
+./scripts/stop-cluster-remote.sh --spec "ares-comp-[13-16]" --user neeraj
+
+# Check cluster status (on each node)
+ssh neeraj@ares-comp-13 'ss -tlnp | grep ddl-node'
+ssh neeraj@ares-comp-14 'ss -tlnp | grep ddl-node'
+
+# View logs (on each node)
+ssh neeraj@ares-comp-13 'tail -f /tmp/ddl-logs/ddl-node-ares-comp-13.log'
+```
+
+### Node Specification Format
+
+The deployment scripts support flexible node specifications:
+
+| Format | Example | Result |
+|--------|---------|--------|
+| Range | `ares-comp-[13-16]` | ares-comp-13, ares-comp-14, ares-comp-15, ares-comp-16 |
+| Range | `node[1-5]` | node1, node2, node3, node4, node5 |
+| List | `host1,host2,host3` | host1, host2, host3 |
+| Single | `single-host` | single-host |
+
+### Port Allocation
+
+Default ports (configurable with `--port-base`):
+
+| Node ID | Coordination Port |
+|---------|-------------------|
+| 1 | 7000 |
+| 2 | 7001 |
+| 3 | 7002 |
+| 4 | 7003 |
+
+Each node uses `--port-base + node_id - 1` for coordination traffic.
+
+### Deployment Configuration
+
+```bash
+# Custom bootstrap ID (start from node 2)
+./scripts/deploy-cluster-remote.sh --spec "ares-comp-[13-16]" --bootstrap-id 2
+
+# Custom ports
+./scripts/deploy-cluster-remote.sh --spec "ares-comp-[13-16]" --port-base 8000
+
+# Custom data directory
+./scripts/start-cluster-remote.sh --spec "node[1-5]" --data-dir /data/ddl
+
+# Custom wait timeout (for slow networks)
+./scripts/deploy-cluster-remote.sh --spec "node[1-10]" --wait-timeout 60
+```
+
+### Verification
+
+```bash
+# Check processes are running
+for node in ares-comp-{13..16}; do
+    echo "Checking $node..."
+    ssh $node 'ps aux | grep ddl-node | grep -v grep'
+done
+
+# Check TCP connections
+for node in ares-comp-{13..16}; do
+    echo "Checking $node..."
+    ssh $node 'ss -tn | grep 7000'
+done
+
+# Check log files
+tail -f /tmp/ddl-logs/ddl-node-*.log
+```
+
+### Making Scripts Executable
+
+Before using the deployment scripts, make them executable:
+
+```bash
+chmod +x scripts/start-cluster-remote.sh
+chmod +x scripts/deploy-cluster-remote.sh
+chmod +x scripts/stop-cluster-remote.sh
+chmod +x scripts/status-cluster-remote.sh
+chmod +x scripts/cluster-utils.sh
+```
+
+### Available Deployment Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `start-cluster-remote.sh` | Start a single node (runs on each node) |
+| `deploy-cluster-remote.sh` | Deploy entire cluster via SSH |
+| `stop-cluster-remote.sh` | Stop all nodes in cluster |
+| `status-cluster-remote.sh` | Check cluster status |
+| `start-cluster.sh` | Local testing (single machine) |
+| `stop-cluster.sh` | Stop local cluster |
+| `cluster-utils.sh` | Shared utility functions |
+
+### Troubleshooting
+
+**SSH Connection Issues**
+```bash
+# Test connectivity
+ssh -o ConnectTimeout=5 user@ares-comp-13 'echo ok'
+
+# If passwordless not configured:
+ssh-copy-id user@ares-comp-13
+```
+
+**Port Conflicts**
+```bash
+# Check if ports are already in use
+netstat -tlnp | grep 7000
+
+# Kill existing processes
+pkill -f ddl-node
+```
+
+**Binary Not Found**
+```bash
+# Build the binary
+cargo build --release --bin ddl-node
+
+# Or specify custom path
+./scripts/start-cluster-remote.sh --binary /path/to/ddl-node
+```
+
+**Data Directory Issues**
+```bash
+# Clean up data directories
+rm -rf ./ddl-data/node-*
+
+# Or on remote nodes
+ssh user@node 'rm -rf ~/ddl-data/node-*'
+```
+
 ## Modes of Operation
 
 ### Standalone Mode
