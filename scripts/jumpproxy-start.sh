@@ -155,8 +155,8 @@ echo "  Port: ${BOOTSTRAP_PORT}"
 echo "  Data directory: ${BOOTSTRAP_DATA_DIR}"
 echo ""
 
-# Build bootstrap command
-BOOTSTRAP_CMD="cd ${REMOTE_DIR} && mkdir -p ${BOOTSTRAP_DATA_DIR} && nohup ${BINARY_PATH} --id ${BOOTSTRAP_ID} --port ${BOOTSTRAP_PORT} --host 0.0.0.0 --data-dir ${BOOTSTRAP_DATA_DIR} --bootstrap > ${BOOTSTRAP_DATA_DIR}/ddl-node.log 2>&1 &"
+# Build bootstrap command (subshell + </dev/null to prevent SSH hang)
+BOOTSTRAP_CMD="cd ${REMOTE_DIR} && mkdir -p ${BOOTSTRAP_DATA_DIR} && (nohup ${BINARY_PATH} --id ${BOOTSTRAP_ID} --port ${BOOTSTRAP_PORT} --host 0.0.0.0 --data-dir ${BOOTSTRAP_DATA_DIR} --bootstrap > ${BOOTSTRAP_DATA_DIR}/ddl-node.log 2>&1 </dev/null &)"
 
 echo "  Starting bootstrap node..."
 if ssh "${BOOTSTRAP_NODE}" "${BOOTSTRAP_CMD}" 2>/dev/null; then
@@ -197,8 +197,8 @@ for i in "${!NODES[@]}"; do
 	echo "  Peers: ${PEERS}"
 	echo "  Data directory: ${NODE_DATA_DIR}"
 
-	# Build node command
-	NODE_CMD="cd ${REMOTE_DIR} && mkdir -p ${NODE_DATA_DIR} && nohup ${BINARY_PATH} --id ${NODE_ID} --port ${NODE_PORT} --host 0.0.0.0 --data-dir ${NODE_DATA_DIR} --peers ${PEERS} > ${NODE_DATA_DIR}/ddl-node.log 2>&1 &"
+	# Build node command (subshell + </dev/null to prevent SSH hang)
+	NODE_CMD="cd ${REMOTE_DIR} && mkdir -p ${NODE_DATA_DIR} && (nohup ${BINARY_PATH} --id ${NODE_ID} --port ${NODE_PORT} --host 0.0.0.0 --data-dir ${NODE_DATA_DIR} --peers ${PEERS} > ${NODE_DATA_DIR}/ddl-node.log 2>&1 </dev/null &)"
 
 	# Start in background
 	(
