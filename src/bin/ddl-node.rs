@@ -18,12 +18,73 @@
 //!
 //! # With persistent storage
 //! cargo run --bin ddl-node -- --id 1 --port 7000 --bootstrap --data-dir ./data/node1
+//!
+//! # With client API enabled
+//! cargo run --bin ddl-node -- --id 1 --port 7000 --bootstrap --api-port 8080
+//! ```
+//!
+//! # Client API Protocol
+//!
+//! The client API uses a simple TCP line protocol. Connect with `nc` or `telnet`:
+//!
+//! ```bash
+//! nc localhost 8080
+//! ```
+//!
+//! ## Commands
+//!
+//! ### Cluster Operations
+//!
+//! - `CLAIM <topic>` - Claim topic ownership
+//!   - Returns: `OK` or `ERROR: <message>`
+//!
+//! - `RELEASE <topic>` - Release topic ownership
+//!   - Returns: `OK` or `ERROR: <message>`
+//!
+//! - `GET_OWNER <topic>` - Get topic owner
+//!   - Returns: `OK <node_id>` or `OK NONE` or `ERROR: <message>`
+//!
+//! - `PING` - Health check
+//!   - Returns: `PONG`
+//!
+//! - `QUIT` - Close connection
+//!   - Returns: (closes connection)
+//!
+//! ### Lease Operations
+//!
+//! - `ACQUIRE_LEASE <resource> <ttl_sec>` - Acquire lease with TTL in seconds
+//!   - Returns: `OK <owner> <expires_at>` or `ERROR: <message>`
+//!   - Example: `ACQUIRE_LEASE score:vertex:123 60`
+//!
+//! - `RELEASE_LEASE <resource>` - Release lease
+//!   - Returns: `OK` or `ERROR: <message>`
+//!
+//! ## Example Session
+//!
+//! ```text
+//! $ nc localhost 8080
+//! PING
+//! PONG
+//! CLAIM test.topic
+//! OK
+//! GET_OWNER test.topic
+//! OK 1
+//! ACQUIRE_LEASE resource:1 60
+//! OK 1 1699876543210
+//! RELEASE_LEASE resource:1
+//! OK
+//! RELEASE test.topic
+//! OK
+//! QUIT
 //! ```
 
 use ddl::cluster::RaftClusterNode;
 use ddl::network::TcpNetworkConfig;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::signal;
 
 /// Command-line arguments for the DDL node
@@ -40,6 +101,8 @@ struct Args {
     data_dir: PathBuf,
     /// Host address to bind to
     host: String,
+    /// API port for client connections (default: 8080, 0 to disable)
+    api_port: u16,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -52,6 +115,7 @@ fn parse_args() -> Result<Args, String> {
     let mut bootstrap = false;
     let mut data_dir = None;
     let mut host = "0.0.0.0".to_string();
+    let mut api_port: Option<u16> = None;
 
     while let Some(arg) = arg_iter.next() {
         match arg.as_str() {
@@ -106,6 +170,14 @@ fn parse_args() -> Result<Args, String> {
                     host = host_str.to_string();
                 }
             }
+            "--api-port" | "-a" => {
+                api_port = Some(
+                    arg_iter
+                        .next()
+                        .and_then(|s| s.parse::<u16>().ok())
+                        .ok_or("--api-port requires a numeric argument")?,
+                );
+            }
             "--help" => {
                 print_help();
                 std::process::exit(0);
@@ -124,6 +196,7 @@ fn parse_args() -> Result<Args, String> {
         dir.push(format!("ddl-node-{}", id));
         dir
     });
+    let api_port = api_port.unwrap_or(8080);
 
     Ok(Args {
         id,
@@ -132,6 +205,7 @@ fn parse_args() -> Result<Args, String> {
         bootstrap,
         data_dir,
         host,
+        api_port,
     })
 }
 
@@ -150,6 +224,7 @@ fn print_help() {
     println!("  --bootstrap, -b          Bootstrap a new cluster (first node only)");
     println!("  --data-dir, -d <PATH>    Data directory for persistence (default: /tmp/ddl-node-<id>)");
     println!("  --host <HOST>            Host address to bind (default: 0.0.0.0)");
+    println!("  --api-port, -a <NUM>     Client API port (default: 8080, 0 to disable)");
     println!("  --help                   Show this help message");
     println!();
     println!("EXAMPLES:");
@@ -162,6 +237,9 @@ fn print_help() {
     println!();
     println!("  # With persistent storage");
     println!("  ddl-node --id 1 --port 7000 --bootstrap --data-dir ./data/node1");
+    println!();
+    println!("  # With client API on custom port");
+    println!("  ddl-node --id 1 --port 7000 --bootstrap --api-port 9000");
 }
 
 #[tokio::main]
@@ -176,6 +254,7 @@ async fn main() -> Result<(), String> {
     println!("  Port: {}", args.port);
     println!("  Data directory: {}", args.data_dir.display());
     println!("  Bootstrap: {}", args.bootstrap);
+    println!("  API port: {}", args.api_port);
     println!("  Peers: {:?}", args.peers);
 
     // Create data directory if needed
@@ -224,6 +303,9 @@ async fn main() -> Result<(), String> {
         RaftClusterNode::new_tcp(args.id, nodes_config, network_config, &args.data_dir)
             .await
             .map_err(|e| format!("Failed to create TCP node: {}", e))?;
+
+    // Wrap in Arc for sharing between main and API server
+    let node = Arc::new(node);
 
     // Verify TCP server is listening
     println!("Verifying TCP server is listening...");
@@ -288,6 +370,38 @@ async fn main() -> Result<(), String> {
         None
     };
 
+    // Start client API server if enabled
+    if args.api_port > 0 {
+        let api_addr = format!("{}:{}", args.host, args.api_port);
+        let api_listener = TcpListener::bind(&api_addr)
+            .await
+            .map_err(|e| format!("Failed to bind API port {}: {}", args.api_port, e))?;
+
+        println!("Client API listening on {}", api_addr);
+
+        let node_for_api = Arc::clone(&node);
+        tokio::spawn(async move {
+            loop {
+                match api_listener.accept().await {
+                    Ok((stream, addr)) => {
+                        let node = Arc::clone(&node_for_api);
+                        tokio::spawn(async move {
+                            if let Err(e) = handle_client(stream, node).await {
+                                eprintln!("Client {} error: {}", addr, e);
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to accept API connection: {}", e);
+                        // Continue accepting other connections
+                    }
+                }
+            }
+        });
+    } else {
+        println!("Client API disabled (api-port = 0)");
+    }
+
     // Wait for shutdown signal
     println!("Node is running. Press Ctrl+C to shutdown.");
     let _ = signal::ctrl_c().await;
@@ -297,5 +411,127 @@ async fn main() -> Result<(), String> {
     node.shutdown().await?;
 
     println!("Node shutdown complete");
+    Ok(())
+}
+
+/// Handle a client TCP connection
+async fn handle_client(
+    stream: TcpStream,
+    node: Arc<RaftClusterNode>,
+) -> Result<(), String> {
+    let (reader, mut writer) = stream.into_split();
+    let reader = BufReader::new(reader);
+    let mut lines = reader.lines();
+
+    // Send welcome message
+    writer
+        .write_all(b"DDL Node Ready. Type HELP for commands.\n")
+        .await
+        .map_err(|e| format!("Write error: {}", e))?;
+
+    while let Ok(Some(line)) = lines.next_line().await {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        let command = parts.get(0).unwrap_or(&"");
+
+        let response = match *command {
+            "CLAIM" => {
+                if parts.len() != 2 {
+                    "ERROR: USAGE: CLAIM <topic>\n".to_string()
+                } else {
+                    let topic = parts[1];
+                    match node.claim_topic(topic).await {
+                        Ok(()) => format!("OK\n"),
+                        Err(e) => format!("ERROR: {}\n", e),
+                    }
+                }
+            }
+            "RELEASE" => {
+                if parts.len() != 2 {
+                    "ERROR: USAGE: RELEASE <topic>\n".to_string()
+                } else {
+                    let topic = parts[1];
+                    match node.release_topic(topic).await {
+                        Ok(()) => format!("OK\n"),
+                        Err(e) => format!("ERROR: {}\n", e),
+                    }
+                }
+            }
+            "GET_OWNER" => {
+                if parts.len() != 2 {
+                    "ERROR: USAGE: GET_OWNER <topic>\n".to_string()
+                } else {
+                    let topic = parts[1];
+                    match node.get_owner(topic).await {
+                        Ok(Some(owner)) => format!("OK {}\n", owner),
+                        Ok(None) => format!("OK NONE\n"),
+                        Err(e) => format!("ERROR: {}\n", e),
+                    }
+                }
+            }
+            "ACQUIRE_LEASE" => {
+                if parts.len() != 3 {
+                    "ERROR: USAGE: ACQUIRE_LEASE <resource> <ttl_sec>\n".to_string()
+                } else {
+                    let resource = parts[1];
+                    let ttl: u64 = parts[2]
+                        .parse()
+                        .map_err(|_| "Invalid TTL".to_string())
+                        .unwrap_or(0);
+
+                    if ttl == 0 {
+                        "ERROR: TTL must be > 0\n".to_string()
+                    } else {
+                        match node.acquire_lease(resource, ttl).await {
+                            Ok(lease) => format!("OK {} {}\n", lease.owner, lease.expires_at),
+                            Err(e) => format!("ERROR: {}\n", e),
+                        }
+                    }
+                }
+            }
+            "RELEASE_LEASE" => {
+                if parts.len() != 2 {
+                    "ERROR: USAGE: RELEASE_LEASE <resource>\n".to_string()
+                } else {
+                    let resource = parts[1];
+                    match node.release_lease(resource).await {
+                        Ok(()) => format!("OK\n"),
+                        Err(e) => format!("ERROR: {}\n", e),
+                    }
+                }
+            }
+            "PING" => "PONG\n".to_string(),
+            "HELP" => {
+                "Commands:\n\
+                 CLAIM <topic> - Claim topic ownership\n\
+                 RELEASE <topic> - Release topic ownership\n\
+                 GET_OWNER <topic> - Get topic owner\n\
+                 ACQUIRE_LEASE <resource> <ttl_sec> - Acquire lease\n\
+                 RELEASE_LEASE <resource> - Release lease\n\
+                 PING - Health check\n\
+                 HELP - Show this help\n\
+                 QUIT - Close connection\n"
+                    .to_string()
+            }
+            "QUIT" => {
+                writer
+                    .write_all(b"Bye!\n")
+                    .await
+                    .map_err(|e| format!("Write error: {}", e))?;
+                break;
+            }
+            _ => format!("ERROR: Unknown command '{}'. Type HELP for commands.\n", command),
+        };
+
+        writer
+            .write_all(response.as_bytes())
+            .await
+            .map_err(|e| format!("Write error: {}", e))?;
+    }
+
     Ok(())
 }
