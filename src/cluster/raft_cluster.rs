@@ -466,6 +466,8 @@ impl RaftClusterNode {
     ///
     /// This creates a TCP-based Raft network for production multi-node deployment.
     /// The TCP server is started automatically to listen for incoming RPCs.
+    ///
+    /// WAITS for TCP server to bind before returning, ensuring no silent failures.
     pub async fn new_tcp(
         node_id: u64,
         nodes: HashMap<u64, NodeConfig>,
@@ -474,6 +476,7 @@ impl RaftClusterNode {
     ) -> Result<(Self, crate::network::TcpNetworkFactory), String> {
         use crate::network::{TcpNetworkFactory, TcpRaftServer};
         use crate::cluster::raft_router::RaftMessageRouter;
+        use std::time::Duration;
 
         // Create storage with persistence
         let storage = AutoqueuesRaftStorage::with_persistence(data_dir)
@@ -508,19 +511,47 @@ impl RaftClusterNode {
         // Create message router for TCP handlers
         let router = Arc::new(RaftMessageRouter::new(Arc::clone(&raft)));
 
-        // Start TCP server in background
+        // Create oneshot channel for bind result propagation
+        let (bind_result_tx, bind_result_rx) = tokio::sync::oneshot::channel();
+
+        // Start TCP server in background with error propagation
         let bind_addr = network_config.bind_addr.clone();
+        let bind_addr_for_spawn = bind_addr.clone();
         tokio::spawn(async move {
-            match TcpRaftServer::bind(&bind_addr, node_id).await {
+            match TcpRaftServer::bind(&bind_addr_for_spawn, node_id).await {
                 Ok(server) => {
-                    info!("TCP Raft server started on {}", bind_addr);
+                    // Signal successful bind
+                    let _ = bind_result_tx.send(Ok(()));
+                    info!("TCP Raft server started on {}", bind_addr_for_spawn);
                     server.run(router).await;
                 }
                 Err(e) => {
+                    // Signal bind failure
+                    let _ = bind_result_tx.send(Err(e.clone()));
                     error!("Failed to start TCP server: {}", e);
                 }
             }
         });
+
+        // Wait for bind result with timeout
+        let bind_timeout = Duration::from_secs(5);
+        match tokio::time::timeout(bind_timeout, bind_result_rx).await {
+            Ok(Ok(Ok(()))) => {
+                info!("TCP server bind confirmed on {}", bind_addr);
+            }
+            Ok(Ok(Err(e))) => {
+                return Err(format!("TCP server bind failed on {}: {}", bind_addr, e));
+            }
+            Ok(Err(_)) => {
+                return Err(format!("TCP server bind channel dropped on {}", bind_addr));
+            }
+            Err(_) => {
+                return Err(format!(
+                    "Timeout waiting for TCP server to bind on {} (waited {:?})",
+                    bind_addr, bind_timeout
+                ));
+            }
+        }
 
         Ok((Self {
             node_id,

@@ -225,6 +225,30 @@ async fn main() -> Result<(), String> {
             .await
             .map_err(|e| format!("Failed to create TCP node: {}", e))?;
 
+    // Verify TCP server is listening
+    println!("Verifying TCP server is listening...");
+    let bind_addr = format!("{}:{}", args.host, args.port);
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    // Check if port is actually bound
+    match tokio::net::TcpStream::connect(&bind_addr).await {
+        Ok(_) => {
+            println!("✓ TCP server confirmed listening on {}", bind_addr);
+        }
+        Err(e) => {
+            eprintln!("✗ CRITICAL: TCP server NOT listening on {}", bind_addr);
+            eprintln!("✗ Error: {}", e);
+            eprintln!("\nPossible causes:");
+            eprintln!("  1. Port {} is already in use by another process", args.port);
+            eprintln!("  2. Address {} is not available on this machine", args.host);
+            eprintln!("  3. Permission denied (try ports > 1024 or run as root)");
+            eprintln!("\nTo diagnose:");
+            eprintln!("  ss -tlnp | grep {}", args.port);
+            eprintln!("  netstat -tlnp | grep {}", args.port);
+            return Err(format!("TCP server failed to bind: {}", e));
+        }
+    }
+
     // Initialize if bootstrap
     if args.bootstrap {
         println!("Initializing bootstrap node...");

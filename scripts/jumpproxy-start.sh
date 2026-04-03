@@ -140,6 +140,91 @@ echo "  Data directory: $DATA_DIR"
 echo "  Config file: $CONFIG_FILE"
 echo ""
 
+# ============================================================================
+# AGGRESSIVE CLEANUP - Kill ALL ddl-node processes
+# ============================================================================
+echo "================================================================================"
+echo "Phase 0: Cleanup Previous Processes"
+echo "================================================================================"
+echo ""
+
+CLEANUP_FAILED=false
+for node in "${NODES[@]}"; do
+	echo -n "  Checking $node... "
+
+	# Count processes
+	PROCESS_COUNT=$(ssh "$node" "pgrep -c ddl-node" 2>/dev/null || echo "0")
+
+	if [ "$PROCESS_COUNT" -gt 0 ]; then
+		echo -e "${YELLOW}Found $PROCESS_COUNT process(es)${NC}"
+		echo -n "  Killing processes on $node... "
+
+		# Try graceful kill first
+		ssh "$node" "pkill ddl-node" 2>/dev/null || true
+		sleep 1
+
+		# Force kill if still running
+		REMAINING=$(ssh "$node" "pgrep -c ddl-node" 2>/dev/null || echo "0")
+		if [ "$REMAINING" -gt 0 ]; then
+			echo -n "  Force killing... "
+			ssh "$node" "pkill -9 ddl-node; killall -9 ddl-node" 2>/dev/null || true
+			sleep 2
+		fi
+
+		# Verify cleanup
+		FINAL_COUNT=$(ssh "$node" "pgrep -c ddl-node" 2>/dev/null || echo "0")
+		if [ "$FINAL_COUNT" -gt 0 ]; then
+			echo -e "${RED}✗ FAILED (still $FINAL_COUNT process(es))${NC}"
+			CLEANUP_FAILED=true
+		else
+			echo -e "${GREEN}✓ Clean${NC}"
+		fi
+	else
+		echo -e "${GREEN}✓ Clean${NC}"
+	fi
+done
+
+if [ "$CLEANUP_FAILED" = true ]; then
+	echo ""
+	echo -e "${RED}ERROR: Could not clean up all processes${NC}"
+	echo "Please manually kill processes and try again:"
+	echo ""
+	for node in "${NODES[@]}"; do
+		echo "  ssh $node 'ps aux | grep ddl-node'"
+	done
+	exit 1
+fi
+
+# Wait for ports to be released
+echo ""
+echo "Waiting for ports to be released..."
+sleep 3
+
+# Verify ports are free
+echo ""
+echo "Verifying ports are free..."
+PORT_CONFLICT=false
+for node in "${NODES[@]}"; do
+	for port_offset in $(seq 0 $((NODE_COUNT - 1))); do
+		port=$((PORT_BASE + port_offset))
+		if ssh "$node" "ss -tlnp 2>/dev/null | grep -q :$port" 2>/dev/null; then
+			echo -e "${RED}ERROR: Port $port still in use on $node${NC}"
+			ssh "$node" "sudo lsof -i :$port" 2>/dev/null || true
+			PORT_CONFLICT=true
+		fi
+	done
+done
+
+if [ "$PORT_CONFLICT" = true ]; then
+	echo ""
+	echo -e "${RED}ERROR: Port conflicts detected${NC}"
+	echo "Please kill processes using these ports and try again."
+	exit 1
+fi
+
+echo -e "${GREEN}✓ All ports verified free${NC}"
+echo ""
+
 # Start bootstrap node first (synchronously)
 echo -e "${BLUE}================================================================================${NC}"
 echo -e "${BLUE}Phase 1: Starting Bootstrap Node${NC}"
@@ -166,10 +251,45 @@ else
 	exit 1
 fi
 
-# Wait for bootstrap node to initialize
+# Verify bootstrap started successfully
 echo ""
 echo "Waiting for bootstrap node to initialize..."
-sleep "$BOOTSTRAP_WAIT"
+
+MAX_RETRIES=30
+RETRY_COUNT=0
+BOOTSTRAP_READY=false
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+	RETRY_COUNT=$((RETRY_COUNT + 1))
+
+	# Check if process is running
+	if ! ssh "${BOOTSTRAP_NODE}" "pgrep -f ddl-node" >/dev/null 2>&1; then
+		echo -e "  ${RED}✗ Bootstrap process died!${NC}"
+		echo "Check logs:"
+		echo "  ssh ${BOOTSTRAP_NODE} 'tail -50 ${BOOTSTRAP_DATA_DIR}/ddl-node.log'"
+		exit 1
+	fi
+
+	# Check if port is listening
+	if ssh "${BOOTSTRAP_NODE}" "ss -tlnp 2>/dev/null | grep -q :${BOOTSTRAP_PORT}" 2>/dev/null; then
+		echo -e "  ${GREEN}✓ Bootstrap is listening on port ${BOOTSTRAP_PORT}${NC}"
+		BOOTSTRAP_READY=true
+		break
+	fi
+
+	if [ $((RETRY_COUNT % 5)) -eq 0 ]; then
+		echo "  Retry $RETRY_COUNT/$MAX_RETRIES - waiting for port bind..."
+	fi
+
+	sleep 1
+done
+
+if [ "$BOOTSTRAP_READY" = false ]; then
+	echo -e "  ${RED}✗ Bootstrap failed to bind port within ${MAX_RETRIES} seconds${NC}"
+	echo "Check logs:"
+	echo "  ssh ${BOOTSTRAP_NODE} 'tail -50 ${BOOTSTRAP_DATA_DIR}/ddl-node.log'"
+	exit 1
+fi
 
 # Start remaining nodes in parallel
 echo ""
