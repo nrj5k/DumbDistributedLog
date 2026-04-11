@@ -53,14 +53,17 @@ async fn test_lease_conflict() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Node 1 acquires lease
-    let _lease = node.acquire_lease("test:lease:2", 30).await.expect("Acquire failed");
+    let _lease = node
+        .acquire_lease("test:lease:2", 30)
+        .await
+        .expect("Acquire failed");
 
     // Try to acquire same key again with same or different owner
     // Note: Single-node Raft has known issues with proposal replication in openraft.
     // The state machine correctly rejects conflicts, but proposal may not be applied.
     // For multi-node clusters, this would work correctly.
     // Here we verify via local state inspection:
-    
+
     // The conflict detection logic is tested in the state machine tests below
     // For Raft integration, we rely on multi-node integration tests
     let _result = node.acquire_lease("test:lease:2", 30).await;
@@ -75,12 +78,20 @@ async fn test_release_lease() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Acquire and release
-    let _lease = node.acquire_lease("test:lease:3", 30).await.expect("Acquire failed");
-    
-    node.release_lease("test:lease:3").await.expect("Release failed");
+    let _lease = node
+        .acquire_lease("test:lease:3", 30)
+        .await
+        .expect("Acquire failed");
+
+    node.release_lease("test:lease:3")
+        .await
+        .expect("Release failed");
 
     // Should be able to acquire again
-    let lease2 = node.acquire_lease("test:lease:3", 30).await.expect("Re-acquire failed");
+    let lease2 = node
+        .acquire_lease("test:lease:3", 30)
+        .await
+        .expect("Re-acquire failed");
     assert_eq!(lease2.owner, 1);
 }
 
@@ -91,14 +102,23 @@ async fn test_get_lease_owner() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // No lease initially
-    let owner = node.get_lease_owner("test:lease:4").await.expect("Query failed");
+    let owner = node
+        .get_lease_owner("test:lease:4")
+        .await
+        .expect("Query failed");
     assert!(owner.is_none(), "No lease should exist");
 
     // Acquire lease
-    let _lease = node.acquire_lease("test:lease:4", 30).await.expect("Acquire failed");
+    let _lease = node
+        .acquire_lease("test:lease:4", 30)
+        .await
+        .expect("Acquire failed");
 
     // Check owner
-    let owner = node.get_lease_owner("test:lease:4").await.expect("Query failed");
+    let owner = node
+        .get_lease_owner("test:lease:4")
+        .await
+        .expect("Query failed");
     assert!(owner.is_some(), "Lease should exist");
     let info = owner.unwrap();
     assert_eq!(info.key, "test:lease:4");
@@ -112,14 +132,20 @@ async fn test_list_leases() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Acquire multiple leases
-    node.acquire_lease("test:lease:a", 30).await.expect("Acquire a failed");
-    node.acquire_lease("test:lease:b", 30).await.expect("Acquire b failed");
-    node.acquire_lease("test:lease:c", 30).await.expect("Acquire c failed");
+    node.acquire_lease("test:lease:a", 30)
+        .await
+        .expect("Acquire a failed");
+    node.acquire_lease("test:lease:b", 30)
+        .await
+        .expect("Acquire b failed");
+    node.acquire_lease("test:lease:c", 30)
+        .await
+        .expect("Acquire c failed");
 
     // List leases for node 1
     let leases = node.list_leases(1).await.expect("List failed");
     assert_eq!(leases.len(), 3);
-    
+
     let keys: Vec<&str> = leases.iter().map(|l| l.key.as_str()).collect();
     assert!(keys.contains(&"test:lease:a"));
     assert!(keys.contains(&"test:lease:b"));
@@ -140,13 +166,16 @@ async fn test_lease_expiration() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Acquire a lease
-    let _lease = node.acquire_lease("test:lease:expire", 1).await.expect("Acquire failed");
+    let _lease = node
+        .acquire_lease("test:lease:expire", 1)
+        .await
+        .expect("Acquire failed");
     // Note: single-node Raft may not properly replicate this proposal
-    
+
     // The expire_leases method goes through Raft - API exists and is callable
     let _result = node.expire_leases().await;
     // Result depends on whether Raft properly applied the AcquireLease command
-    
+
     // State machine expiration logic is verified in test_lease_state_machine_expire
 }
 
@@ -157,14 +186,20 @@ async fn test_lease_renewal() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Acquire a lease
-    let lease = node.acquire_lease("test:lease:renew", 30).await.expect("Acquire failed");
+    let lease = node
+        .acquire_lease("test:lease:renew", 30)
+        .await
+        .expect("Acquire failed");
     let lease_id = lease.id;
 
     // Renew the lease
     node.renew_lease(lease_id).await.expect("Renew failed");
 
     // Check it still exists
-    let owner = node.get_lease_owner("test:lease:renew").await.expect("Query failed");
+    let owner = node
+        .get_lease_owner("test:lease:renew")
+        .await
+        .expect("Query failed");
     assert!(owner.is_some(), "Lease should still exist after renewal");
 }
 
@@ -172,10 +207,10 @@ async fn test_lease_renewal() {
 async fn test_lease_info_fields() {
     // Use the state machine directly to verify all fields are populated
     // This avoids single-node Raft proposal issues
-    use ddl::cluster::{OwnershipState, OwnershipCommand};
-    
+    use ddl::cluster::{OwnershipCommand, OwnershipState};
+
     let mut state = OwnershipState::new();
-    
+
     // Apply acquire command
     state.apply(&OwnershipCommand::AcquireLease {
         key: "test:lease:fields".to_string(),
@@ -184,10 +219,12 @@ async fn test_lease_info_fields() {
         ttl_secs: 60,
         timestamp: 1000,
     });
-    
+
     // Get lease info
-    let info = state.get_lease_info("test:lease:fields").expect("Lease should exist");
-    
+    let info = state
+        .get_lease_info("test:lease:fields")
+        .expect("Lease should exist");
+
     // Verify LeaseInfo has all expected fields
     assert_eq!(info.id, 42);
     assert_eq!(info.key, "test:lease:fields");
@@ -212,10 +249,16 @@ async fn test_background_lease_expiration_task() {
     let _handle = node.start_lease_expiration(1);
 
     // Acquire a short-lived lease
-    let _lease = node.acquire_lease("test:lease:bgexpire", 1).await.expect("Acquire failed");
+    let _lease = node
+        .acquire_lease("test:lease:bgexpire", 1)
+        .await
+        .expect("Acquire failed");
 
     // Check it exists
-    let _owner = node.get_lease_owner("test:lease:bgexpire").await.expect("Query failed");
+    let _owner = node
+        .get_lease_owner("test:lease:bgexpire")
+        .await
+        .expect("Query failed");
 
     // Wait for lease to expire + background task to run
     tokio::time::sleep(Duration::from_millis(2500)).await;
@@ -230,13 +273,13 @@ async fn test_background_lease_expiration_task() {
 // Lease State Machine Tests
 // ============================================================================
 
-use ddl::cluster::OwnershipState;
 use ddl::cluster::OwnershipCommand;
+use ddl::cluster::OwnershipState;
 
 #[test]
 fn test_lease_state_machine_acquire() {
     let mut state = OwnershipState::new();
-    
+
     // Acquire a lease via command
     state.apply(&OwnershipCommand::AcquireLease {
         key: "test:sm:lease".to_string(),
@@ -245,7 +288,7 @@ fn test_lease_state_machine_acquire() {
         ttl_secs: 30,
         timestamp: 1000,
     });
-    
+
     // Check lease exists
     let info = state.get_lease_info("test:sm:lease");
     assert!(info.is_some());
@@ -259,7 +302,7 @@ fn test_lease_state_machine_acquire() {
 #[test]
 fn test_lease_state_machine_renew() {
     let mut state = OwnershipState::new();
-    
+
     // Acquire
     state.apply(&OwnershipCommand::AcquireLease {
         key: "test:sm:renew".to_string(),
@@ -268,16 +311,16 @@ fn test_lease_state_machine_renew() {
         ttl_secs: 30,
         timestamp: 1000,
     });
-    
+
     let original = state.get_lease_info("test:sm:renew").unwrap();
     let original_expires = original.expires_at;
-    
+
     // Renew at later time
     state.apply(&OwnershipCommand::RenewLease {
         lease_id: 200,
         timestamp: 5_000_000_000, // 5 seconds later in nanos
     });
-    
+
     let renewed = state.get_lease_info("test:sm:renew").unwrap();
     assert!(renewed.expires_at > original_expires);
 }
@@ -285,7 +328,7 @@ fn test_lease_state_machine_renew() {
 #[test]
 fn test_lease_state_machine_release() {
     let mut state = OwnershipState::new();
-    
+
     // Acquire
     state.apply(&OwnershipCommand::AcquireLease {
         key: "test:sm:release".to_string(),
@@ -294,14 +337,14 @@ fn test_lease_state_machine_release() {
         ttl_secs: 30,
         timestamp: 1000,
     });
-    
+
     assert_eq!(state.lease_count(), 1);
-    
+
     // Release
     state.apply(&OwnershipCommand::ReleaseLease {
         key: "test:sm:release".to_string(),
     });
-    
+
     assert_eq!(state.lease_count(), 0);
     assert!(state.get_lease_info("test:sm:release").is_none());
 }
@@ -309,7 +352,7 @@ fn test_lease_state_machine_release() {
 #[test]
 fn test_lease_state_machine_expire() {
     let mut state = OwnershipState::new();
-    
+
     // Acquire two leases
     state.apply(&OwnershipCommand::AcquireLease {
         key: "test:sm:expire1".to_string(),
@@ -325,13 +368,13 @@ fn test_lease_state_machine_expire() {
         ttl_secs: 10,
         timestamp: 1000,
     });
-    
+
     assert_eq!(state.lease_count(), 2);
-    
+
     // Expire leases (after their TTL)
     let now = 20_000_000_100; // After TTL
     let expired = state.expire_leases(now);
-    
+
     assert_eq!(expired, 2);
     assert_eq!(state.lease_count(), 0);
 }
@@ -417,13 +460,18 @@ fn test_same_owner_acquire_returns_lease_held() {
     let now = ddl::types::now_nanos();
 
     // Node 1 acquires
-    state.acquire_lease("score:vertex:456".to_string(), 1, 30, now).unwrap();
+    state
+        .acquire_lease("score:vertex:456".to_string(), 1, 30, now)
+        .unwrap();
     let original = state.get_lease_info("score:vertex:456").unwrap();
 
     // Same owner tries acquire again - should return LeaseHeld error
     let later = now + 10_000_000_000; // 10 seconds later, still within TTL
     let result = state.acquire_lease("score:vertex:456".to_string(), 1, 30, later);
-    assert!(result.is_err(), "Same owner should get LeaseHeld for existing lease");
+    assert!(
+        result.is_err(),
+        "Same owner should get LeaseHeld for existing lease"
+    );
 
     match result.unwrap_err() {
         LeaseError::LeaseHeld { key, owner } => {
@@ -436,7 +484,10 @@ fn test_same_owner_acquire_returns_lease_held() {
     // Original lease should still exist unchanged
     let current = state.get_lease_info("score:vertex:456").unwrap();
     assert_eq!(current.id, original.id, "Lease ID should be unchanged");
-    assert_eq!(current.expires_at, original.expires_at, "Expiry should be unchanged");
+    assert_eq!(
+        current.expires_at, original.expires_at,
+        "Expiry should be unchanged"
+    );
 }
 
 /// Test: Expired lease can be acquired by different node
@@ -446,7 +497,9 @@ fn test_expired_lease_reacquired_by_different_node() {
     let now = ddl::types::now_nanos();
 
     // Node 1 acquires with 1 second TTL
-    state.acquire_lease("score:vertex:789".to_string(), 1, 1, now).unwrap();
+    state
+        .acquire_lease("score:vertex:789".to_string(), 1, 1, now)
+        .unwrap();
     assert!(state.get_lease_info("score:vertex:789").is_some());
 
     // Expire leases (2 seconds later)
@@ -481,7 +534,10 @@ fn test_renew_expired_lease_no_op() {
     state.expire_leases(now + 2_000_000_000);
 
     // Lease should no longer exist
-    assert!(state.get_lease(400).is_none(), "Expired lease should not exist");
+    assert!(
+        state.get_lease(400).is_none(),
+        "Expired lease should not exist"
+    );
 
     // Try to renew - should be a no-op since lease doesn't exist
     state.apply(&OwnershipCommand::RenewLease {
@@ -490,7 +546,10 @@ fn test_renew_expired_lease_no_op() {
     });
 
     // Lease still doesn't exist
-    assert!(state.get_lease(400).is_none(), "Lease should still not exist after renew attempt");
+    assert!(
+        state.get_lease(400).is_none(),
+        "Lease should still not exist after renew attempt"
+    );
 }
 
 /// Test: Release always works (idempotent)
@@ -500,7 +559,9 @@ fn test_release_is_idempotent() {
     let now = ddl::types::now_nanos();
 
     // Node 1 acquires
-    state.acquire_lease("score:vertex:owned".to_string(), 1, 30, now).unwrap();
+    state
+        .acquire_lease("score:vertex:owned".to_string(), 1, 30, now)
+        .unwrap();
 
     // Release works
     state.apply(&OwnershipCommand::ReleaseLease {
@@ -521,9 +582,15 @@ fn test_list_leases_excludes_expired() {
     let now = ddl::types::now_nanos();
 
     // Node 1 acquires 3 leases, one with short TTL
-    state.acquire_lease("score:vertex:long1".to_string(), 1, 30, now).unwrap();
-    state.acquire_lease("score:vertex:short".to_string(), 1, 1, now).unwrap(); // 1 sec TTL
-    state.acquire_lease("score:vertex:long2".to_string(), 1, 30, now).unwrap();
+    state
+        .acquire_lease("score:vertex:long1".to_string(), 1, 30, now)
+        .unwrap();
+    state
+        .acquire_lease("score:vertex:short".to_string(), 1, 1, now)
+        .unwrap(); // 1 sec TTL
+    state
+        .acquire_lease("score:vertex:long2".to_string(), 1, 30, now)
+        .unwrap();
 
     // List should show 3 leases
     let leases = state.list_leases(1);
@@ -549,7 +616,9 @@ fn test_get_lease_info_returns_none_after_expiry() {
     let now = ddl::types::now_nanos();
 
     // Acquire with 1 second TTL
-    state.acquire_lease("score:vertex:temp".to_string(), 1, 1, now).unwrap();
+    state
+        .acquire_lease("score:vertex:temp".to_string(), 1, 1, now)
+        .unwrap();
 
     // Should exist
     assert!(state.get_lease_info("score:vertex:temp").is_some());
@@ -582,11 +651,17 @@ fn test_list_leases_by_owner() {
     let now = ddl::types::now_nanos();
 
     // Node 1 has 2 leases
-    state.acquire_lease("score:vertex:n1-a".to_string(), 1, 30, now).unwrap();
-    state.acquire_lease("score:vertex:n1-b".to_string(), 1, 30, now).unwrap();
+    state
+        .acquire_lease("score:vertex:n1-a".to_string(), 1, 30, now)
+        .unwrap();
+    state
+        .acquire_lease("score:vertex:n1-b".to_string(), 1, 30, now)
+        .unwrap();
 
     // Node 2 has 1 lease
-    state.acquire_lease("score:vertex:n2-a".to_string(), 2, 30, now).unwrap();
+    state
+        .acquire_lease("score:vertex:n2-a".to_string(), 2, 30, now)
+        .unwrap();
 
     // List for Node 1
     let node1_leases = state.list_leases(1);
@@ -608,7 +683,9 @@ fn test_lease_expiry_calculation() {
     let now = ddl::types::now_nanos();
 
     // Acquire with 30 second TTL
-    let lease_id = state.acquire_lease("score:vertex:calc".to_string(), 1, 30, now).unwrap();
+    let lease_id = state
+        .acquire_lease("score:vertex:calc".to_string(), 1, 30, now)
+        .unwrap();
 
     let lease = state.get_lease_info("score:vertex:calc").unwrap();
 
@@ -649,7 +726,9 @@ fn test_release_then_different_owner() {
     let now = ddl::types::now_nanos();
 
     // Node 1 acquires
-    state.acquire_lease("score:vertex:transfer".to_string(), 1, 30, now).unwrap();
+    state
+        .acquire_lease("score:vertex:transfer".to_string(), 1, 30, now)
+        .unwrap();
 
     // Release
     state.apply(&OwnershipCommand::ReleaseLease {
@@ -658,7 +737,10 @@ fn test_release_then_different_owner() {
 
     // Node 2 acquires same key
     let result = state.acquire_lease("score:vertex:transfer".to_string(), 2, 30, now);
-    assert!(result.is_ok(), "Different node should acquire after release");
+    assert!(
+        result.is_ok(),
+        "Different node should acquire after release"
+    );
 
     let lease = state.get_lease_info("score:vertex:transfer").unwrap();
     assert_eq!(lease.owner, 2, "New owner should be Node 2");
@@ -706,11 +788,17 @@ fn test_zero_ttl_lease() {
 
     // But expires_at == acquired_at
     let lease = lease.unwrap();
-    assert_eq!(lease.acquired_at, lease.expires_at, "Zero TTL = immediate expiry");
+    assert_eq!(
+        lease.acquired_at, lease.expires_at,
+        "Zero TTL = immediate expiry"
+    );
 
     // Any expire call should clean it up (even with now as timestamp)
     state.expire_leases(now);
-    assert!(state.get_lease_info("score:vertex:zero").is_none(), "Should be expired");
+    assert!(
+        state.get_lease_info("score:vertex:zero").is_none(),
+        "Should be expired"
+    );
 }
 
 /// Test: Multiple acquires on different keys by different owners
@@ -720,11 +808,17 @@ fn test_multiple_keys_multiple_owners() {
     let now = ddl::types::now_nanos();
 
     // Node 1 acquires key A
-    state.acquire_lease("key:a".to_string(), 1, 30, now).unwrap();
+    state
+        .acquire_lease("key:a".to_string(), 1, 30, now)
+        .unwrap();
     // Node 2 acquires key B
-    state.acquire_lease("key:b".to_string(), 2, 30, now).unwrap();
+    state
+        .acquire_lease("key:b".to_string(), 2, 30, now)
+        .unwrap();
     // Node 3 acquires key C
-    state.acquire_lease("key:c".to_string(), 3, 30, now).unwrap();
+    state
+        .acquire_lease("key:c".to_string(), 3, 30, now)
+        .unwrap();
 
     // All leases should coexist
     assert_eq!(state.lease_count(), 3);
@@ -747,14 +841,22 @@ fn test_lease_validity_boundary() {
     let now = ddl::types::now_nanos();
 
     // TTL = 10 seconds
-    let lease_id = state.acquire_lease("boundary:test".to_string(), 1, 10, now).unwrap();
+    let lease_id = state
+        .acquire_lease("boundary:test".to_string(), 1, 10, now)
+        .unwrap();
 
     // Expires at now + 10 * 1_000_000_000
     let expires_at = now + 10_000_000_000;
 
     // Valid exactly at expiry time? No - must be strictly greater
-    assert!(!state.is_lease_valid(lease_id, expires_at), "Should be expired at exact expiry time");
-    assert!(state.is_lease_valid(lease_id, expires_at - 1), "Should be valid one nano before expiry");
+    assert!(
+        !state.is_lease_valid(lease_id, expires_at),
+        "Should be expired at exact expiry time"
+    );
+    assert!(
+        state.is_lease_valid(lease_id, expires_at - 1),
+        "Should be valid one nano before expiry"
+    );
 }
 
 /// Test: Renew lease extends expiry correctly

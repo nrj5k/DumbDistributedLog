@@ -3,7 +3,7 @@
 //! This file contains integration tests for the DdlDistributed implementation,
 //! covering concurrent operations, backpressure modes, and subscription behavior.
 
-use ddl::traits::ddl::{BackpressureMode, DDL, DdlConfig, DdlError};
+use ddl::traits::ddl::{BackpressureMode, DdlConfig, DdlError, DDL};
 use ddl::DdlDistributed;
 use std::sync::Arc;
 use std::time::Duration;
@@ -233,12 +233,12 @@ async fn test_backpressure_error() {
 
     // Third push should fail with BufferFull
     let result3 = ddl.push(topic, b"entry3".to_vec()).await;
-    
+
     // Note: This may not fail immediately as backpressure affects subscribers,
     // not the push itself. The error would be from subscriber buffer being full.
     // For Error mode, push may fail with SubscriberBufferFull
     match result3 {
-        Ok(_) => {} // OK - subscriber buffer wasn't full yet
+        Ok(_) => {}                                  // OK - subscriber buffer wasn't full yet
         Err(DdlError::SubscriberBufferFull(_)) => {} // Expected error
         Err(e) => panic!("Unexpected error: {:?}", e),
     }
@@ -292,7 +292,8 @@ async fn test_buffer_full_returns_error() {
     // ACT: Push entries until buffer is full
     let mut ids = vec![];
     for i in 0..8 {
-        let id = ddl.push(topic, format!("entry_{}", i).into_bytes())
+        let id = ddl
+            .push(topic, format!("entry_{}", i).into_bytes())
             .await
             .unwrap();
         ids.push(id);
@@ -300,7 +301,7 @@ async fn test_buffer_full_returns_error() {
 
     // ASSERT: Next push should fail with BufferFull
     let result = ddl.push(topic, b"overflow".to_vec()).await;
-    
+
     match result {
         Err(DdlError::BufferFull(_)) => {} // Expected error
         Ok(id) => panic!("Expected BufferFull error, got success with id: {}", id),
@@ -318,10 +319,7 @@ async fn test_buffer_full_returns_error() {
 fn test_owns_topic() {
     // ARRANGE: Create DDL with specific owned topics
     let mut config = DdlConfig::default();
-    config.owned_topics = vec![
-        "metrics.cpu".to_string(),
-        "metrics.memory".to_string(),
-    ];
+    config.owned_topics = vec!["metrics.cpu".to_string(), "metrics.memory".to_string()];
     let ddl = DdlDistributed::new_standalone(config);
 
     // ASSERT: Verify ownership checks
@@ -376,7 +374,7 @@ async fn test_topic_limit_exceeded() {
 
     // ASSERT: 4th topic should fail
     let result = ddl.push("topic4", b"data".to_vec()).await;
-    
+
     match result {
         Err(DdlError::TopicLimitExceeded { max, current }) => {
             assert_eq!(max, 3);
@@ -433,13 +431,13 @@ async fn test_concurrent_push_subscribe_operations() {
 
     // Wait for producer to finish
     let producer_ids = handle_producer.await.unwrap();
-    
+
     // Wait for subscriber to finish
     let subscriber_ids = handle_subscriber.await.unwrap();
 
     // ASSERT: Producer pushed entries
     assert_eq!(producer_ids.len(), 50);
-    
+
     // Subscriber received some entries
     assert!(!subscriber_ids.is_empty());
     assert!(subscriber_ids.len() <= producer_ids.len());
@@ -487,7 +485,7 @@ async fn test_stream_acknowledgment() {
 
     // ACT: Push and acknowledge entry
     let id = ddl.push(topic, b"ack_test".to_vec()).await.unwrap();
-    
+
     // Stream receives entry
     let received = stream.next().unwrap();
     assert_eq!(received.id, id);

@@ -68,6 +68,38 @@ pub enum GossipMessage {
         topic: String,
         owner_node_id: Option<NodeId>,
     },
+
+    /// Peer-to-peer metric request
+    PeerRequest {
+        request_id: u128,
+        source_node: u64,
+        target_node: u64,
+        metric_key: String,
+        #[serde(default)]
+        payload: Vec<u8>,
+        timestamp: u64,
+    },
+
+    /// Peer-to-peer metric response
+    PeerResponse {
+        request_id: u128,
+        source_node: u64,
+        success: bool,
+        #[serde(default)]
+        payload: Vec<u8>,
+        timestamp: u64,
+        #[serde(default)]
+        error_message: Option<String>,
+    },
+
+    /// Service advertisement for peer capabilities
+    ServiceAdvertise {
+        node_id: u64,
+        #[serde(default)]
+        metrics_offered: Vec<String>,
+        address: String,
+        timestamp: u64,
+    },
 }
 
 /// Topic ownership record

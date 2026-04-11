@@ -152,7 +152,10 @@ async fn test_ddl_distributed_with_raft_standalone() {
     let ddl = DdlDistributed::new_standalone(config);
 
     // Standalone mode: owns all topics
-    assert!(ddl.owns_topic("any-topic"), "Standalone should own all topics");
+    assert!(
+        ddl.owns_topic("any-topic"),
+        "Standalone should own all topics"
+    );
 
     // Push should work
     let id = ddl.push("test", vec![1, 2, 3]).await.expect("Push failed");
@@ -305,8 +308,7 @@ fn test_ownership_command_serialization() {
     let json = serde_json::to_string(&cmd).expect("Serialization failed");
 
     // Deserialize
-    let decoded: OwnershipCommand =
-        serde_json::from_str(&json).expect("Deserialization failed");
+    let decoded: OwnershipCommand = serde_json::from_str(&json).expect("Deserialization failed");
 
     match decoded {
         OwnershipCommand::ClaimTopic {
@@ -330,8 +332,7 @@ fn test_ownership_command_release_serialization() {
     };
 
     let json = serde_json::to_string(&cmd).expect("Serialization failed");
-    let decoded: OwnershipCommand =
-        serde_json::from_str(&json).expect("Deserialization failed");
+    let decoded: OwnershipCommand = serde_json::from_str(&json).expect("Deserialization failed");
 
     match decoded {
         OwnershipCommand::ReleaseTopic { topic, node_id } => {
@@ -351,8 +352,7 @@ fn test_ownership_command_transfer_serialization() {
     };
 
     let json = serde_json::to_string(&cmd).expect("Serialization failed");
-    let decoded: OwnershipCommand =
-        serde_json::from_str(&json).expect("Deserialization failed");
+    let decoded: OwnershipCommand = serde_json::from_str(&json).expect("Deserialization failed");
 
     match decoded {
         OwnershipCommand::TransferTopic {

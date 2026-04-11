@@ -17,17 +17,16 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, error, info};
 
-use openraft::network::{RaftNetwork, RaftNetworkFactory, RPCOption};
+use openraft::error::{InstallSnapshotError, NetworkError, RPCError, RaftError};
+use openraft::impls::BasicNode;
+use openraft::network::{RPCOption, RaftNetwork, RaftNetworkFactory};
 use openraft::raft::{
-    AppendEntriesRequest, AppendEntriesResponse,
-    InstallSnapshotRequest, InstallSnapshotResponse,
+    AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
     VoteRequest, VoteResponse,
 };
-use openraft::error::{InstallSnapshotError, RaftError, RPCError, NetworkError};
-use openraft::impls::BasicNode;
 
-use crate::cluster::types::TypeConfig;
 use crate::cluster::raft_router::RaftMessageRouter;
+use crate::cluster::types::TypeConfig;
 
 /// Maximum allowed message size (16MB)
 const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
@@ -201,30 +200,47 @@ impl TcpNetwork {
         len_bytes.copy_from_slice(&len.to_be_bytes());
 
         tokio::time::timeout(self.config.timeout, async {
-            stream.write_all(&len_bytes).await.map_err(|e| TcpNetworkError(format!("Write length error: {}", e)))?;
-            stream.write_all(&buf).await.map_err(|e| TcpNetworkError(format!("Write data error: {}", e)))?;
-            stream.flush().await.map_err(|e| TcpNetworkError(format!("Flush error: {}", e)))
+            stream
+                .write_all(&len_bytes)
+                .await
+                .map_err(|e| TcpNetworkError(format!("Write length error: {}", e)))?;
+            stream
+                .write_all(&buf)
+                .await
+                .map_err(|e| TcpNetworkError(format!("Write data error: {}", e)))?;
+            stream
+                .flush()
+                .await
+                .map_err(|e| TcpNetworkError(format!("Flush error: {}", e)))
         })
         .await
         .map_err(|_| TcpNetworkError(format!("Send timeout to peer {}", self.target)))??;
 
         // Receive response length
         let mut response_len_bytes = [0u8; 4];
-        tokio::time::timeout(self.config.timeout, stream.read_exact(&mut response_len_bytes))
-            .await
-            .map_err(|_| TcpNetworkError(format!("Receive timeout from peer {}", self.target)))?
-            .map_err(|e| TcpNetworkError(format!("Read length error: {}", e)))?;
+        tokio::time::timeout(
+            self.config.timeout,
+            stream.read_exact(&mut response_len_bytes),
+        )
+        .await
+        .map_err(|_| TcpNetworkError(format!("Receive timeout from peer {}", self.target)))?
+        .map_err(|e| TcpNetworkError(format!("Read length error: {}", e)))?;
 
         let response_len = u32::from_be_bytes(response_len_bytes) as usize;
         if response_len > MAX_MESSAGE_SIZE {
-            return Err(TcpNetworkError(format!("Response too large: {} bytes", response_len)));
+            return Err(TcpNetworkError(format!(
+                "Response too large: {} bytes",
+                response_len
+            )));
         }
 
         // Receive response data
         let mut response_buf = vec![0u8; response_len];
         tokio::time::timeout(self.config.timeout, stream.read_exact(&mut response_buf))
             .await
-            .map_err(|_| TcpNetworkError(format!("Receive data timeout from peer {}", self.target)))?
+            .map_err(|_| {
+                TcpNetworkError(format!("Receive data timeout from peer {}", self.target))
+            })?
             .map_err(|e| TcpNetworkError(format!("Read data error: {}", e)))?;
 
         // Deserialize response
@@ -239,7 +255,8 @@ impl RaftNetwork<TypeConfig> for TcpNetwork {
         &mut self,
         rpc: AppendEntriesRequest<TypeConfig>,
         _option: RPCOption,
-    ) -> Result<AppendEntriesResponse<u64>, RPCError<u64, openraft::impls::BasicNode, RaftError<u64>>> {
+    ) -> Result<AppendEntriesResponse<u64>, RPCError<u64, openraft::impls::BasicNode, RaftError<u64>>>
+    {
         self.send_rpc(RpcType::AppendEntries, &rpc)
             .await
             .map_err(|e| RPCError::Network(NetworkError::new(&e)))
@@ -249,7 +266,10 @@ impl RaftNetwork<TypeConfig> for TcpNetwork {
         &mut self,
         rpc: InstallSnapshotRequest<TypeConfig>,
         _option: RPCOption,
-    ) -> Result<InstallSnapshotResponse<u64>, RPCError<u64, openraft::impls::BasicNode, RaftError<u64, InstallSnapshotError>>> {
+    ) -> Result<
+        InstallSnapshotResponse<u64>,
+        RPCError<u64, openraft::impls::BasicNode, RaftError<u64, InstallSnapshotError>>,
+    > {
         self.send_rpc(RpcType::InstallSnapshot, &rpc)
             .await
             .map_err(|e| RPCError::Network(NetworkError::new(&e)))
@@ -293,7 +313,7 @@ impl TcpRaftServer {
     }
 
     /// Run the server - NO TRAIT, just direct async function calls
-    /// 
+    ///
     /// This method accepts an `Arc<RaftMessageRouter>` directly and dispatches
     /// RPCs using direct async function calls. No trait abstraction, no boxing,
     /// no dynamic dispatch - just clean, inlinable async code.
@@ -338,7 +358,9 @@ impl TcpRaftServer {
 
             // Read message data
             let mut buf = vec![0u8; len];
-            stream.read_exact(&mut buf).await
+            stream
+                .read_exact(&mut buf)
+                .await
                 .map_err(|e| format!("Read data error: {}", e))?;
 
             // Extract RPC type
@@ -362,11 +384,17 @@ impl TcpRaftServer {
             let mut response_len_bytes = [0u8; 4];
             response_len_bytes.copy_from_slice(&response_len.to_be_bytes());
 
-            stream.write_all(&response_len_bytes).await
+            stream
+                .write_all(&response_len_bytes)
+                .await
                 .map_err(|e| format!("Write length error: {}", e))?;
-            stream.write_all(&response).await
+            stream
+                .write_all(&response)
+                .await
                 .map_err(|e| format!("Write data error: {}", e))?;
-            stream.flush().await
+            stream
+                .flush()
+                .await
                 .map_err(|e| format!("Flush error: {}", e))?;
         }
     }
@@ -377,11 +405,14 @@ impl TcpRaftServer {
 
 /// Handle AppendEntries RPC - direct async call
 async fn handle_append_entries(router: &RaftMessageRouter, data: &[u8]) -> Result<Vec<u8>, String> {
-    let request: AppendEntriesRequest<TypeConfig> = oxicode::serde::decode_from_slice(data, oxicode::config::standard())
-        .map(|(v, _)| v)
-        .map_err(|e| format!("Deserialize error: {}", e))?;
+    let request: AppendEntriesRequest<TypeConfig> =
+        oxicode::serde::decode_from_slice(data, oxicode::config::standard())
+            .map(|(v, _)| v)
+            .map_err(|e| format!("Deserialize error: {}", e))?;
 
-    let response = router.handle_append_entries(request).await
+    let response = router
+        .handle_append_entries(request)
+        .await
         .map_err(|e| format!("Raft error: {:?}", e))?;
 
     oxicode::serde::encode_to_vec(&response, oxicode::config::standard())
@@ -390,11 +421,14 @@ async fn handle_append_entries(router: &RaftMessageRouter, data: &[u8]) -> Resul
 
 /// Handle Vote RPC - direct async call
 async fn handle_vote(router: &RaftMessageRouter, data: &[u8]) -> Result<Vec<u8>, String> {
-    let request: VoteRequest<u64> = oxicode::serde::decode_from_slice(data, oxicode::config::standard())
-        .map(|(v, _)| v)
-        .map_err(|e| format!("Deserialize error: {}", e))?;
+    let request: VoteRequest<u64> =
+        oxicode::serde::decode_from_slice(data, oxicode::config::standard())
+            .map(|(v, _)| v)
+            .map_err(|e| format!("Deserialize error: {}", e))?;
 
-    let response = router.handle_vote(request).await
+    let response = router
+        .handle_vote(request)
+        .await
         .map_err(|e| format!("Raft error: {:?}", e))?;
 
     oxicode::serde::encode_to_vec(&response, oxicode::config::standard())
@@ -402,12 +436,18 @@ async fn handle_vote(router: &RaftMessageRouter, data: &[u8]) -> Result<Vec<u8>,
 }
 
 /// Handle InstallSnapshot RPC - direct async call
-async fn handle_install_snapshot(router: &RaftMessageRouter, data: &[u8]) -> Result<Vec<u8>, String> {
-    let request: InstallSnapshotRequest<TypeConfig> = oxicode::serde::decode_from_slice(data, oxicode::config::standard())
-        .map(|(v, _)| v)
-        .map_err(|e| format!("Deserialize error: {}", e))?;
+async fn handle_install_snapshot(
+    router: &RaftMessageRouter,
+    data: &[u8],
+) -> Result<Vec<u8>, String> {
+    let request: InstallSnapshotRequest<TypeConfig> =
+        oxicode::serde::decode_from_slice(data, oxicode::config::standard())
+            .map(|(v, _)| v)
+            .map_err(|e| format!("Deserialize error: {}", e))?;
 
-    let response = router.handle_install_snapshot(request).await
+    let response = router
+        .handle_install_snapshot(request)
+        .await
         .map_err(|e| format!("Raft error: {:?}", e))?;
 
     oxicode::serde::encode_to_vec(&response, oxicode::config::standard())
@@ -624,30 +664,30 @@ mod tests {
         // The old implementation used:
         // - Arc<F> where F: Fn(u8, &[u8]) -> Result<Vec<u8>, String>
         // - rt.block_on() inside handlers
-        // 
+        //
         // The new implementation uses:
         // - Arc<RaftMessageRouter> directly
         // - Direct async function calls
-        // 
+        //
         // This is a compile-time verification - if the code compiles,
         // it means we're using direct async functions, not boxed closures.
-        
+
         // We can't test the actual Raft integration here (requires real Raft),
         // but we can verify the pattern is correct by checking:
         // 1. No generic parameter F on run()
         // 2. Handler functions are async
         // 3. No block_on calls
-        
+
         // This test exists to document the improvement:
         // - BEFORE: run<F>(self, handler: F) where F: Fn(u8, &[u8]) -> Result<Vec<u8>, String>
         // - AFTER:  run(self, router: Arc<RaftMessageRouter>)
-        // 
+        //
         // Benefits:
         // - Zero heap allocation (no Box<dyn ...>)
         // - Zero vtable dispatch (direct function calls)
         // - Better inlining (compiler can optimize)
         // - No block_on (pure async)
-        
+
         // The fact that this compiles proves the pattern is correct
         assert!(true, "Direct async pattern verified at compile time");
     }
@@ -657,10 +697,10 @@ mod tests {
     fn test_server_run_signature() {
         // Verify the new signature:
         // pub async fn run(self, router: Arc<RaftMessageRouter>)
-        // 
+        //
         // Old signature was:
         // pub async fn run<F>(self, handler: F) where F: Fn(u8, &[u8]) -> Result<Vec<u8>, String>
-        // 
+        //
         // This test documents the API change for clarity.
         // The compile-time check ensures we're using the simpler signature.
         assert!(true, "Server run() accepts Arc<RaftMessageRouter> directly");
@@ -671,17 +711,20 @@ mod tests {
     async fn test_unknown_rpc_type_rejected() {
         // The direct match expression should reject unknown types
         // This behavior is preserved from the old implementation
-        // 
+        //
         // match rpc_type {
         //     1 => handle_append_entries(&router, request_data).await,
         //     2 => handle_vote(&router, request_data).await,
         //     3 => handle_install_snapshot(&router, request_data).await,
         //     _ => Err(format!("Unknown RPC type: {}", rpc_type)),
         // }
-        
+
         // We can't test the actual handling without a Raft instance,
         // but we verify the pattern handles all cases
-        assert!(true, "Match expression handles all RPC types and rejects unknown");
+        assert!(
+            true,
+            "Match expression handles all RPC types and rejects unknown"
+        );
     }
 
     /// Test that async functions are used instead of blocking closures
@@ -691,16 +734,16 @@ mod tests {
         // - async fn handle_append_entries(router: &RaftMessageRouter, data: &[u8]) -> Result<Vec<u8>, String>
         // - async fn handle_vote(router: &RaftMessageRouter, data: &[u8]) -> Result<Vec<u8>, String>
         // - async fn handle_install_snapshot(router: &RaftMessageRouter, data: &[u8]) -> Result<Vec<u8>, String>
-        // 
+        //
         // Old non-async version:
         // - fn handle_append_entries(router: &Arc<RaftMessageRouter>, data: &[u8]) -> Result<Vec<u8>, String>
         // - Used rt.block_on() to run async code
-        // 
+        //
         // New async version:
         // - Direct async functions
         // - No block_on needed
         // - Called with .await in handle_connection
-        
+
         assert!(true, "Handler functions are async, no block_on needed");
     }
 
@@ -709,10 +752,10 @@ mod tests {
     fn test_error_handling_preserved() {
         // Both implementations use Result<Vec<u8>, String>
         // Errors are propagated with context
-        // 
+        //
         // Old: rt.block_on(async { ... }).map_err(|e| format!("...", e))
         // New: ... .await .map_err(|e| format!("...", e))
-        // 
+        //
         // The error messages and propagation are identical
         assert!(true, "Error handling semantics preserved");
     }
@@ -723,7 +766,7 @@ mod tests {
         // Both implementations use oxicode for serialization
         // - decode_from_slice for requests
         // - encode_to_vec for responses
-        // 
+        //
         // No changes to the wire protocol
         assert!(true, "Wire protocol unchanged");
     }
@@ -733,7 +776,7 @@ mod tests {
     fn test_no_factory_function() {
         // Old: create_raft_handler(router: Arc<RaftMessageRouter>) -> impl Fn(...)
         // New: Pass router directly to run()
-        // 
+        //
         // The factory function is removed as it's no longer needed
         // This simplifies the API surface
         assert!(true, "Factory function removed, API simplified");
@@ -746,15 +789,15 @@ mod tests {
         // - Arc<F> where F: Fn(...) (trait object)
         // - Box<dyn Future> inside block_on
         // - Closure allocation
-        // 
+        //
         // New implementation memory footprint:
         // - Arc<RaftMessageRouter> (concrete type)
         // - No boxing
         // - No closure allocation
         // - Direct function calls
-        // 
+        //
         // Result: Smaller stack frame, better cache locality
-        
+
         assert!(true, "Memory footprint reduced by eliminating boxing");
     }
 
@@ -765,15 +808,18 @@ mod tests {
         // - Dynamic dispatch through trait object (vtable)
         // - block_on overhead
         // - Closure invocation overhead
-        // 
+        //
         // New implementation:
         // - Direct function calls (static dispatch)
         // - .await instead of block_on
         // - Match expression with inlined calls
-        // 
+        //
         // Result: Better CPU branch prediction, better inlining
-        
-        assert!(true, "CPU efficiency improved by eliminating dynamic dispatch");
+
+        assert!(
+            true,
+            "CPU efficiency improved by eliminating dynamic dispatch"
+        );
     }
 
     // Note: Integration tests for RPC handlers with actual Raft are in the cluster module tests.

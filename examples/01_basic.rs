@@ -1,6 +1,6 @@
 //! DDL Basic Example
 
-use ddl::{DdlDistributed, DDL, DdlConfig};
+use ddl::{DdlConfig, DdlDistributed, DDL};
 
 #[tokio::main]
 async fn main() {
@@ -25,9 +25,13 @@ async fn main() {
         Ok(stream) => {
             // Try to receive data
             if let Some(entry) = stream.try_next() {
-                println!("Received entry: ID={}, Topic={}, Payload={:?}", 
-                         entry.id, entry.topic, String::from_utf8_lossy(&entry.payload));
-                
+                println!(
+                    "Received entry: ID={}, Topic={}, Payload={:?}",
+                    entry.id,
+                    entry.topic,
+                    String::from_utf8_lossy(&entry.payload)
+                );
+
                 // Acknowledge the entry
                 if let Err(e) = ddl.ack("greeting", entry.id).await {
                     println!("Error acknowledging: {}", e);
@@ -37,7 +41,7 @@ async fn main() {
             } else {
                 println!("No data received");
             }
-        },
+        }
         Err(e) => println!("Error subscribing: {}", e),
     }
 

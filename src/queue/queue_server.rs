@@ -39,7 +39,9 @@ impl QueueServerHandle {
     /// Shutdown the server
     pub async fn shutdown(self) -> Result<(), QueueError> {
         if let Err(_) = self.shutdown_tx.send(()) {
-            return Err(QueueError::ServerError("Failed to send shutdown signal - server may have already stopped".to_string()));
+            return Err(QueueError::ServerError(
+                "Failed to send shutdown signal - server may have already stopped".to_string(),
+            ));
         }
         match self.join_handle.await {
             Ok(_) => Ok(()),

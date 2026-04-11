@@ -18,7 +18,9 @@
 
 mod distributed_test_utils;
 
-use distributed_test_utils::{NodeSpecBuilder, TestCluster, parse_node_spec, get_node_spec_or_default};
+use distributed_test_utils::{
+    get_node_spec_or_default, parse_node_spec, NodeSpecBuilder, TestCluster,
+};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -55,7 +57,7 @@ impl Default for BenchmarkConfig {
             topic_count: 100,
             concurrent_ops: 100,
             iterations: 3,
-            use_tcp: false,  // Default to in-memory for backwards compat
+            use_tcp: false, // Default to in-memory for backwards compat
         }
     }
 }
@@ -66,7 +68,7 @@ impl BenchmarkConfig {
         let use_tcp = std::env::var("DDL_BENCHMARK_TCP")
             .map(|v| v == "1" || v == "true")
             .unwrap_or(false);
-        
+
         Self {
             node_spec: get_node_spec_or_default("localhost:[8080-8082]"),
             use_tcp,
@@ -245,7 +247,12 @@ mod chrono_lite {
         let secs_part = secs % 60;
         format!(
             "{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
-            years, month, day_count.max(1), hours, mins, secs_part
+            years,
+            month,
+            day_count.max(1),
+            hours,
+            mins,
+            secs_part
         )
     }
 }
@@ -294,11 +301,18 @@ impl BenchmarkRunner {
         // Parse node specification
         let nodes = parse_node_spec(&self.config.node_spec)?;
         let node_count = nodes.len();
-        println!("\n================================================================================");
+        println!(
+            "\n================================================================================"
+        );
         println!("DISTRIBUTED DDL BENCHMARK");
-        println!("================================================================================");
+        println!(
+            "================================================================================"
+        );
         println!();
-        println!("Node Specification: {} ({} nodes)", self.config.node_spec, node_count);
+        println!(
+            "Node Specification: {} ({} nodes)",
+            self.config.node_spec, node_count
+        );
         println!("Started: {}", self.results.start_time);
 
         // Category A: Cluster Setup
@@ -325,9 +339,20 @@ impl BenchmarkRunner {
 
     /// Benchmark A: Cluster Setup
     async fn benchmark_cluster_setup(&mut self) -> Result<(), String> {
-        println!("\n--------------------------------------------------------------------------------");
-        println!("CLUSTER SETUP ({})", if self.config.use_tcp { "TCP" } else { "IN-MEMORY" });
-        println!("--------------------------------------------------------------------------------");
+        println!(
+            "\n--------------------------------------------------------------------------------"
+        );
+        println!(
+            "CLUSTER SETUP ({})",
+            if self.config.use_tcp {
+                "TCP"
+            } else {
+                "IN-MEMORY"
+            }
+        );
+        println!(
+            "--------------------------------------------------------------------------------"
+        );
 
         let nodes = parse_node_spec(&self.config.node_spec)?;
         let node_count = nodes.len();
@@ -377,13 +402,11 @@ impl BenchmarkRunner {
         );
 
         // Total setup time
-        let total_setup_ms = creation_time.as_millis() + init_time.as_millis() + election_time.as_millis();
+        let total_setup_ms =
+            creation_time.as_millis() + init_time.as_millis() + election_time.as_millis();
         self.results.cluster_setup.cluster_ready_time_ms = total_setup_ms as u64;
 
-        println!(
-            "Total Setup Time:        {:6}ms",
-            total_setup_ms
-        );
+        println!("Total Setup Time:        {:6}ms", total_setup_ms);
 
         // Cleanup
         cluster.shutdown().await?;
@@ -393,15 +416,20 @@ impl BenchmarkRunner {
 
     /// Benchmark B: Topic Operations
     async fn benchmark_topic_operations(&mut self) -> Result<(), String> {
-        println!("\n--------------------------------------------------------------------------------");
+        println!(
+            "\n--------------------------------------------------------------------------------"
+        );
         println!("TOPIC OPERATIONS");
-        println!("--------------------------------------------------------------------------------");
+        println!(
+            "--------------------------------------------------------------------------------"
+        );
 
         // Setup cluster for topic operations
         let cluster = self.create_cluster().await?;
 
         // Get reference to bootstrap node
-        let node = cluster.get_node(cluster.bootstrap_id)
+        let node = cluster
+            .get_node(cluster.bootstrap_id)
             .ok_or("Bootstrap node not found")?;
 
         // Warmup
@@ -431,10 +459,11 @@ impl BenchmarkRunner {
         let total_all_claims = topic_count;
         for i in 0..total_all_claims {
             let topic = format!("distributed-topic-{}", i);
-            let target_node = cluster.nodes.iter()
-                .nth(i % cluster.nodes.len())
-                .unwrap();
-            target_node.claim_topic(&topic).await.map_err(|e| e.to_string())?;
+            let target_node = cluster.nodes.iter().nth(i % cluster.nodes.len()).unwrap();
+            target_node
+                .claim_topic(&topic)
+                .await
+                .map_err(|e| e.to_string())?;
         }
         let all_claim_time = all_nodes_claim_start.elapsed();
         self.results.topic_ops.all_nodes_claim_ops = total_all_claims;
@@ -452,7 +481,9 @@ impl BenchmarkRunner {
         let release_start = Instant::now();
         for i in 0..(topic_count / 2) {
             let topic = format!("benchmark-topic-{}", i);
-            node.release_topic(&topic).await.map_err(|e| e.to_string())?;
+            node.release_topic(&topic)
+                .await
+                .map_err(|e| e.to_string())?;
         }
         let release_time = release_start.elapsed();
         self.results.topic_ops.release_ops = topic_count / 2;
@@ -513,13 +544,18 @@ impl BenchmarkRunner {
 
     /// Benchmark C: Consensus Operations
     async fn benchmark_consensus_operations(&mut self) -> Result<(), String> {
-        println!("\n--------------------------------------------------------------------------------");
+        println!(
+            "\n--------------------------------------------------------------------------------"
+        );
         println!("CONSENSUS OPERATIONS");
-        println!("--------------------------------------------------------------------------------");
+        println!(
+            "--------------------------------------------------------------------------------"
+        );
 
         let cluster = self.create_cluster().await?;
 
-        let node = cluster.get_node(cluster.bootstrap_id)
+        let node = cluster
+            .get_node(cluster.bootstrap_id)
             .ok_or("Bootstrap node not found")?;
 
         // Log append latency measurements
@@ -570,14 +606,20 @@ impl BenchmarkRunner {
 
     /// Benchmark D: Concurrent Load
     async fn benchmark_concurrent_load(&mut self) -> Result<(), String> {
-        println!("\n--------------------------------------------------------------------------------");
+        println!(
+            "\n--------------------------------------------------------------------------------"
+        );
         println!("CONCURRENT LOAD");
-        println!("--------------------------------------------------------------------------------");
+        println!(
+            "--------------------------------------------------------------------------------"
+        );
 
         let cluster = Arc::new(self.create_cluster().await?);
 
         let node_id = cluster.bootstrap_id;
-        let node_ref = &cluster.nodes.iter()
+        let node_ref = &cluster
+            .nodes
+            .iter()
             .find(|n| n.node_id == node_id)
             .ok_or("Bootstrap node not found")?;
 
@@ -641,7 +683,10 @@ impl BenchmarkRunner {
 
         let peak_mb = peak_memory as f64 / 1024.0 / 1024.0;
         let avg_mb = avg_memory as f64 / 1024.0 / 1024.0;
-        println!("Memory Under Load:       Peak: {:.1}MB  Avg: {:.1}MB", peak_mb, avg_mb);
+        println!(
+            "Memory Under Load:       Peak: {:.1}MB  Avg: {:.1}MB",
+            peak_mb, avg_mb
+        );
 
         // Lock contention (estimate based on throughput)
         let theoretical_max_ops_per_sec = thread_count as f64 * 50000.0; // theoretical max
@@ -662,9 +707,13 @@ impl BenchmarkRunner {
 
     /// Generate formatted report
     fn print_report(&self) {
-        println!("\n--------------------------------------------------------------------------------");
+        println!(
+            "\n--------------------------------------------------------------------------------"
+        );
         println!("PERFORMANCE SUMMARY");
-        println!("--------------------------------------------------------------------------------");
+        println!(
+            "--------------------------------------------------------------------------------"
+        );
 
         // Calculate key metrics
         let setup_ok = self.results.cluster_setup.cluster_ready_time_ms < 10000;
@@ -689,11 +738,15 @@ impl BenchmarkRunner {
             println!("  Actual TCP connections between nodes");
             println!("  Real RPC serialization/deserialization overhead");
         }
-        
+
         // Print summary with status indicators
         let setup_status = if setup_ok { "✓" } else { "✗" };
         let election_status = if election_ok { "✓" } else { "✗" };
-        let throughput_status = if claim_throughput > 1000.0 { "✓" } else { "✗" };
+        let throughput_status = if claim_throughput > 1000.0 {
+            "✓"
+        } else {
+            "✗"
+        };
         let latency_status = if query_p99_ms < 100.0 { "✓" } else { "✗" };
 
         let throughput_target = 100_000.0;
@@ -709,24 +762,20 @@ impl BenchmarkRunner {
         );
         println!(
             "{} Leader Election:       {:5.0}ms (target: <{:.0}ms)",
-            election_status,
-            self.results.cluster_setup.election_time_ms,
-            election_target_ms
+            election_status, self.results.cluster_setup.election_time_ms, election_target_ms
         );
         println!(
             "{} Claim Throughput:      {:8.0} ops/sec (target: {:.0}+)",
-            throughput_status,
-            claim_throughput,
-            throughput_target
+            throughput_status, claim_throughput, throughput_target
         );
         println!(
             "{} Query Latency p99:     {:7.2}ms (target: <{:.0}ms)",
-            latency_status,
-            query_p99_ms,
-            latency_target_ms
+            latency_status, query_p99_ms, latency_target_ms
         );
 
-        println!("================================================================================\n");
+        println!(
+            "================================================================================\n"
+        );
     }
 }
 
@@ -746,10 +795,7 @@ async fn benchmark_cluster_setup() {
     match result {
         Ok(()) => {
             println!("\nCluster setup benchmark completed successfully");
-            println!(
-                "  Node count: {}",
-                runner.results.cluster_setup.node_count
-            );
+            println!("  Node count: {}", runner.results.cluster_setup.node_count);
             println!(
                 "  Creation time: {}ms",
                 runner.results.cluster_setup.creation_time_ms
@@ -855,18 +901,9 @@ async fn benchmark_concurrent_load() {
     match result {
         Ok(()) => {
             println!("\nConcurrent load benchmark completed successfully");
-            println!(
-                "  Threads: {}",
-                runner.results.load.concurrent_threads
-            );
-            println!(
-                "  Total ops: {}",
-                runner.results.load.total_ops
-            );
-            println!(
-                "  Time: {}ms",
-                runner.results.load.total_time_ms
-            );
+            println!("  Threads: {}", runner.results.load.concurrent_threads);
+            println!("  Total ops: {}", runner.results.load.total_ops);
+            println!("  Time: {}ms", runner.results.load.total_time_ms);
             if runner.results.load.total_time_ms > 0 {
                 let throughput = runner.results.load.total_ops as f64 * 1000.0
                     / runner.results.load.total_time_ms as f64;
@@ -961,7 +998,9 @@ pub fn parse_args() -> BenchmarkConfig {
                 println!("Node Specification Examples:");
                 println!("  node-[01-33]           → node-01, node-02, ..., node-33");
                 println!("  ares-comp-[13-16]      → ares-comp-13, ..., ares-comp-16");
-                println!("  localhost:[8080-8082]  → localhost:8080, localhost:8081, localhost:8082");
+                println!(
+                    "  localhost:[8080-8082]  → localhost:8080, localhost:8081, localhost:8082"
+                );
                 println!("  10.0.0.[1-10]:9090     → IP ranges with ports");
                 std::process::exit(0);
             }
@@ -1028,9 +1067,7 @@ fn test_percentile_calculation() {
     use std::time::Duration;
 
     // Test data
-    let latencies: Vec<Duration> = (1..=100)
-        .map(|i| Duration::from_millis(i))
-        .collect();
+    let latencies: Vec<Duration> = (1..=100).map(|i| Duration::from_millis(i)).collect();
 
     // Test percentiles
     let p50 = percentile(&latencies, 50.0);

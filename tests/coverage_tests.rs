@@ -10,16 +10,16 @@
 //! - src/network/raft_transport.rs - ZmqRaftNetwork
 //! - src/network/pubsub/zmq/transport.rs - ZmqTransport and NodeMessage
 
+use ddl::cluster::raft_node::{ClusterConfig, RaftNode};
 use ddl::config::Config;
+use ddl::network::pubsub::zmq::transport::{NodeMessage, ZmqTransport};
+use ddl::network::transport_traits::Transport;
 use ddl::node::{MetricMessage, RemoteMetric};
 use ddl::queue::interval::{AimdController, IntervalConfig};
 use ddl::queue::persistence::PersistenceConfig;
 use ddl::queue::queue_server::{QueueError, QueueServerHandle};
 use ddl::queue::registry::QueueRegistry;
 use ddl::queue::source::FunctionSource;
-use ddl::cluster::raft_node::{ClusterConfig, RaftNode};
-use ddl::network::pubsub::zmq::transport::{NodeMessage, ZmqTransport};
-use ddl::network::transport_traits::Transport;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -51,8 +51,7 @@ mod node_tests {
         assert!(json.contains("\"timestamp\":1234567890"));
 
         // Test deserialization
-        let deserialized: RemoteMetric =
-            serde_json::from_str(&json).expect("Should deserialize");
+        let deserialized: RemoteMetric = serde_json::from_str(&json).expect("Should deserialize");
         assert_eq!(deserialized.node_id, 1);
         assert_eq!(deserialized.metric_name, "cpu");
         assert_eq!(deserialized.value, 42.5);
@@ -1654,9 +1653,7 @@ mod integration_tests {
             multiplicative_factor: 2.0,
         };
 
-        let source = FunctionSource::new(move || {
-            counter_clone.fetch_add(1, Ordering::Relaxed)
-        });
+        let source = FunctionSource::new(move || counter_clone.fetch_add(1, Ordering::Relaxed));
 
         // Add queue with adaptive interval
         let result = registry.add_queue_with_interval("async_queue", source, interval_config);
@@ -1862,8 +1859,12 @@ mod edge_case_tests {
 // ============================================================================
 
 mod config_tests {
-    use ddl::config::{Config, ConfigBuilder, ConfigError, NodeConfig, SourceType, AggregationType};
-    use ddl::config::{LocalMetricConfig, GlobalMetricConfig, DebugConfig, QueueConfig, NodeTable, ConfigGenerator};
+    use ddl::config::{
+        AggregationType, Config, ConfigBuilder, ConfigError, NodeConfig, SourceType,
+    };
+    use ddl::config::{
+        ConfigGenerator, DebugConfig, GlobalMetricConfig, LocalMetricConfig, NodeTable, QueueConfig,
+    };
     use ddl::queue::persistence::PersistenceConfig;
     use tempfile::TempDir;
 
@@ -1899,7 +1900,7 @@ mod config_tests {
     fn test_config_load_valid_toml() {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let config_path = temp_dir.path().join("config.toml");
-        
+
         // Config uses nodes.node1 format for node definitions
         let content = r#"
 [nodes.node1]
@@ -1923,7 +1924,7 @@ capacity = 1024
 default_interval = 500
 "#;
         std::fs::write(&config_path, content).expect("Failed to write config");
-        
+
         let config = Config::load(&config_path).expect("Failed to load config");
         assert_eq!(config.nodes.nodes.len(), 1);
         assert!(config.nodes.nodes.contains_key("node1"));
@@ -1946,10 +1947,10 @@ default_interval = 500
     fn test_config_load_invalid_toml() {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let config_path = temp_dir.path().join("invalid.toml");
-        
+
         let content = "invalid toml content [[[";
         std::fs::write(&config_path, content).expect("Failed to write config");
-        
+
         let result = Config::load(&config_path);
         assert!(result.is_err());
         match result {
@@ -1962,9 +1963,9 @@ default_interval = 500
     fn test_config_load_empty_file() {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let config_path = temp_dir.path().join("empty.toml");
-        
+
         std::fs::write(&config_path, "").expect("Failed to write config");
-        
+
         let config = Config::load(&config_path).expect("Empty config should load");
         assert!(config.nodes.nodes.is_empty());
     }
@@ -1975,17 +1976,17 @@ default_interval = 500
     fn test_config_save_and_reload() {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let config_path = temp_dir.path().join("save_test.toml");
-        
+
         let config = Config::builder()
             .add_node("node1", "127.0.0.1", 7001, 7002, 7003, 7004)
             .add_local_metric("cpu", "function:cpu")
             .add_global_aggregation("cpu_avg", "avg", &["cpu"], 1000)
             .capacity(2048)
             .build();
-        
+
         config.save(&config_path).expect("Failed to save config");
         assert!(config_path.exists());
-        
+
         let reloaded = Config::load(&config_path).expect("Failed to reload config");
         assert_eq!(reloaded.nodes.nodes.len(), 1);
         assert!(reloaded.local.contains_key("cpu"));
@@ -2002,17 +2003,17 @@ default_interval = 500
             coordination_port: 8082,
             pubsub_port: 8083,
         };
-        
+
         let comm_addr = config.communication_addr().expect("Should parse");
         assert!(comm_addr.to_string().contains("192.168.1.1"));
         assert!(comm_addr.to_string().contains("8080"));
-        
+
         let query_addr = config.query_addr().expect("Should parse");
         assert!(query_addr.to_string().contains("8081"));
-        
+
         let coord_addr = config.coordination_addr().expect("Should parse");
         assert!(coord_addr.to_string().contains("8082"));
-        
+
         let pubsub_addr = config.pubsub_addr().expect("Should parse");
         assert!(pubsub_addr.to_string().contains("8083"));
     }
@@ -2026,7 +2027,7 @@ default_interval = 500
             coordination_port: 7002,
             pubsub_port: 7003,
         };
-        
+
         let cloned = config.clone();
         assert_eq!(config.host, cloned.host);
         assert_eq!(config.communication_port, cloned.communication_port);
@@ -2041,7 +2042,7 @@ default_interval = 500
             coordination_port: 7002,
             pubsub_port: 7003,
         };
-        
+
         let debug_str = format!("{:?}", config);
         assert!(debug_str.contains("NodeConfig"));
         assert!(debug_str.contains("test.host"));
@@ -2050,21 +2051,27 @@ default_interval = 500
     #[test]
     fn test_node_table_collect_nodes() {
         let mut table = NodeTable::default();
-        table.nodes.insert("node1".to_string(), NodeConfig {
-            host: "host1".to_string(),
-            communication_port: 7000,
-            query_port: 7001,
-            coordination_port: 7002,
-            pubsub_port: 7003,
-        });
-        table.nodes.insert("node2".to_string(), NodeConfig {
-            host: "host2".to_string(),
-            communication_port: 8000,
-            query_port: 8001,
-            coordination_port: 8002,
-            pubsub_port: 8003,
-        });
-        
+        table.nodes.insert(
+            "node1".to_string(),
+            NodeConfig {
+                host: "host1".to_string(),
+                communication_port: 7000,
+                query_port: 7001,
+                coordination_port: 7002,
+                pubsub_port: 7003,
+            },
+        );
+        table.nodes.insert(
+            "node2".to_string(),
+            NodeConfig {
+                host: "host2".to_string(),
+                communication_port: 8000,
+                query_port: 8001,
+                coordination_port: 8002,
+                pubsub_port: 8003,
+            },
+        );
+
         let nodes = table.collect_nodes();
         assert_eq!(nodes.len(), 2);
     }
@@ -2128,15 +2135,42 @@ default_interval = 500
 
     #[test]
     fn test_aggregation_type_from_str_valid() {
-        assert!(matches!(AggregationType::from_str("avg"), Ok(AggregationType::Avg)));
-        assert!(matches!(AggregationType::from_str("max"), Ok(AggregationType::Max)));
-        assert!(matches!(AggregationType::from_str("min"), Ok(AggregationType::Min)));
-        assert!(matches!(AggregationType::from_str("sum"), Ok(AggregationType::Sum)));
-        assert!(matches!(AggregationType::from_str("stddev"), Ok(AggregationType::Stddev)));
-        assert!(matches!(AggregationType::from_str("p50"), Ok(AggregationType::Percentile50)));
-        assert!(matches!(AggregationType::from_str("median"), Ok(AggregationType::Percentile50)));
-        assert!(matches!(AggregationType::from_str("p95"), Ok(AggregationType::Percentile95)));
-        assert!(matches!(AggregationType::from_str("p99"), Ok(AggregationType::Percentile99)));
+        assert!(matches!(
+            AggregationType::from_str("avg"),
+            Ok(AggregationType::Avg)
+        ));
+        assert!(matches!(
+            AggregationType::from_str("max"),
+            Ok(AggregationType::Max)
+        ));
+        assert!(matches!(
+            AggregationType::from_str("min"),
+            Ok(AggregationType::Min)
+        ));
+        assert!(matches!(
+            AggregationType::from_str("sum"),
+            Ok(AggregationType::Sum)
+        ));
+        assert!(matches!(
+            AggregationType::from_str("stddev"),
+            Ok(AggregationType::Stddev)
+        ));
+        assert!(matches!(
+            AggregationType::from_str("p50"),
+            Ok(AggregationType::Percentile50)
+        ));
+        assert!(matches!(
+            AggregationType::from_str("median"),
+            Ok(AggregationType::Percentile50)
+        ));
+        assert!(matches!(
+            AggregationType::from_str("p95"),
+            Ok(AggregationType::Percentile95)
+        ));
+        assert!(matches!(
+            AggregationType::from_str("p99"),
+            Ok(AggregationType::Percentile99)
+        ));
     }
 
     #[test]
@@ -2195,7 +2229,7 @@ default_interval = 500
             interval_ms: 500,
             expression: None,
         };
-        
+
         assert_eq!(config.interval_ms, 500);
     }
 
@@ -2207,7 +2241,7 @@ default_interval = 500
             interval_ms: 1000,
             expression: Some("(100 - cpu) + memory_free".to_string()),
         };
-        
+
         assert!(config.expression.is_some());
         assert_eq!(config.sources.len(), 2);
     }
@@ -2220,7 +2254,7 @@ default_interval = 500
             interval_ms: 200,
             expression: Some("x + 1".to_string()),
         };
-        
+
         let cloned = config.clone();
         assert_eq!(cloned.aggregation, "sum");
         assert_eq!(cloned.interval_ms, 200);
@@ -2272,7 +2306,7 @@ default_interval = 500
             .add_node("node1", "127.0.0.1", 7000, 7001, 7002, 7003)
             .add_node("node2", "192.168.1.1", 8000, 8001, 8002, 8003)
             .build();
-        
+
         assert_eq!(config.nodes.nodes.len(), 2);
         assert!(config.nodes.nodes.contains_key("node1"));
         assert!(config.nodes.nodes.contains_key("node2"));
@@ -2284,7 +2318,7 @@ default_interval = 500
             .add_local_metric("cpu", "function:cpu")
             .add_local_metric("memory", "function:memory")
             .build();
-        
+
         assert_eq!(config.local.len(), 2);
         assert_eq!(config.local.get("cpu"), Some(&"function:cpu".to_string()));
     }
@@ -2295,7 +2329,7 @@ default_interval = 500
             .add_global_aggregation("cpu_avg", "avg", &["cpu"], 1000)
             .add_global_aggregation("mem_max", "max", &["memory"], 2000)
             .build();
-        
+
         assert_eq!(config.global.len(), 2);
         let cpu_avg = config.global.get("cpu_avg").expect("Should exist");
         assert_eq!(cpu_avg.aggregation, "avg");
@@ -2313,10 +2347,13 @@ default_interval = 500
                 500,
             )
             .build();
-        
+
         let health = config.global.get("health_score").expect("Should exist");
         assert!(health.expression.is_some());
-        assert_eq!(health.expression.as_ref().unwrap(), "(100 - cpu) + memory_free");
+        assert_eq!(
+            health.expression.as_ref().unwrap(),
+            "(100 - cpu) + memory_free"
+        );
     }
 
     #[test]
@@ -2325,7 +2362,7 @@ default_interval = 500
             .capacity(8192)
             .default_interval(250)
             .build();
-        
+
         assert_eq!(config.queue.capacity, 8192);
         assert_eq!(config.queue.default_interval, 250);
     }
@@ -2336,7 +2373,7 @@ default_interval = 500
             .simulate_sensors(true)
             .verbose(true)
             .build();
-        
+
         assert!(config.debug.simulate_sensors);
         assert!(config.debug.verbose);
     }
@@ -2351,11 +2388,11 @@ default_interval = 500
             include_timestamp: true,
             compress_old: false,
         };
-        
+
         let config = Config::builder()
             .persistence(persist_config.clone())
             .build();
-        
+
         assert!(config.persistence.is_some());
         let p = config.persistence.unwrap();
         assert_eq!(p.flush_interval_ms, 500);
@@ -2369,10 +2406,10 @@ default_interval = 500
             .add_node("node1", "127.0.0.1", 7000, 7001, 7002, 7003)
             .add_node("node2", "192.168.1.1", 8000, 8001, 8002, 8003)
             .build();
-        
+
         let result = config.my_node(1).expect("Should find node1");
         assert_eq!(result.host, "127.0.0.1");
-        
+
         let result2 = config.my_node(2).expect("Should find node2");
         assert_eq!(result2.host, "192.168.1.1");
     }
@@ -2382,7 +2419,7 @@ default_interval = 500
         let config = Config::builder()
             .add_node("node1", "127.0.0.1", 7000, 7001, 7002, 7003)
             .build();
-        
+
         let result = config.my_node(99);
         assert!(result.is_err());
         match result {
@@ -2398,11 +2435,11 @@ default_interval = 500
             .add_node("node2", "127.0.0.2", 8000, 8001, 8002, 8003)
             .add_node("node3", "127.0.0.3", 9000, 9001, 9002, 9003)
             .build();
-        
+
         // Get other nodes for node1
         let others = config.other_nodes(1);
         assert_eq!(others.len(), 2);
-        
+
         // Should NOT contain node1
         for (name, _) in &others {
             assert_ne!(name, "node1");
@@ -2415,7 +2452,7 @@ default_interval = 500
             .add_node("node1", "127.0.0.1", 7000, 7001, 7002, 7003)
             .add_node("node2", "127.0.0.2", 8000, 8001, 8002, 8003)
             .build();
-        
+
         let all = config.all_nodes();
         assert_eq!(all.len(), 2);
     }
@@ -2426,19 +2463,19 @@ default_interval = 500
             .add_local_metric("cpu", "function:cpu")
             .add_local_metric("custom", "expression:x * 2")
             .build();
-        
+
         let cpu_source = config.local_source("cpu").expect("Should exist");
         match cpu_source {
             SourceType::Function(name) => assert_eq!(name, "cpu"),
             _ => panic!("Expected Function type"),
         }
-        
+
         let custom_source = config.local_source("custom").expect("Should exist");
         match custom_source {
             SourceType::Expression(expr) => assert_eq!(expr, "x * 2"),
             _ => panic!("Expected Expression type"),
         }
-        
+
         assert!(config.local_source("nonexistent").is_none());
     }
 
@@ -2447,7 +2484,7 @@ default_interval = 500
         let config = Config::builder()
             .add_global_aggregation("cpu_avg", "avg", &["cpu"], 1000)
             .build();
-        
+
         let metric = config.global_metric("cpu_avg").expect("Should exist");
         assert_eq!(metric.aggregation, "avg");
         assert!(config.global_metric("nonexistent").is_none());
@@ -2458,20 +2495,20 @@ default_interval = 500
     #[test]
     fn test_config_generator_local_test() {
         let config = ConfigGenerator::local_test(3, 7000);
-        
+
         // Should have 3 nodes
         assert_eq!(config.nodes.nodes.len(), 3);
         assert!(config.nodes.nodes.contains_key("node1"));
         assert!(config.nodes.nodes.contains_key("node2"));
         assert!(config.nodes.nodes.contains_key("node3"));
-        
+
         // Should have default local metrics
         assert!(config.local.contains_key("cpu"));
         assert!(config.local.contains_key("memory"));
-        
+
         // Should have global aggregations
         assert!(config.global.contains_key("cpu_avg"));
-        
+
         // Debug settings
         assert!(config.debug.simulate_sensors);
         assert!(config.debug.verbose);
@@ -2479,12 +2516,13 @@ default_interval = 500
 
     #[test]
     fn test_config_generator_production() {
-        let config = ConfigGenerator::production(&[("node1", "192.168.1.1"), ("node2", "192.168.1.2")]);
-        
+        let config =
+            ConfigGenerator::production(&[("node1", "192.168.1.1"), ("node2", "192.168.1.2")]);
+
         assert_eq!(config.nodes.nodes.len(), 2);
         assert!(config.nodes.nodes.contains_key("node1"));
         assert!(config.nodes.nodes.contains_key("node2"));
-        
+
         // Should have default local metrics
         assert!(config.local.contains_key("cpu"));
         assert!(config.local.contains_key("memory"));
@@ -2494,7 +2532,10 @@ default_interval = 500
 
     #[test]
     fn test_config_error_io() {
-        let err = ConfigError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "file not found"));
+        let err = ConfigError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "file not found",
+        ));
         let msg = format!("{}", err);
         assert!(msg.contains("IO error"));
     }
@@ -2550,19 +2591,22 @@ mod tcp_transport_tests {
     #[test]
     fn test_network_message_push() {
         let entry = Entry::new(1, "test", vec![1, 2, 3, 4]);
-        
+
         let msg = NetworkMessage::Push {
             topic: "metrics".to_string(),
             entry: entry.clone(),
         };
-        
+
         let json = serde_json::to_string(&msg).expect("Should serialize");
         assert!(json.contains("Push"));
         assert!(json.contains("metrics"));
-        
+
         let decoded: NetworkMessage = serde_json::from_str(&json).expect("Should deserialize");
         match decoded {
-            NetworkMessage::Push { topic, entry: decoded_entry } => {
+            NetworkMessage::Push {
+                topic,
+                entry: decoded_entry,
+            } => {
                 assert_eq!(topic, "metrics");
                 assert_eq!(decoded_entry.id, 1);
             }
@@ -2576,15 +2620,15 @@ mod tcp_transport_tests {
             Entry::new(1, "test", vec![1]),
             Entry::new(2, "test", vec![2]),
         ];
-        
+
         let msg = NetworkMessage::BatchPush {
             topic: "batch_topic".to_string(),
             entries: entries.clone(),
         };
-        
+
         let json = serde_json::to_string(&msg).expect("Should serialize");
         let decoded: NetworkMessage = serde_json::from_str(&json).expect("Should deserialize");
-        
+
         match decoded {
             NetworkMessage::BatchPush { topic, entries } => {
                 assert_eq!(topic, "batch_topic");
@@ -2600,15 +2644,18 @@ mod tcp_transport_tests {
             topic: "notifications".to_string(),
             subscriber_id: "client-123".to_string(),
         };
-        
+
         let json = serde_json::to_string(&msg).expect("Should serialize");
         assert!(json.contains("Subscribe"));
         assert!(json.contains("notifications"));
         assert!(json.contains("client-123"));
-        
+
         let decoded: NetworkMessage = serde_json::from_str(&json).expect("Should deserialize");
         match decoded {
-            NetworkMessage::Subscribe { topic, subscriber_id } => {
+            NetworkMessage::Subscribe {
+                topic,
+                subscriber_id,
+            } => {
                 assert_eq!(topic, "notifications");
                 assert_eq!(subscriber_id, "client-123");
             }
@@ -2622,10 +2669,10 @@ mod tcp_transport_tests {
             topic: "events".to_string(),
             entry_id: 42,
         };
-        
+
         let json = serde_json::to_string(&msg).expect("Should serialize");
         let decoded: NetworkMessage = serde_json::from_str(&json).expect("Should deserialize");
-        
+
         match decoded {
             NetworkMessage::Ack { topic, entry_id } => {
                 assert_eq!(topic, "events");
@@ -2638,10 +2685,10 @@ mod tcp_transport_tests {
     #[test]
     fn test_network_message_heartbeat() {
         let msg = NetworkMessage::Heartbeat;
-        
+
         let json = serde_json::to_string(&msg).expect("Should serialize");
         assert!(json.contains("Heartbeat"));
-        
+
         let decoded: NetworkMessage = serde_json::from_str(&json).expect("Should deserialize");
         assert!(matches!(decoded, NetworkMessage::Heartbeat));
     }
@@ -2652,7 +2699,7 @@ mod tcp_transport_tests {
             topic: "debug_test".to_string(),
             entry: Entry::new(1, "test", vec![]),
         };
-        
+
         let debug_str = format!("{:?}", msg);
         assert!(debug_str.contains("Push"));
     }
@@ -2663,7 +2710,7 @@ mod tcp_transport_tests {
             topic: "clone_test".to_string(),
             entry_id: 999,
         };
-        
+
         let cloned = msg.clone();
         match cloned {
             NetworkMessage::Ack { topic, entry_id } => {
@@ -2695,7 +2742,7 @@ mod tcp_transport_tests {
             },
             NetworkMessage::Heartbeat,
         ];
-        
+
         for msg in messages {
             let json = serde_json::to_string(&msg).expect("Should serialize");
             let _: NetworkMessage = serde_json::from_str(&json).expect("Should deserialize");
@@ -2707,15 +2754,16 @@ mod tcp_transport_tests {
         // Test with large data
         let large_data: Vec<u8> = (0..10000).map(|i| (i % 256) as u8).collect();
         let entry = Entry::new(1, "large", large_data.clone());
-        
+
         let msg = NetworkMessage::Push {
             topic: "large_topic".to_string(),
             entry,
         };
-        
+
         let json = serde_json::to_string(&msg).expect("Should serialize large message");
-        let decoded: NetworkMessage = serde_json::from_str(&json).expect("Should deserialize large message");
-        
+        let decoded: NetworkMessage =
+            serde_json::from_str(&json).expect("Should deserialize large message");
+
         match decoded {
             NetworkMessage::Push { entry, .. } => {
                 assert_eq!(entry.payload.len(), 10000);
@@ -2730,14 +2778,16 @@ mod tcp_transport_tests {
 // ============================================================================
 
 mod tcp_network_tests {
-    use ddl::network::tcp_network::{TcpNetworkConfig, TcpNetworkFactory, TcpNetwork, TcpRaftServer};
+    use ddl::network::tcp_network::{
+        TcpNetwork, TcpNetworkConfig, TcpNetworkFactory, TcpRaftServer,
+    };
     use std::collections::HashMap;
     use std::time::Duration;
 
     #[test]
     fn test_tcp_network_config_default() {
         let config = TcpNetworkConfig::default();
-        
+
         assert_eq!(config.bind_addr, "0.0.0.0:9090");
         assert!(config.peers.is_empty());
         assert_eq!(config.timeout, Duration::from_secs(5));
@@ -2747,7 +2797,7 @@ mod tcp_network_tests {
     #[test]
     fn test_tcp_network_config_new() {
         let config = TcpNetworkConfig::new(1, 8888);
-        
+
         assert_eq!(config.bind_addr, "0.0.0.0:8888");
     }
 
@@ -2756,23 +2806,17 @@ mod tcp_network_tests {
         let mut config = TcpNetworkConfig::default();
         config.add_peer(1, "127.0.0.1:10000".to_string());
         config.add_peer(2, "192.168.1.1:10001".to_string());
-        
+
         assert_eq!(config.peers.len(), 2);
-        assert_eq!(
-            config.peers.get(&1),
-            Some(&"127.0.0.1:10000".to_string())
-        );
-        assert_eq!(
-            config.peers.get(&2),
-            Some(&"192.168.1.1:10001".to_string())
-        );
+        assert_eq!(config.peers.get(&1), Some(&"127.0.0.1:10000".to_string()));
+        assert_eq!(config.peers.get(&2), Some(&"192.168.1.1:10001".to_string()));
     }
 
     #[test]
     fn test_tcp_network_config_clone() {
         let mut config = TcpNetworkConfig::default();
         config.add_peer(1, "peer1:1234".to_string());
-        
+
         let cloned = config.clone();
         assert_eq!(cloned.peers.len(), 1);
         assert_eq!(cloned.peers.get(&1), Some(&"peer1:1234".to_string()));
@@ -2782,7 +2826,7 @@ mod tcp_network_tests {
     fn test_tcp_network_config_debug() {
         let config = TcpNetworkConfig::default();
         let debug_str = format!("{:?}", config);
-        
+
         assert!(debug_str.contains("TcpNetworkConfig"));
         assert!(debug_str.contains("0.0.0.0:9090"));
     }
@@ -2791,7 +2835,7 @@ mod tcp_network_tests {
     fn test_tcp_network_new() {
         let config = TcpNetworkConfig::default();
         let network = TcpNetwork::new(42, config.clone());
-        
+
         // Verify network is created successfully (target is private)
         let _ = network;
     }
@@ -2800,7 +2844,7 @@ mod tcp_network_tests {
     fn test_tcp_network_factory_new() {
         let config = TcpNetworkConfig::default();
         let factory = TcpNetworkFactory::new(config);
-        
+
         // Factory should be created successfully
         let _ = factory;
     }
@@ -2809,7 +2853,7 @@ mod tcp_network_tests {
     fn test_tcp_network_factory_clone() {
         let config = TcpNetworkConfig::default();
         let factory = TcpNetworkFactory::new(config);
-        
+
         let cloned = factory.clone();
         let _ = cloned;
     }
@@ -2819,11 +2863,11 @@ mod tcp_network_tests {
         // Bind to port 0 to get a random available port
         let result = TcpRaftServer::bind("127.0.0.1:0", 1).await;
         assert!(result.is_ok());
-        
+
         let server = result.unwrap();
         let addr_result = server.local_addr();
         assert!(addr_result.is_ok());
-        
+
         let addr = addr_result.unwrap();
         assert!(addr.contains("127.0.0.1"));
     }
@@ -2841,11 +2885,11 @@ mod tcp_network_tests {
     #[test]
     fn test_tcp_network_config_with_many_peers() {
         let mut config = TcpNetworkConfig::default();
-        
+
         for i in 1..=100u64 {
             config.add_peer(i, format!("node{}:{}", i, 9000 + i as u16));
         }
-        
+
         assert_eq!(config.peers.len(), 100);
     }
 
@@ -2857,7 +2901,7 @@ mod tcp_network_tests {
             timeout: Duration::from_secs(30),
             max_connections_per_peer: 10,
         };
-        
+
         assert_eq!(config.timeout, Duration::from_secs(30));
         assert_eq!(config.max_connections_per_peer, 10);
     }
@@ -2875,7 +2919,7 @@ mod enhanced_raft_transport_tests {
     fn test_zmq_raft_network_creation_basic() {
         let mut peers = HashMap::new();
         peers.insert(1, ("127.0.0.1".to_string(), 7000u16));
-        
+
         let result = ZmqRaftNetwork::new(1, peers);
         assert!(result.is_ok());
     }
@@ -2886,17 +2930,17 @@ mod enhanced_raft_transport_tests {
         for i in 1..=5u64 {
             peers.insert(i, (format!("node{}", i), 7000 + i as u16));
         }
-        
+
         let result = ZmqRaftNetwork::new(0, peers);
         assert!(result.is_ok());
-        
+
         let _network = result.unwrap();
     }
 
     #[test]
     fn test_zmq_raft_network_no_peers() {
         let peers: HashMap<u64, (String, u16)> = HashMap::new();
-        
+
         let result = ZmqRaftNetwork::new(1, peers);
         // Should succeed even with no peers (might be for standalone node)
         assert!(result.is_ok());
@@ -2916,7 +2960,7 @@ mod enhanced_raft_transport_tests {
         let mut peers = HashMap::new();
         peers.insert(1, ("::1".to_string(), 7000u16));
         peers.insert(2, ("2001:db8::1".to_string(), 7001u16));
-        
+
         let result = ZmqRaftNetwork::new(0, peers);
         assert!(result.is_ok());
     }
@@ -2926,7 +2970,7 @@ mod enhanced_raft_transport_tests {
         let mut peers = HashMap::new();
         peers.insert(1, ("192.168.1.1".to_string(), 8080u16));
         peers.insert(2, ("192.168.1.2".to_string(), 8080u16));
-        
+
         let result = ZmqRaftNetwork::new(0, peers);
         assert!(result.is_ok());
     }
@@ -2936,7 +2980,7 @@ mod enhanced_raft_transport_tests {
         let mut peers = HashMap::new();
         peers.insert(1, ("127.0.0.1".to_string(), 7000u16));
         peers.insert(2, ("127.0.0.1".to_string(), 8000u16));
-        
+
         let result = ZmqRaftNetwork::new(0, peers);
         assert!(result.is_ok());
     }
@@ -2963,7 +3007,7 @@ mod enhanced_zmq_transport_tests {
     #[test]
     fn test_zmq_transport_is_connected_after_creation() {
         let transport = ZmqTransport::new().unwrap();
-        
+
         // Initially not connected (no connect() call)
         assert!(!transport.is_connected());
     }
@@ -2971,7 +3015,7 @@ mod enhanced_zmq_transport_tests {
     #[test]
     fn test_zmq_transport_connection_info_initial() {
         let transport = ZmqTransport::new().unwrap();
-        
+
         // connection_info should be None initially
         let info = transport.connection_info();
         assert!(info.is_none());
@@ -2981,7 +3025,7 @@ mod enhanced_zmq_transport_tests {
     fn test_zmq_transport_socket() {
         let transport = ZmqTransport::new().unwrap();
         let socket_arc = transport.socket();
-        
+
         // Socket should be accessible through Arc
         // Just verify we can access it without panic
         let _ = socket_arc;
@@ -2989,13 +3033,11 @@ mod enhanced_zmq_transport_tests {
 
     #[test]
     fn test_node_message_empty_sources() {
-        let msg = NodeMessage::RequestExpression {
-            sources: vec![],
-        };
-        
+        let msg = NodeMessage::RequestExpression { sources: vec![] };
+
         let json = serde_json::to_string(&msg).expect("Should serialize");
         let decoded: NodeMessage = serde_json::from_str(&json).expect("Should deserialize");
-        
+
         match decoded {
             NodeMessage::RequestExpression { sources } => {
                 assert!(sources.is_empty());
@@ -3010,12 +3052,14 @@ mod enhanced_zmq_transport_tests {
         let msg = NodeMessage::RequestExpression {
             sources: sources.clone(),
         };
-        
+
         let json = serde_json::to_string(&msg).expect("Should serialize");
         let decoded: NodeMessage = serde_json::from_str(&json).expect("Should deserialize");
-        
+
         match decoded {
-            NodeMessage::RequestExpression { sources: decoded_sources } => {
+            NodeMessage::RequestExpression {
+                sources: decoded_sources,
+            } => {
                 assert_eq!(decoded_sources.len(), 100);
             }
             _ => panic!("Expected RequestExpression"),
@@ -3028,10 +3072,10 @@ mod enhanced_zmq_transport_tests {
             sources: vec!["cpu".to_string()],
             score: None,
         };
-        
+
         let json = serde_json::to_string(&msg).expect("Should serialize");
         let decoded: NodeMessage = serde_json::from_str(&json).expect("Should deserialize");
-        
+
         match decoded {
             NodeMessage::ExpressionResponse { score, .. } => {
                 assert!(score.is_none());
@@ -3047,10 +3091,10 @@ mod enhanced_zmq_transport_tests {
             operation: "percentile".to_string(),
             args: vec![],
         };
-        
+
         let json = serde_json::to_string(&msg).expect("Should serialize");
         let decoded: NodeMessage = serde_json::from_str(&json).expect("Should deserialize");
-        
+
         match decoded {
             NodeMessage::RequestAggregation { args, .. } => {
                 assert!(args.is_empty());
@@ -3064,10 +3108,10 @@ mod enhanced_zmq_transport_tests {
         let msg = NodeMessage::RequestValue {
             queue_name: "温度_数据_日本語".to_string(),
         };
-        
+
         let json = serde_json::to_string(&msg).expect("Should serialize");
         let decoded: NodeMessage = serde_json::from_str(&json).expect("Should deserialize");
-        
+
         match decoded {
             NodeMessage::RequestValue { queue_name } => {
                 assert_eq!(queue_name, "温度_数据_日本語");
@@ -3080,7 +3124,7 @@ mod enhanced_zmq_transport_tests {
     fn test_transport_debug_impl() {
         let transport = ZmqTransport::new().unwrap();
         let debug_str = format!("{:?}", transport);
-        
+
         // Debug should show field names without sensitive data
         assert!(debug_str.contains("ZmqTransport"));
     }

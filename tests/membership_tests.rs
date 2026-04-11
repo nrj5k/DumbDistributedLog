@@ -2,8 +2,8 @@
 //!
 //! Tests for SCORE failover coordination membership tracking.
 
-use ddl::cluster::{RaftClusterNode, MembershipEventType, MembershipEvent, NodeConfig};
-use ddl::{DdlDistributed, DdlConfig};
+use ddl::cluster::{MembershipEvent, MembershipEventType, NodeConfig, RaftClusterNode};
+use ddl::{DdlConfig, DdlDistributed};
 use std::collections::HashMap;
 use tokio::time::{timeout, Duration};
 
@@ -142,7 +142,10 @@ async fn test_initialize_missing_node_config_returns_error() {
 
     // Initialize should fail because node ID 1 is not in nodes config
     let result = node.initialize().await;
-    assert!(result.is_err(), "Initialize should fail for missing node config");
+    assert!(
+        result.is_err(),
+        "Initialize should fail for missing node config"
+    );
     assert!(result.unwrap_err().contains("not found in configuration"));
 }
 
@@ -230,7 +233,10 @@ async fn test_membership_multiple_nodes() {
         .expect("Failed to create node2");
 
     // Initialize node1 as bootstrap
-    node1.initialize().await.expect("Failed to initialize node1");
+    node1
+        .initialize()
+        .await
+        .expect("Failed to initialize node1");
 
     // Wait for election
     tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
@@ -336,26 +342,35 @@ async fn test_ddl_metrics_structure() {
 #[tokio::test]
 async fn test_ddl_distributed_subscribe_membership_standalone_returns_none() {
     let ddl = DdlDistributed::new_standalone(DdlConfig::default());
-    
+
     // In standalone mode, subscribe_membership should return None
     let result = ddl.subscribe_membership();
-    assert!(result.is_none(), "subscribe_membership should return None in standalone mode");
+    assert!(
+        result.is_none(),
+        "subscribe_membership should return None in standalone mode"
+    );
 }
 
 #[tokio::test]
 async fn test_ddl_distributed_membership_standalone_returns_none() {
     let ddl = DdlDistributed::new_standalone(DdlConfig::default());
-    
+
     // In standalone mode, membership should return None
     let result = ddl.membership();
-    assert!(result.is_none(), "membership should return None in standalone mode");
+    assert!(
+        result.is_none(),
+        "membership should return None in standalone mode"
+    );
 }
 
 #[tokio::test]
 async fn test_ddl_distributed_metrics_standalone_returns_none() {
     let ddl = DdlDistributed::new_standalone(DdlConfig::default());
-    
+
     // In standalone mode, metrics should return None
     let result = ddl.metrics();
-    assert!(result.is_none(), "metrics should return None in standalone mode");
+    assert!(
+        result.is_none(),
+        "metrics should return None in standalone mode"
+    );
 }

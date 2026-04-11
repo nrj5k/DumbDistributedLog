@@ -10,22 +10,21 @@ use tokio::sync::broadcast;
 use tracing::{debug, error, info};
 
 use openraft::{
-    Config, Raft, SnapshotPolicy,
-    storage::Adaptor,
+    error::{InstallSnapshotError, RPCError, RaftError},
+    network::RPCOption,
     network::{RaftNetwork, RaftNetworkFactory},
     raft::{
-        AppendEntriesRequest, AppendEntriesResponse,
-        InstallSnapshotRequest, InstallSnapshotResponse,
-        VoteRequest, VoteResponse,
+        AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
+        InstallSnapshotResponse, VoteRequest, VoteResponse,
     },
-    error::{RaftError, RPCError, InstallSnapshotError},
-    network::RPCOption,
+    storage::Adaptor,
+    Config, Raft, SnapshotPolicy,
 };
 
+use crate::cluster::membership::{DdlMetrics, MembershipEvent, MembershipView, NodeInfo};
 use crate::cluster::ownership_machine::OwnershipCommand;
 use crate::cluster::storage::AutoqueuesRaftStorage;
 use crate::cluster::types::{NodeConfig, TypeConfig};
-use crate::cluster::membership::{MembershipEvent, MembershipView, DdlMetrics, NodeInfo};
 use crate::types::now_nanos;
 
 /// In-memory network factory for local Raft (single-node or testing)
@@ -34,7 +33,11 @@ pub struct InMemoryNetworkFactory;
 impl RaftNetworkFactory<TypeConfig> for InMemoryNetworkFactory {
     type Network = InMemoryNetwork;
 
-    async fn new_client(&mut self, _target: u64, _node: &openraft::impls::BasicNode) -> Self::Network {
+    async fn new_client(
+        &mut self,
+        _target: u64,
+        _node: &openraft::impls::BasicNode,
+    ) -> Self::Network {
         InMemoryNetwork
     }
 }
@@ -47,7 +50,8 @@ impl RaftNetwork<TypeConfig> for InMemoryNetwork {
         &mut self,
         _rpc: AppendEntriesRequest<TypeConfig>,
         _option: RPCOption,
-    ) -> Result<AppendEntriesResponse<u64>, RPCError<u64, openraft::impls::BasicNode, RaftError<u64>>> {
+    ) -> Result<AppendEntriesResponse<u64>, RPCError<u64, openraft::impls::BasicNode, RaftError<u64>>>
+    {
         Ok(AppendEntriesResponse::Success)
     }
 
@@ -55,8 +59,13 @@ impl RaftNetwork<TypeConfig> for InMemoryNetwork {
         &mut self,
         _rpc: InstallSnapshotRequest<TypeConfig>,
         _option: RPCOption,
-    ) -> Result<InstallSnapshotResponse<u64>, RPCError<u64, openraft::impls::BasicNode, RaftError<u64, InstallSnapshotError>>> {
-        Ok(InstallSnapshotResponse { vote: openraft::Vote::new(0, 0) })
+    ) -> Result<
+        InstallSnapshotResponse<u64>,
+        RPCError<u64, openraft::impls::BasicNode, RaftError<u64, InstallSnapshotError>>,
+    > {
+        Ok(InstallSnapshotResponse {
+            vote: openraft::Vote::new(0, 0),
+        })
     }
 
     async fn vote(
@@ -95,10 +104,7 @@ impl RaftClusterNode {
     ///
     /// This initializes the Raft node but does NOT start it.
     /// Call `initialize()` on the bootstrap node, or `join()` on joining nodes.
-    pub async fn new(
-        node_id: u64,
-        nodes: HashMap<u64, NodeConfig>,
-    ) -> Result<Self, String> {
+    pub async fn new(node_id: u64, nodes: HashMap<u64, NodeConfig>) -> Result<Self, String> {
         // Create storage
         let storage = AutoqueuesRaftStorage::new();
 
@@ -153,7 +159,9 @@ impl RaftClusterNode {
         info!("Initializing Raft cluster as node {}", self.node_id);
 
         // Get address or return error
-        let addr = self.nodes.get(&self.node_id)
+        let addr = self
+            .nodes
+            .get(&self.node_id)
             .map(|n| format!("{}:{}", n.host, n.coordination_port))
             .ok_or_else(|| format!("Node {} not found in configuration", self.node_id))?;
 
@@ -169,10 +177,9 @@ impl RaftClusterNode {
             .map_err(|e| format!("Failed to initialize Raft: {:?}", e))?;
 
         // Emit NodeJoined event for self
-        let _ = self.membership_tx.send(MembershipEvent::node_joined(
-            self.node_id,
-            addr,
-        ));
+        let _ = self
+            .membership_tx
+            .send(MembershipEvent::node_joined(self.node_id, addr));
 
         // Mark as initialized
         self.initialized.store(true, Ordering::SeqCst);
@@ -275,7 +282,7 @@ impl RaftClusterNode {
     pub async fn get_leader(&self) -> Option<u64> {
         self.raft.metrics().borrow().current_leader
     }
-    
+
     /// Get current leader (alias for get_leader)
     pub async fn current_leader(&self) -> Option<u64> {
         self.get_leader().await
@@ -328,7 +335,12 @@ impl RaftClusterNode {
         key: &str,
         ttl_secs: u64,
     ) -> Result<crate::cluster::LeaseInfo, String> {
-        let lease_id = self.storage.ownership_state.write().unwrap().next_lease_id();
+        let lease_id = self
+            .storage
+            .ownership_state
+            .write()
+            .unwrap()
+            .next_lease_id();
         let timestamp = crate::types::now_nanos();
 
         // Propose the lease acquisition command
@@ -380,7 +392,10 @@ impl RaftClusterNode {
     ///
     /// Returns `Some(LeaseInfo)` if the key is leased (and not expired).
     /// Returns `None` if the key is not leased or the lease has expired.
-    pub async fn get_lease_owner(&self, key: &str) -> Result<Option<crate::cluster::LeaseInfo>, String> {
+    pub async fn get_lease_owner(
+        &self,
+        key: &str,
+    ) -> Result<Option<crate::cluster::LeaseInfo>, String> {
         // Ensure we're up-to-date
         self.raft
             .ensure_linearizable()
@@ -452,7 +467,9 @@ impl RaftClusterNode {
     /// Shutdown the Raft node
     pub async fn shutdown(&self) -> Result<(), String> {
         // Emit NodeLeft before shutdown
-        let _ = self.membership_tx.send(MembershipEvent::node_left(self.node_id));
+        let _ = self
+            .membership_tx
+            .send(MembershipEvent::node_left(self.node_id));
 
         info!("Shutting down Raft node {}", self.node_id);
         let _ = self.shutdown_tx.send(());
@@ -474,8 +491,8 @@ impl RaftClusterNode {
         network_config: crate::network::tcp_network::TcpNetworkConfig,
         data_dir: impl AsRef<std::path::Path>,
     ) -> Result<(Self, crate::network::TcpNetworkFactory), String> {
-        use crate::network::{TcpNetworkFactory, TcpRaftServer};
         use crate::cluster::raft_router::RaftMessageRouter;
+        use crate::network::{TcpNetworkFactory, TcpRaftServer};
         use std::time::Duration;
 
         // Create storage with persistence
@@ -500,9 +517,15 @@ impl RaftClusterNode {
         let (log_store, state_machine) = Adaptor::new(storage.clone());
 
         // Create Raft instance
-        let raft = Raft::new(node_id, raft_config, network_factory.clone(), log_store, state_machine)
-            .await
-            .map_err(|e| format!("Raft error: {:?}", e))?;
+        let raft = Raft::new(
+            node_id,
+            raft_config,
+            network_factory.clone(),
+            log_store,
+            state_machine,
+        )
+        .await
+        .map_err(|e| format!("Raft error: {:?}", e))?;
 
         let raft = Arc::new(raft); // Wrap in Arc for sharing
         let (shutdown_tx, _) = broadcast::channel(1);
@@ -553,15 +576,18 @@ impl RaftClusterNode {
             }
         }
 
-        Ok((Self {
-            node_id,
-            raft,
-            storage,
-            nodes,
-            shutdown_tx,
-            membership_tx,
-            initialized: AtomicBool::new(false),
-        }, network_factory))
+        Ok((
+            Self {
+                node_id,
+                raft,
+                storage,
+                nodes,
+                shutdown_tx,
+                membership_tx,
+                initialized: AtomicBool::new(false),
+            },
+            network_factory,
+        ))
     }
 
     /// Get reference to the Raft instance
@@ -580,21 +606,22 @@ impl RaftClusterNode {
             .map_err(|e| format!("Failed to add learner: {:?}", e))?;
 
         // Emit NodeJoined event
-        let _ = self.membership_tx.send(MembershipEvent::node_joined(
-            node_id,
-            addr,
-        ));
+        let _ = self
+            .membership_tx
+            .send(MembershipEvent::node_joined(node_id, addr));
 
         Ok(())
     }
-    
+
     /// Change cluster membership (promote learners to voters)
     pub async fn change_membership(
         &self,
         members: BTreeSet<u64>,
         retain: bool,
     ) -> Result<(), String> {
-        self.raft.change_membership(members, retain).await
+        self.raft
+            .change_membership(members, retain)
+            .await
             .map(|_| ())
             .map_err(|e| format!("Failed to change membership: {:?}", e))
     }
@@ -845,15 +872,17 @@ mod tests {
         );
 
         let node = RaftClusterNode::new(1, nodes).await.unwrap();
-        
+
         // Subscribe to events before initialization
         let mut rx = node.subscribe_membership();
-        
+
         // Initialize - should emit NodeJoined event
         node.initialize().await.unwrap();
 
         // Should receive NodeJoined event
-        let event = rx.try_recv().expect("Should receive NodeJoined event from initialize()");
+        let event = rx
+            .try_recv()
+            .expect("Should receive NodeJoined event from initialize()");
         match event.event_type {
             MembershipEventType::NodeJoined { node_id, addr } => {
                 assert_eq!(node_id, 1);
@@ -868,20 +897,20 @@ mod tests {
         // Note: Single-node Raft has issues with add_learner in openraft.
         // This test verifies the event emission code path by checking the
         // implementation is correct. Integration tests verify multi-node clusters.
-        
+
         // The event emission is verified in initialize() test.
         // Here we just verify the add_learner method has proper event emission code.
         // Full verification requires a multi-node cluster integration test.
-        
+
         // This test validates the code exists but may fail on single-node Raft:
         // - Single-node Raft cannot replicate add_learner properly
         // - Multi-node clusters work correctly
-        
+
         // For now, verify the implementation:
         // 1. add_learner() calls raft.add_learner()
         // 2. On success, it sends MembershipEvent::node_joined()
         // 3. The event is emitted via membership_tx broadcast channel
-        
+
         // The initialize_emits_node_joined_event test validates the event emission works
         // When add_learner succeeds in a multi-node setup, the event will be sent.
     }

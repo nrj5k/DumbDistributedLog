@@ -71,11 +71,14 @@ impl FailureDetector {
     /// Add a peer to track
     pub async fn add_peer(&self, node_id: u64, addr: String) {
         let mut peers = self.peers.write().await;
-        peers.insert(node_id, PeerState {
-            last_heartbeat: Instant::now(),
-            addr,
-            is_failed: false,
-        });
+        peers.insert(
+            node_id,
+            PeerState {
+                last_heartbeat: Instant::now(),
+                addr,
+                is_failed: false,
+            },
+        );
         debug!("Added peer {} to failure detector", node_id);
     }
 
@@ -104,30 +107,31 @@ impl FailureDetector {
     pub async fn check_failures(&self) {
         let now = Instant::now();
         let timeout = self.config.heartbeat_timeout;
-        
+
         let mut peers = self.peers.write().await;
         for (node_id, peer) in peers.iter_mut() {
             let elapsed = now.duration_since(peer.last_heartbeat);
-            
+
             if elapsed > timeout {
                 if !peer.is_failed {
                     // First time failure
                     peer.is_failed = true;
-                    warn!(
-                        "Node {} failed (no heartbeat for {:?})",
-                        node_id, elapsed
-                    );
-                    
+                    warn!("Node {} failed (no heartbeat for {:?})", node_id, elapsed);
+
                     // Emit failure event
-                    let _ = self.membership_tx.send(MembershipEvent::node_failed(*node_id));
+                    let _ = self
+                        .membership_tx
+                        .send(MembershipEvent::node_failed(*node_id));
                 }
             } else if peer.is_failed {
                 // Node recovered
                 peer.is_failed = false;
                 info!("Node {} recovered", node_id);
-                
+
                 // Emit recovery event
-                let _ = self.membership_tx.send(MembershipEvent::node_recovered(*node_id));
+                let _ = self
+                    .membership_tx
+                    .send(MembershipEvent::node_recovered(*node_id));
             }
         }
     }
@@ -136,7 +140,7 @@ impl FailureDetector {
     pub fn start(self) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(self.config.heartbeat_interval);
-            
+
             loop {
                 interval.tick().await;
                 self.check_failures().await;
@@ -151,7 +155,7 @@ impl FailureDetector {
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(self.config.heartbeat_interval);
-            
+
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
@@ -203,9 +207,9 @@ mod tests {
     async fn test_add_peer() {
         let (tx, _rx) = broadcast::channel(256);
         let detector = FailureDetector::new(FailureDetectorConfig::default(), tx);
-        
+
         detector.add_peer(2, "localhost:9091".to_string()).await;
-        
+
         let peers = detector.peers.read().await;
         assert!(peers.contains_key(&2));
         assert_eq!(peers.get(&2).unwrap().addr, "localhost:9091");
@@ -215,10 +219,10 @@ mod tests {
     async fn test_remove_peer() {
         let (tx, _rx) = broadcast::channel(256);
         let detector = FailureDetector::new(FailureDetectorConfig::default(), tx);
-        
+
         detector.add_peer(2, "localhost:9091".to_string()).await;
         detector.remove_peer(2).await;
-        
+
         let peers = detector.peers.read().await;
         assert!(!peers.contains_key(&2));
     }
@@ -227,15 +231,15 @@ mod tests {
     async fn test_heartbeat_updates_timestamp() {
         let (tx, _rx) = broadcast::channel(256);
         let detector = FailureDetector::new(FailureDetectorConfig::default(), tx);
-        
+
         detector.add_peer(2, "localhost:9091".to_string()).await;
-        
+
         // Wait a bit then record heartbeat
         sleep(Duration::from_millis(100)).await;
         let before = detector.peers.read().await.get(&2).unwrap().last_heartbeat;
-        
+
         detector.record_heartbeat(2).await;
-        
+
         let after = detector.peers.read().await.get(&2).unwrap().last_heartbeat;
         assert!(after > before);
     }
@@ -247,16 +251,17 @@ mod tests {
             heartbeat_timeout: Duration::from_millis(50),
             heartbeat_interval: Duration::from_millis(10),
         };
-        
+
         let detector = FailureDetector::new(config, tx);
         detector.add_peer(2, "localhost:9091".to_string()).await;
-        
+
         // Start failure detector
-        let _handle = detector.start_with_shutdown(tokio::sync::broadcast::channel(1).0.subscribe());
-        
+        let _handle =
+            detector.start_with_shutdown(tokio::sync::broadcast::channel(1).0.subscribe());
+
         // Wait for timeout
         sleep(Duration::from_millis(100)).await;
-        
+
         // Should have received failure event
         match rx.try_recv() {
             Ok(event) => {
@@ -279,13 +284,13 @@ mod tests {
             heartbeat_timeout: Duration::from_millis(50),
             heartbeat_interval: Duration::from_millis(10),
         };
-        
+
         let detector = FailureDetector::new(config, tx);
         detector.add_peer(2, "localhost:9091".to_string()).await;
-        
+
         // Initially not failed
         assert!(!detector.is_peer_failed(2).await);
-        
+
         // Record heartbeat to keep it alive
         detector.record_heartbeat(2).await;
         assert!(!detector.is_peer_failed(2).await);
@@ -295,19 +300,19 @@ mod tests {
     async fn test_get_healthy_and_failed_peers() {
         let (tx, _rx) = broadcast::channel(256);
         let detector = FailureDetector::new(FailureDetectorConfig::default(), tx);
-        
+
         detector.add_peer(2, "localhost:9091".to_string()).await;
         detector.add_peer(3, "localhost:9092".to_string()).await;
-        
+
         // Manually mark one as failed
         {
             let mut peers = detector.peers.write().await;
             peers.get_mut(&3).unwrap().is_failed = true;
         }
-        
+
         let healthy = detector.get_healthy_peers().await;
         let failed = detector.get_failed_peers().await;
-        
+
         assert_eq!(healthy, vec![2]);
         assert_eq!(failed, vec![3]);
     }
@@ -319,40 +324,47 @@ mod tests {
             heartbeat_timeout: Duration::from_millis(50),
             heartbeat_interval: Duration::from_millis(10),
         };
-        
+
         let detector = FailureDetector::new(config.clone(), tx);
         detector.add_peer(2, "localhost:9091".to_string()).await;
-        
+
         // Manually mark as failed
         {
             let mut peers = detector.peers.write().await;
             peers.get_mut(&2).unwrap().is_failed = true;
         }
-        
+
         // Verify it's marked as failed
         assert!(detector.is_peer_failed(2).await);
-        
+
         // Record heartbeat (should mark as recovered)
         detector.record_heartbeat(2).await;
-        
+
         // Run check_failures manually to emit recovery event
         detector.check_failures().await;
-        
+
         // Verify it's no longer marked as failed
         assert!(!detector.is_peer_failed(2).await);
-        
+
         // Check for recovery event
         match rx.try_recv() {
             Ok(event) => {
-                assert!(matches!(
-                    event.event_type,
-                    MembershipEventType::NodeRecovered { node_id: 2 }
-                ), "Expected NodeRecovered event, got {:?}", event.event_type);
+                assert!(
+                    matches!(
+                        event.event_type,
+                        MembershipEventType::NodeRecovered { node_id: 2 }
+                    ),
+                    "Expected NodeRecovered event, got {:?}",
+                    event.event_type
+                );
             }
             Err(e) => {
                 // The event might have been broadcast but already consumed
                 // Check that the peer is no longer failed
-                assert!(!detector.is_peer_failed(2).await, "Peer should be recovered");
+                assert!(
+                    !detector.is_peer_failed(2).await,
+                    "Peer should be recovered"
+                );
             }
         }
     }

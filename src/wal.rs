@@ -3,13 +3,13 @@
 //! Ensures entries survive crashes by writing to disk before acknowledging.
 //! Uses waly for append-only log files.
 
-use waly::WriteAheadLog;
-use std::path::{Path, PathBuf};
+use crate::traits::ddl::Entry;
+use log::{debug, info, warn};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
-use crate::traits::ddl::Entry;
-use log::{info, debug, warn};
+use waly::WriteAheadLog;
 
 /// WAL-backed storage for a single topic
 pub struct TopicWal {
@@ -29,19 +29,23 @@ impl TopicWal {
         let sanitized = sanitize_topic(topic)?;
         let topic_dir = data_dir.join("wal").join(sanitized);
         std::fs::create_dir_all(&topic_dir)?;
-        
+
         let path = topic_dir.join("entries.wal");
-        
+
         // Create WAL with default options
         let wal = WriteAheadLog::new(&path)?;
-        
+
         // Get last entry ID by reading existing entries
-        let last_id = wal.read_all()
+        let last_id = wal
+            .read_all()
             .map(|entries| entries.iter().map(|e| e.id).max().unwrap_or(0))
             .unwrap_or(0);
-        
-        info!("Opened WAL for topic '{}' at {:?} with last_id={}", topic, path, last_id);
-        
+
+        info!(
+            "Opened WAL for topic '{}' at {:?} with last_id={}",
+            topic, path, last_id
+        );
+
         Ok(Self {
             wal: Arc::new(Mutex::new(wal)),
             topic: topic.to_string(),
@@ -49,34 +53,34 @@ impl TopicWal {
             last_id: Arc::new(Mutex::new(last_id)),
         })
     }
-    
+
     /// Append an entry to the WAL
     pub async fn append(&self, entry: &Entry) -> Result<u64, WalError> {
         // Serialize entry using JSON (NOT bincode - it's archived!)
         let data = serde_json::to_vec(entry)?;
-        
+
         // Write to WAL - the waly library handles durability
         let mut wal = self.wal.lock().await;
         let log_entry = wal.append(data)?;
-        
+
         // Update our logical entry ID
         let mut last_id = self.last_id.lock().await;
         *last_id = log_entry.id;
-        
+
         debug!("WAL appended entry {} to topic '{}'", entry.id, self.topic);
-        
+
         Ok(log_entry.id)
     }
-    
+
     /// Read entries from WAL (for recovery)
     pub async fn read_entries(&self) -> Result<Vec<Entry>, WalError> {
         let wal = self.wal.lock().await;
-        
+
         // Read all entries from the waly WAL
         let log_entries = wal.read_all()?;
-        
+
         let mut entries = Vec::new();
-        
+
         for log_entry in log_entries {
             // Deserialize each entry from the stored data
             match serde_json::from_slice::<Entry>(&log_entry.data) {
@@ -88,26 +92,30 @@ impl TopicWal {
                 }
             }
         }
-        
+
         // Sort by ID to ensure order
         entries.sort_by_key(|e| e.id);
-        
+
         // Update last_id based on recovered entries
         let mut last_id = self.last_id.lock().await;
         if let Some(last) = entries.last() {
             *last_id = last.id;
         }
-        
-        info!("Recovered {} entries from WAL for topic '{}'", entries.len(), self.topic);
+
+        info!(
+            "Recovered {} entries from WAL for topic '{}'",
+            entries.len(),
+            self.topic
+        );
         Ok(entries)
     }
-    
+
     /// Sync WAL to disk (ensure durability)
     pub async fn sync(&self) -> Result<(), WalError> {
         // waly flushes on each append, so no explicit sync needed
         Ok(())
     }
-    
+
     /// Get last written ID
     pub async fn last_id(&self) -> u64 {
         *self.last_id.lock().await
@@ -115,10 +123,10 @@ impl TopicWal {
 }
 
 /// Sanitize topic name for filesystem with security validation.
-/// 
+///
 /// First validates using the shared validate_topic function, then
 /// sanitizes unsafe filesystem characters.
-/// 
+///
 /// Returns an error for:
 /// - Empty topic names
 /// - Topic names exceeding 255 characters
@@ -127,7 +135,7 @@ impl TopicWal {
 fn sanitize_topic(topic: &str) -> Result<String, WalError> {
     // First validate using the shared function
     crate::traits::ddl::validate_topic(topic)?;
-    
+
     // Then sanitize for filesystem (replace unsafe characters)
     Ok(topic.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_"))
 }
@@ -152,13 +160,13 @@ impl WalManager {
     /// Create new WAL manager
     pub fn new(data_dir: &Path) -> Self {
         std::fs::create_dir_all(data_dir).expect("Failed to create data directory");
-        
+
         Self {
             data_dir: data_dir.to_path_buf(),
             wals: Arc::new(RwLock::new(HashMap::new())),
         }
     }
-    
+
     /// Get or create WAL for a topic
     pub async fn get_or_create(&self, topic: &str) -> Result<TopicWal, WalError> {
         // Check if already open
@@ -168,17 +176,17 @@ impl WalManager {
                 return Ok(wal.clone());
             }
         }
-        
+
         // Create new
         let wal = TopicWal::open(topic, &self.data_dir)?;
-        
+
         // Store
         let mut wals = self.wals.write().await;
         wals.insert(topic.to_string(), wal.clone());
-        
+
         Ok(wal)
     }
-    
+
     /// Append to a topic's WAL
     pub async fn append(&self, topic: &str, entry: &Entry) -> Result<u64, WalError> {
         // First ensure the WAL exists
@@ -186,18 +194,18 @@ impl WalManager {
         // Now append (we don't need write lock since TopicWal::append is thread-safe)
         wal.append(entry).await
     }
-    
+
     /// Recover all topics from WAL
     pub async fn recover_all(&self) -> Result<HashMap<String, Vec<Entry>>, WalError> {
         let mut recovered = HashMap::new();
-        
+
         // Scan data directory for all topic WALs
         let wal_dir = self.data_dir.join("wal");
         if !wal_dir.exists() {
             debug!("WAL directory does not exist, nothing to recover");
             return Ok(recovered);
         }
-        
+
         let entries = match std::fs::read_dir(&wal_dir) {
             Ok(e) => e,
             Err(e) => {
@@ -205,7 +213,7 @@ impl WalManager {
                 return Ok(recovered);
             }
         };
-        
+
         for entry in entries {
             let entry = match entry {
                 Ok(e) => e,
@@ -214,7 +222,7 @@ impl WalManager {
                     continue;
                 }
             };
-            
+
             let file_type = match entry.file_type() {
                 Ok(t) => t,
                 Err(e) => {
@@ -222,16 +230,16 @@ impl WalManager {
                     continue;
                 }
             };
-            
+
             if !file_type.is_dir() {
                 continue;
             }
-            
+
             let sanitized_topic = entry.file_name().to_string_lossy().to_string();
             let topic = unsanitize_topic(&sanitized_topic);
-            
+
             info!("Found WAL for topic: {}", topic);
-            
+
             // Open WAL and read entries
             let wal = match self.get_or_create(&topic).await {
                 Ok(w) => w,
@@ -240,7 +248,7 @@ impl WalManager {
                     continue;
                 }
             };
-            
+
             let topic_entries = match wal.read_entries().await {
                 Ok(e) => e,
                 Err(e) => {
@@ -248,16 +256,16 @@ impl WalManager {
                     continue;
                 }
             };
-            
+
             if !topic_entries.is_empty() {
                 recovered.insert(topic, topic_entries);
             }
         }
-        
+
         info!("Recovered {} topics from WAL", recovered.len());
         Ok(recovered)
     }
-    
+
     /// Sync all WALs to disk
     pub async fn sync_all(&self) -> Result<(), WalError> {
         let wals = self.wals.read().await;
@@ -268,7 +276,7 @@ impl WalManager {
         }
         Ok(())
     }
-    
+
     /// List all topics with WALs
     pub async fn list_topics(&self) -> Vec<String> {
         let wals = self.wals.read().await;
@@ -293,16 +301,16 @@ impl Clone for TopicWal {
 pub enum WalError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    
+
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
-    
+
     #[error("WAL error: {0}")]
     Wal(String),
-    
+
     #[error("Topic not found: {0}")]
     TopicNotFound(String),
-    
+
     #[error("Invalid topic name: {0}")]
     InvalidTopic(String),
 }
@@ -326,7 +334,7 @@ impl From<crate::traits::ddl::DdlError> for WalError {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    
+
     #[test]
     fn test_wal_sanity_check() {
         let tmp = TempDir::new().unwrap();
@@ -334,7 +342,7 @@ mod tests {
         let wal = TopicWal::open("test/topic", tmp.path());
         assert!(wal.is_ok());
     }
-    
+
     #[test]
     fn test_sanitize_topic_valid() {
         // Valid topic names
@@ -342,26 +350,26 @@ mod tests {
         assert!(sanitize_topic("topic123").is_ok());
         assert!(sanitize_topic("my-topic").is_ok());
     }
-    
+
     #[test]
     fn test_sanitize_topic_sanitizes_chars() {
         // Characters should be sanitized
         let result = sanitize_topic("test/topic").unwrap();
         assert_eq!(result, "test_topic");
-        
+
         let result = sanitize_topic("test:topic").unwrap();
         assert_eq!(result, "test_topic");
-        
+
         let result = sanitize_topic("test\\topic").unwrap();
         assert_eq!(result, "test_topic");
     }
-    
+
     #[test]
     fn test_sanitize_topic_empty() {
         // Empty topic should fail
         assert!(sanitize_topic("").is_err());
     }
-    
+
     #[test]
     fn test_sanitize_topic_path_traversal() {
         // Path traversal should fail
@@ -369,14 +377,14 @@ mod tests {
         assert!(sanitize_topic("topic/../etc").is_err());
         assert!(sanitize_topic("..").is_err());
     }
-    
+
     #[test]
     fn test_sanitize_topic_too_long() {
         // Long topic names should fail
         let long_topic = "a".repeat(300);
         assert!(sanitize_topic(&long_topic).is_err());
     }
-    
+
     #[test]
     fn test_sanitize_topic_control_chars() {
         // Control characters should fail
@@ -384,95 +392,95 @@ mod tests {
         assert!(sanitize_topic("topic\x1fname").is_err());
         assert!(sanitize_topic("topic\nname").is_err());
     }
-    
+
     #[tokio::test]
     async fn test_wal_recovery() {
         let temp_dir = TempDir::new().unwrap();
-        
+
         // Create WAL and write entry
         {
             let wal = TopicWal::open("test", temp_dir.path()).unwrap();
-            let entry = Entry { 
-                id: 1, 
-                timestamp: 123, 
-                topic: "test".into(),  // Convert &str to Arc<str>
-                payload: vec![1, 2, 3].into()  // Convert Vec<u8> to Arc<[u8]>
+            let entry = Entry {
+                id: 1,
+                timestamp: 123,
+                topic: "test".into(),          // Convert &str to Arc<str>
+                payload: vec![1, 2, 3].into(), // Convert Vec<u8> to Arc<[u8]>
             };
             wal.append(&entry).await.unwrap();
         }
-        
+
         // Re-open and recover - waly shares the same file handle
         let wal = TopicWal::open("test", temp_dir.path()).unwrap();
         let entries = wal.read_entries().await.unwrap();
-        
+
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].id, 1);
         assert_eq!(&*entries[0].payload, &[1, 2, 3]);
     }
-    
+
     #[tokio::test]
     async fn test_wal_multiple_entries_recovery() {
         let temp_dir = TempDir::new().unwrap();
-        
+
         // Create WAL and write multiple entries
         {
             let wal = TopicWal::open("multi-test", temp_dir.path()).unwrap();
             for i in 1..=5 {
-                let entry = Entry { 
-                    id: i, 
-                    timestamp: i * 100, 
-                    topic: "multi-test".into(),  // Convert &str to Arc<str>
-                    payload: vec![i as u8; 10].into()  // Convert Vec<u8> to Arc<[u8]>
+                let entry = Entry {
+                    id: i,
+                    timestamp: i * 100,
+                    topic: "multi-test".into(), // Convert &str to Arc<str>
+                    payload: vec![i as u8; 10].into(), // Convert Vec<u8> to Arc<[u8]>
                 };
                 wal.append(&entry).await.unwrap();
             }
         }
-        
+
         // Re-open and recover
         let wal = TopicWal::open("multi-test", temp_dir.path()).unwrap();
         let entries = wal.read_entries().await.unwrap();
-        
+
         assert_eq!(entries.len(), 5);
         // Verify entries are sorted by ID
         for (i, entry) in entries.iter().enumerate() {
             assert_eq!(entry.id, (i + 1) as u64);
         }
     }
-    
+
     #[tokio::test]
     async fn test_wal_manager_recover_all() {
         let temp_dir = TempDir::new().unwrap();
         let manager = WalManager::new(temp_dir.path());
-        
+
         // Write entries to multiple topics
         {
             let wal1 = manager.get_or_create("topic1").await.unwrap();
-            let entry1 = Entry { 
-                id: 1, 
-                timestamp: 1, 
+            let entry1 = Entry {
+                id: 1,
+                timestamp: 1,
                 topic: "topic1".into(),  // Convert &str to Arc<str>
-                payload: vec![1].into()  // Convert Vec<u8> to Arc<[u8]>
+                payload: vec![1].into(), // Convert Vec<u8> to Arc<[u8]>
             };
             wal1.append(&entry1).await.unwrap();
-            
+
             let wal2 = manager.get_or_create("topic2").await.unwrap();
-            let entry2 = Entry { 
-                id: 1, 
-                timestamp: 2, 
+            let entry2 = Entry {
+                id: 1,
+                timestamp: 2,
                 topic: "topic2".into(),  // Convert &str to Arc<str>
-                payload: vec![2].into()  // Convert Vec<u8> to Arc<[u8]>
+                payload: vec![2].into(), // Convert Vec<u8> to Arc<[u8]>
             };
             wal2.append(&entry2).await.unwrap();
         }
-        
+
         // Recover all
         let recovered = manager.recover_all().await.unwrap();
-        
+
         // Should have both topics
         assert_eq!(recovered.len(), 2);
         assert!(recovered.contains_key("topic1"));
         assert!(recovered.contains_key("topic2"));
-        
+
         // Verify entries
         let topic1_entries = recovered.get("topic1").unwrap();
         assert_eq!(topic1_entries.len(), 1);

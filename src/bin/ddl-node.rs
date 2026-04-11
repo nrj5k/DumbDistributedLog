@@ -220,9 +220,13 @@ fn print_help() {
     println!();
     println!("OPTIONS:");
     println!("  --port, -p <NUM>         Coordination port (default: 6967)");
-    println!("  --peers <ADDRS>          Comma-separated peer addresses (format: node_id@host:port)");
+    println!(
+        "  --peers <ADDRS>          Comma-separated peer addresses (format: node_id@host:port)"
+    );
     println!("  --bootstrap, -b          Bootstrap a new cluster (first node only)");
-    println!("  --data-dir, -d <PATH>    Data directory for persistence (default: /tmp/ddl-node-<id>)");
+    println!(
+        "  --data-dir, -d <PATH>    Data directory for persistence (default: /tmp/ddl-node-<id>)"
+    );
     println!("  --host <HOST>            Host address to bind (default: 0.0.0.0)");
     println!("  --api-port, -a <NUM>     Client API port (default: 8080, 0 to disable)");
     println!("  --help                   Show this help message");
@@ -274,25 +278,31 @@ async fn main() -> Result<(), String> {
     // Create nodes configuration for initialization
     // We need at least our own node config for initialize() to work
     let mut nodes_config = HashMap::new();
-    nodes_config.insert(args.id, ddl::cluster::types::NodeConfig {
-        node_id: args.id,
-        host: args.host.clone(),
-        communication_port: args.port.saturating_sub(3),  // Default offset
-        coordination_port: args.port,
-    });
-    
+    nodes_config.insert(
+        args.id,
+        ddl::cluster::types::NodeConfig {
+            node_id: args.id,
+            host: args.host.clone(),
+            communication_port: args.port.saturating_sub(3), // Default offset
+            coordination_port: args.port,
+        },
+    );
+
     // Add peer configs if available
     for (peer_id, peer_addr) in &args.peers {
         // Parse peer address format: "host:port"
         let parts: Vec<&str> = peer_addr.split(':').collect();
         if parts.len() == 2 {
             if let Ok(port) = parts[1].parse::<u16>() {
-                nodes_config.insert(*peer_id, ddl::cluster::types::NodeConfig {
-                    node_id: *peer_id,
-                    host: parts[0].to_string(),
-                    communication_port: port.saturating_sub(3),
-                    coordination_port: port,
-                });
+                nodes_config.insert(
+                    *peer_id,
+                    ddl::cluster::types::NodeConfig {
+                        node_id: *peer_id,
+                        host: parts[0].to_string(),
+                        communication_port: port.saturating_sub(3),
+                        coordination_port: port,
+                    },
+                );
             }
         }
     }
@@ -321,8 +331,14 @@ async fn main() -> Result<(), String> {
             eprintln!("✗ CRITICAL: TCP server NOT listening on {}", bind_addr);
             eprintln!("✗ Error: {}", e);
             eprintln!("\nPossible causes:");
-            eprintln!("  1. Port {} is already in use by another process", args.port);
-            eprintln!("  2. Address {} is not available on this machine", args.host);
+            eprintln!(
+                "  1. Port {} is already in use by another process",
+                args.port
+            );
+            eprintln!(
+                "  2. Address {} is not available on this machine",
+                args.host
+            );
             eprintln!("  3. Permission denied (try ports > 1024 or run as root)");
             eprintln!("\nTo diagnose:");
             eprintln!("  ss -tlnp | grep {}", args.port);
@@ -415,10 +431,7 @@ async fn main() -> Result<(), String> {
 }
 
 /// Handle a client TCP connection
-async fn handle_client(
-    stream: TcpStream,
-    node: Arc<RaftClusterNode>,
-) -> Result<(), String> {
+async fn handle_client(stream: TcpStream, node: Arc<RaftClusterNode>) -> Result<(), String> {
     let (reader, mut writer) = stream.into_split();
     let reader = BufReader::new(reader);
     let mut lines = reader.lines();
@@ -505,8 +518,7 @@ async fn handle_client(
                 }
             }
             "PING" => "PONG\n".to_string(),
-            "HELP" => {
-                "Commands:\n\
+            "HELP" => "Commands:\n\
                  CLAIM <topic> - Claim topic ownership\n\
                  RELEASE <topic> - Release topic ownership\n\
                  GET_OWNER <topic> - Get topic owner\n\
@@ -515,8 +527,7 @@ async fn handle_client(
                  PING - Health check\n\
                  HELP - Show this help\n\
                  QUIT - Close connection\n"
-                    .to_string()
-            }
+                .to_string(),
             "QUIT" => {
                 writer
                     .write_all(b"Bye!\n")
@@ -524,7 +535,10 @@ async fn handle_client(
                     .map_err(|e| format!("Write error: {}", e))?;
                 break;
             }
-            _ => format!("ERROR: Unknown command '{}'. Type HELP for commands.\n", command),
+            _ => format!(
+                "ERROR: Unknown command '{}'. Type HELP for commands.\n",
+                command
+            ),
         };
 
         writer

@@ -1,8 +1,6 @@
 //! Comprehensive end-to-end tests for DDL
 
-use ddl::config::{
-    Config, SourceType, AggregationType,
-};
+use ddl::config::{AggregationType, Config, SourceType};
 use ddl::ZmqPubSubBroker;
 
 #[cfg(test)]
@@ -44,10 +42,22 @@ mod e2e_tests {
     /// Test aggregation type parsing
     #[tokio::test]
     async fn test_aggregation_type_parsing() {
-        assert!(matches!(AggregationType::from_str("avg").unwrap(), AggregationType::Avg));
-        assert!(matches!(AggregationType::from_str("max").unwrap(), AggregationType::Max));
-        assert!(matches!(AggregationType::from_str("p95").unwrap(), AggregationType::Percentile95));
-        assert!(matches!(AggregationType::from_str("count:cpu>80").unwrap(), AggregationType::Count(_)));
+        assert!(matches!(
+            AggregationType::from_str("avg").unwrap(),
+            AggregationType::Avg
+        ));
+        assert!(matches!(
+            AggregationType::from_str("max").unwrap(),
+            AggregationType::Max
+        ));
+        assert!(matches!(
+            AggregationType::from_str("p95").unwrap(),
+            AggregationType::Percentile95
+        ));
+        assert!(matches!(
+            AggregationType::from_str("count:cpu>80").unwrap(),
+            AggregationType::Count(_)
+        ));
     }
 
     /// Test ZMQ pub/sub broker

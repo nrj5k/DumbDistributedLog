@@ -4,7 +4,7 @@
 //! in DDL to compute global metrics across multiple nodes.
 
 use ddl::ddl_distributed::DdlDistributed;
-use ddl::traits::ddl::{DDL, DdlConfig};
+use ddl::traits::ddl::{DdlConfig, DDL};
 use std::thread;
 use std::time::Duration;
 
@@ -38,14 +38,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match ddl.subscribe("cpu_node1").await {
         Ok(stream) => {
             if let Some(entry) = stream.try_next() {
-                println!("Received CPU entry: {:?}", String::from_utf8_lossy(&entry.payload));
+                println!(
+                    "Received CPU entry: {:?}",
+                    String::from_utf8_lossy(&entry.payload)
+                );
                 // Acknowledge the entry
                 match ddl.ack("cpu_node1", entry.id).await {
                     Ok(_) => println!("Acknowledged CPU entry"),
                     Err(e) => println!("Error acknowledging CPU entry: {}", e),
                 }
             }
-        },
+        }
         Err(e) => println!("Error subscribing to CPU: {}", e),
     }
 

@@ -6,6 +6,8 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 
+use crate::peer::config::PeerConfig;
+
 /// A single entry in the distributed log
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Entry {
@@ -21,12 +23,12 @@ pub struct Entry {
 
 impl Entry {
     /// Create a new entry with auto-generated timestamp
-    /// 
+    ///
     /// # Example
     /// ```
     /// use ddl::Entry;
     /// use std::sync::Arc;
-    /// 
+    ///
     /// let entry = Entry::new(1, "my-topic", vec![1, 2, 3]);
     /// assert_eq!(entry.id, 1);
     /// assert_eq!(*entry.topic, "my-topic");
@@ -39,9 +41,14 @@ impl Entry {
             payload: payload.into(),
         }
     }
-    
+
     /// Create an entry with a specific timestamp (for testing)
-    pub fn with_timestamp(id: u64, timestamp: u64, topic: impl Into<Arc<str>>, payload: impl Into<Arc<[u8]>>) -> Self {
+    pub fn with_timestamp(
+        id: u64,
+        timestamp: u64,
+        topic: impl Into<Arc<str>>,
+        payload: impl Into<Arc<[u8]>>,
+    ) -> Self {
         Self {
             id,
             timestamp,
@@ -62,33 +69,33 @@ pub struct EntryStream {
 impl EntryStream {
     /// Create a new EntryStream from a receiver
     pub fn new(receiver: crossbeam::channel::Receiver<Entry>) -> Self {
-        Self { 
+        Self {
             receiver,
             backpressure_mode: BackpressureMode::DropOldest,
         }
     }
-    
+
     /// Create a new EntryStream with backpressure mode
     pub fn with_backpressure(
-        receiver: crossbeam::channel::Receiver<Entry>, 
-        backpressure_mode: BackpressureMode
+        receiver: crossbeam::channel::Receiver<Entry>,
+        backpressure_mode: BackpressureMode,
     ) -> Self {
-        Self { 
+        Self {
             receiver,
             backpressure_mode,
         }
     }
-    
+
     /// Get the backpressure mode
     pub fn backpressure_mode(&self) -> BackpressureMode {
         self.backpressure_mode
     }
-    
+
     /// Get the next entry (blocking)
     pub fn next(&mut self) -> Option<Entry> {
         self.receiver.recv().ok()
     }
-    
+
     /// Try to get the next entry (non-blocking)
     pub fn try_next(&self) -> Option<Entry> {
         self.receiver.try_recv().ok()
@@ -99,12 +106,12 @@ impl EntryStream {
 #[async_trait]
 pub trait DDL: Send + Sync {
     /// Push data to a topic
-    /// 
+    ///
     /// Returns the entry ID if successful
     async fn push(&self, topic: &str, payload: Vec<u8>) -> Result<u64, DdlError>;
-    
+
     /// Push multiple entries to a topic in a batch
-    /// 
+    ///
     /// Returns the last entry ID if successful
     async fn push_batch(&self, topic: &str, payloads: Vec<Vec<u8>>) -> Result<u64, DdlError> {
         // Default implementation for backward compatibility
@@ -114,20 +121,20 @@ pub trait DDL: Send + Sync {
         }
         Ok(last_id)
     }
-    
+
     /// Subscribe to a topic (exact match only)
     ///
     /// Returns a stream of entries. Must call `ack` on each entry.
     async fn subscribe(&self, topic: &str) -> Result<EntryStream, DdlError>;
-    
+
     /// Acknowledge an entry has been processed
     ///
     /// This allows the log to advance and free space.
     async fn ack(&self, topic: &str, entry_id: u64) -> Result<(), DdlError>;
-    
+
     /// Get current position (last entry ID) for a topic
     async fn position(&self, topic: &str) -> Result<u64, DdlError>;
-    
+
     /// Check if this node owns a topic
     fn owns_topic(&self, topic: &str) -> bool;
 }
@@ -180,6 +187,8 @@ pub struct DdlConfig {
     pub raft_enabled: bool,
     /// Is this the bootstrap node (first node in cluster)
     pub is_bootstrap: bool,
+    /// Peer configuration for distributed metric fetching
+    pub peer_config: Option<PeerConfig>,
 }
 
 impl Default for DdlConfig {
@@ -189,7 +198,7 @@ impl Default for DdlConfig {
             peers: vec![],
             owned_topics: vec![],
             buffer_size: 1024 * 1024, // 1MB default
-            max_topics: 10000, // Default limit of 10,000 topics
+            max_topics: 10000,        // Default limit of 10,000 topics
             gossip_enabled: false,
             gossip_bind_addr: "0.0.0.0:0".to_string(),
             gossip_bootstrap: vec![],
@@ -197,10 +206,11 @@ impl Default for DdlConfig {
             wal_enabled: true,
             subscription_buffer_size: 1000,
             subscription_backpressure: BackpressureMode::DropOldest,
-            heartbeat_interval_secs: 5,  // Default: 5 seconds
-            owner_timeout_secs: 30,        // Default: 30 seconds
-            raft_enabled: false,           // Raft disabled by default
-            is_bootstrap: false,           // Not a bootstrap node by default
+            heartbeat_interval_secs: 5, // Default: 5 seconds
+            owner_timeout_secs: 30,     // Default: 30 seconds
+            raft_enabled: false,        // Raft disabled by default
+            is_bootstrap: false,        // Not a bootstrap node by default
+            peer_config: None,          // No peer config by default
         }
     }
 }
@@ -210,44 +220,43 @@ impl Default for DdlConfig {
 pub enum DdlError {
     #[error("Topic {0} not owned by this node")]
     NotOwner(String),
-    
+
     #[error("Topic {0} not found")]
     TopicNotFound(String),
-    
+
     #[error("Entry {0} not found in topic {1}")]
     EntryNotFound(u64, String),
-    
-    #[error("Buffer full for topic {0}")]  
+
+    #[error("Buffer full for topic {0}")]
     BufferFull(String),
-    
+
     #[error("Topic limit exceeded: max {max}, current {current}")]
     TopicLimitExceeded { max: usize, current: usize },
-    
+
     #[error("Network error: {0}")]
     Network(String),
-    
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    
+
     #[error("Serialization error: {0}")]
     Serialization(String),
-    
+
     #[error("Subscriber buffer full for topic {0}")]
     SubscriberBufferFull(String),
-    
+
     #[error("Lock poisoned for topic {0}")]
     LockPoisoned(String),
-    
+
     #[error("WAL error: {0}")]
     Wal(String),
-    
+
     #[error("Invalid topic name: {0}")]
     InvalidTopic(String),
 
     // ========================================================================
     // Lease Errors (TTL-based ownership for SCORE integration)
     // ========================================================================
-
     #[error("Lease for key {key} is held by node {owner}")]
     LeaseHeld { key: String, owner: u64 },
 
@@ -256,21 +265,34 @@ pub enum DdlError {
 
     #[error("Lease {0} not found")]
     LeaseNotFound(u64),
+
+    /// Peer request error for distributed metric fetching
+    #[error("Peer request error: {0}")]
+    PeerRequest(String),
 }
 
 /// Validate topic name for defense-in-depth
 pub fn validate_topic(topic: &str) -> Result<(), DdlError> {
     if topic.is_empty() {
-        return Err(DdlError::InvalidTopic("topic name cannot be empty".to_string()));
+        return Err(DdlError::InvalidTopic(
+            "topic name cannot be empty".to_string(),
+        ));
     }
     if topic.len() > 255 {
-        return Err(DdlError::InvalidTopic(format!("topic name too long: {} characters", topic.len())));
+        return Err(DdlError::InvalidTopic(format!(
+            "topic name too long: {} characters",
+            topic.len()
+        )));
     }
     if topic.contains("..") {
-        return Err(DdlError::InvalidTopic("topic name cannot contain '..'".to_string()));
+        return Err(DdlError::InvalidTopic(
+            "topic name cannot contain '..'".to_string(),
+        ));
     }
     if topic.chars().any(|c| c.is_control()) {
-        return Err(DdlError::InvalidTopic("topic name cannot contain control characters".to_string()));
+        return Err(DdlError::InvalidTopic(
+            "topic name cannot contain control characters".to_string(),
+        ));
     }
     Ok(())
 }
@@ -283,7 +305,7 @@ mod tests {
     #[test]
     fn test_ddl_config_defaults() {
         let config = DdlConfig::default();
-        
+
         assert_eq!(config.heartbeat_interval_secs, 5);
         assert_eq!(config.owner_timeout_secs, 30);
         assert!(config.wal_enabled); // WAL should be enabled by default

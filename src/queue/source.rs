@@ -24,10 +24,10 @@ pub enum AutoQueuesError {
 
     #[error("Source error: {0}")]
     SourceError(String),
-    
+
     #[error("Queue already exists: {0}")]
     QueueAlreadyExists(String),
-    
+
     #[error("Queue not found: {0}")]
     QueueNotFound(String),
 }
@@ -62,12 +62,12 @@ where
             should_stop: Arc::new(AtomicBool::new(false)),
         }
     }
-    
+
     /// Check if the source is paused
     pub fn is_paused(&self) -> bool {
         self.paused.load(Ordering::Relaxed)
     }
-    
+
     /// Check if the source should stop
     pub fn should_stop(&self) -> bool {
         self.should_stop.load(Ordering::Relaxed)
@@ -96,34 +96,34 @@ where
                 IntervalConfig::Constant(ms) => Duration::from_millis(*ms),
                 IntervalConfig::Adaptive { initial_ms, .. } => Duration::from_millis(*initial_ms),
             };
-            
+
             let mut interval = interval(interval_duration);
-            
+
             // Store persistence reference for use in the loop
             let persistence_ref = persistence.clone();
-            
+
             loop {
                 // Check if we should stop
                 if should_stop.load(Ordering::Relaxed) {
                     break;
                 }
-                
+
                 // Wait for the next interval tick
                 interval.tick().await;
-                
+
                 // Skip if paused
                 if paused.load(Ordering::Relaxed) {
                     continue;
                 }
-                
+
                 // Call the function to get data
                 let result = f();
-                
+
                 // Publish to queue
                 if let Ok(mut queue_guard) = queue.write() {
                     QueueTrait::publish(&mut *queue_guard, result.clone()).ok();
                 }
-                
+
                 // Persist data if persistence is enabled
                 if let Some(ref persister) = persistence_ref {
                     // Convert result to f64 for persistence (this assumes T can be converted to f64)

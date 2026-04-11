@@ -1,16 +1,16 @@
 //! Networking module for AutoQueues
 
-pub mod transport_traits;
+pub mod hybrid;
 pub mod raft_transport;
 pub mod tcp;
-pub mod hybrid;
 pub mod tcp_network;
+pub mod transport_traits;
 
-pub use transport_traits::{ConnectionInfo, Transport, TransportError, TransportType};
-pub use raft_transport::ZmqRaftNetwork;
-pub use tcp::{TcpTransport, NetworkMessage};
 pub use hybrid::TransportConfig;
+pub use raft_transport::ZmqRaftNetwork;
+pub use tcp::{NetworkMessage, TcpTransport};
 pub use tcp_network::{TcpNetwork, TcpNetworkConfig, TcpNetworkFactory, TcpRaftServer};
+pub use transport_traits::{ConnectionInfo, Transport, TransportError, TransportType};
 
 pub mod pubsub;
 

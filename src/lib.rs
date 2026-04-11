@@ -74,21 +74,32 @@
 //! - Consistent syntax across all operations
 
 // Core modules for HPC performance
-pub mod ddl_distributed;
 pub mod benchmarks;
-pub mod topic_queue;
 pub mod cluster;
 pub mod config;
 pub mod constants;
+pub mod ddl_distributed;
+pub mod ddl_wal;
 pub mod gossip;
 pub mod gossip_protocol;
 pub mod network;
 pub mod node;
+pub mod peer;
 pub mod queue;
+pub mod topic_queue;
 pub mod traits;
 pub mod types;
 pub mod wal;
-pub mod ddl_wal;
+
+// ============================================================================
+// Peer Types
+// ============================================================================
+
+/// Peer-to-peer request/response system for distributed metric fetching.
+pub use crate::peer::{
+    CircuitBreaker, HealthMonitor, MetricKey, PeerCache, PeerConfig, PeerError, PeerFetcher,
+    PeerRegistry, PeerRequest, PeerResponse, PeerRouter, RequestId, ServiceAdvertisement,
+};
 
 // ============================================================================
 // Core DDL Types
@@ -97,7 +108,7 @@ pub mod ddl_wal;
 /// Primary DDL trait for distributed log operations.
 ///
 /// Use this trait when you need type erasure or when implementing custom DDL backends.
-pub use crate::traits::ddl::{DDL, DdlConfig, DdlError};
+pub use crate::traits::ddl::{DdlConfig, DdlError, DDL};
 
 /// Dumb Distributed Log implementation.
 ///
@@ -176,7 +187,7 @@ pub use crate::queue::persistence::{PersistenceConfig, QueuePersistence};
 /// TCP transport implementation for distributed deployments.
 ///
 /// Uses tokio for async I/O with custom binary protocol.
-pub use crate::network::tcp::{TcpTransport, NetworkMessage};
+pub use crate::network::tcp::{NetworkMessage, TcpTransport};
 
 /// Connection information for transport endpoints.
 pub use crate::network::transport_traits::ConnectionInfo;
@@ -326,7 +337,7 @@ pub use crate::cluster::NodeInfo;
 pub use crate::cluster::RaftClusterNode;
 
 // Lease Types (for SCORE integration)
-pub use crate::cluster::ownership_machine::{LeaseEntry, LeaseInfo, LeaseError};
+pub use crate::cluster::ownership_machine::{LeaseEntry, LeaseError, LeaseInfo};
 
 /// Node management and startup utilities.
 pub use crate::node::{start_node, AutoQueuesNode};

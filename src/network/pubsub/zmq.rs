@@ -50,7 +50,9 @@ impl ZmqPubSubBroker {
     }
 
     /// Create new ZeroMQ pub/sub broker with custom bind address
-    pub fn with_bind_addr(bind_addr: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn with_bind_addr(
+        bind_addr: &str,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let context = Context::new();
 
         // Create channel for socket commands
@@ -64,12 +66,15 @@ impl ZmqPubSubBroker {
             match context_clone.socket(SocketType::PUB) {
                 Ok(publisher) => {
                     if let Err(e) = publisher.bind(&bind_addr_clone) {
-                        eprintln!("Failed to bind publisher socket to {}: {}", bind_addr_clone, e);
+                        eprintln!(
+                            "Failed to bind publisher socket to {}: {}",
+                            bind_addr_clone, e
+                        );
                         return;
                     }
-                    
+
                     println!("Publisher bound to {}", bind_addr_clone);
-                    
+
                     while let Some(command) = command_rx.blocking_recv() {
                         match command {
                             SocketCommand::Publish { topic, data } => {
@@ -77,7 +82,7 @@ impl ZmqPubSubBroker {
                                 frame.extend_from_slice(topic.as_bytes());
                                 frame.push(0); // Separator
                                 frame.extend_from_slice(&data);
-                                
+
                                 // Send without waiting (non-blocking)
                                 if let Err(e) = publisher.send(&frame, zmq::DONTWAIT) {
                                     eprintln!("Failed to send message: {}", e);
@@ -115,16 +120,18 @@ impl ZmqPubSubBroker {
         data: &T,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let message = serde_json::to_vec(data)?;
-        
-        self.command_tx.send(SocketCommand::Publish {
-            topic: topic.to_string(),
-            data: message,
-        }).map_err(|e| {
-            Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to send publish command: {}", e),
-            ))
-        })?;
+
+        self.command_tx
+            .send(SocketCommand::Publish {
+                topic: topic.to_string(),
+                data: message,
+            })
+            .map_err(|e| {
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to send publish command: {}", e),
+                ))
+            })?;
 
         Ok(())
     }
@@ -180,8 +187,7 @@ impl ZmqPubSubBroker {
                 Ok(data) => {
                     // Extract topic and payload
                     if let Some(separator_pos) = data.iter().position(|&b| b == 0) {
-                        let topic =
-                            String::from_utf8_lossy(&data[..separator_pos]).to_string();
+                        let topic = String::from_utf8_lossy(&data[..separator_pos]).to_string();
                         let payload = data[separator_pos + 1..].to_vec();
                         Ok(Some((topic, payload)))
                     } else {
@@ -216,7 +222,10 @@ impl ZmqPubSubBroker {
     }
 
     /// Unsubscribe
-    pub fn unsubscribe(&self, subscriber_id: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub fn unsubscribe(
+        &self,
+        subscriber_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut subscribers = self.subscribers.lock().map_err(|e| {
             Box::new(std::io::Error::new(
                 std::io::ErrorKind::Other,
@@ -263,31 +272,29 @@ impl ZmqPubSubClient {
         let context_clone = context.clone();
         std::thread::spawn(move || {
             let mut publisher: Option<Socket> = None;
-            
+
             while let Some(command) = command_rx.blocking_recv() {
                 match command {
-                    SocketCommand::Connect(addr) => {
-                        match context_clone.socket(SocketType::PUB) {
-                            Ok(socket) => {
-                                if let Err(e) = socket.connect(&addr) {
-                                    eprintln!("Failed to connect publisher socket: {}", e);
-                                } else {
-                                    publisher = Some(socket);
-                                    println!("Connected publisher to {}", addr);
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to create publisher socket: {}", e);
+                    SocketCommand::Connect(addr) => match context_clone.socket(SocketType::PUB) {
+                        Ok(socket) => {
+                            if let Err(e) = socket.connect(&addr) {
+                                eprintln!("Failed to connect publisher socket: {}", e);
+                            } else {
+                                publisher = Some(socket);
+                                println!("Connected publisher to {}", addr);
                             }
                         }
-                    }
+                        Err(e) => {
+                            eprintln!("Failed to create publisher socket: {}", e);
+                        }
+                    },
                     SocketCommand::Publish { topic, data } => {
                         if let Some(ref socket) = publisher {
                             let mut frame = Vec::new();
                             frame.extend_from_slice(topic.as_bytes());
                             frame.push(0); // Separator
                             frame.extend_from_slice(&data);
-                            
+
                             // Send without waiting (non-blocking)
                             if let Err(e) = socket.send(&frame, zmq::DONTWAIT) {
                                 eprintln!("Failed to send message: {}", e);
@@ -311,13 +318,18 @@ impl ZmqPubSubClient {
     }
 
     /// Connect publisher to broker
-    pub fn connect_publisher(&self, addr: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.command_tx.send(SocketCommand::Connect(addr.to_string())).map_err(|e| {
-            Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to send connect command: {}", e),
-            ))
-        })?;
+    pub fn connect_publisher(
+        &self,
+        addr: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.command_tx
+            .send(SocketCommand::Connect(addr.to_string()))
+            .map_err(|e| {
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to send connect command: {}", e),
+                ))
+            })?;
         Ok(())
     }
 
@@ -328,16 +340,18 @@ impl ZmqPubSubClient {
         data: &T,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let message = serde_json::to_vec(data)?;
-        
-        self.command_tx.send(SocketCommand::Publish {
-            topic: topic.to_string(),
-            data: message,
-        }).map_err(|e| {
-            Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to send publish command: {}", e),
-            ))
-        })?;
+
+        self.command_tx
+            .send(SocketCommand::Publish {
+                topic: topic.to_string(),
+                data: message,
+            })
+            .map_err(|e| {
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to send publish command: {}", e),
+                ))
+            })?;
 
         Ok(())
     }
@@ -381,8 +395,7 @@ impl ZmqPubSubClient {
                 Ok(data) => {
                     // Extract topic and payload
                     if let Some(separator_pos) = data.iter().position(|&b| b == 0) {
-                        let topic =
-                            String::from_utf8_lossy(&data[..separator_pos]).to_string();
+                        let topic = String::from_utf8_lossy(&data[..separator_pos]).to_string();
                         let payload = data[separator_pos + 1..].to_vec();
                         Ok(Some((topic, payload)))
                     } else {
@@ -398,7 +411,10 @@ impl ZmqPubSubClient {
     }
 
     /// Unsubscribe from topic
-    pub fn unsubscribe(&self, subscriber_id: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub fn unsubscribe(
+        &self,
+        subscriber_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut subscribers = self.subscribers.lock().map_err(|e| {
             Box::new(std::io::Error::new(
                 std::io::ErrorKind::Other,
@@ -436,14 +452,13 @@ mod tests {
     #[tokio::test]
     async fn test_broker_publish() {
         // Use dynamic port (0) to avoid port conflicts
-        let broker = ZmqPubSubBroker::with_bind_addr("tcp://*:0")
-            .expect("Failed to create broker");
-        
+        let broker = ZmqPubSubBroker::with_bind_addr("tcp://*:0").expect("Failed to create broker");
+
         let message = TestMessage {
             content: "test".to_string(),
             value: 42,
         };
-        
+
         let result = broker.publish("test.topic", &message);
         // We can't verify delivery without a subscriber, but we can check it doesn't error
         assert!(result.is_ok());
@@ -452,12 +467,12 @@ mod tests {
     #[tokio::test]
     async fn test_client_publish() {
         let client = ZmqPubSubClient::new().expect("Failed to create client");
-        
+
         let message = TestMessage {
             content: "test".to_string(),
             value: 42,
         };
-        
+
         let result = client.publish("test.topic", &message);
         // We can't verify delivery without a broker, but we can check it doesn't error
         assert!(result.is_ok());

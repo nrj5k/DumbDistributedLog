@@ -481,7 +481,7 @@ mod tests {
     fn test_aggregation_health_score_various_cpu() {
         // Test various combinations
         assert_eq!(aggregation::health_score(25.0, 75.0), 150.0); // (100-25) + 75 = 150
-        assert_eq!(aggregation::health_score(75.0, 25.0), 50.0);  // (100-75) + 25 = 50
+        assert_eq!(aggregation::health_score(75.0, 25.0), 50.0); // (100-75) + 25 = 50
         assert_eq!(aggregation::health_score(50.0, 50.0), 100.0); // (100-50) + 50 = 100
     }
 
@@ -613,7 +613,7 @@ mod tests {
         local.insert("memory_free".to_string(), 60.0);
 
         let remote = HashMap::new();
-        let expression = "(100 - cpu) + memory_free";  // This matches the health_score pattern
+        let expression = "(100 - cpu) + memory_free"; // This matches the health_score pattern
         let sources: Vec<String> = vec![];
 
         let result = AutoQueuesNode::compute_expression(&local, &remote, expression, &sources);
@@ -636,7 +636,7 @@ mod tests {
         nodes.insert(2, 35.0);
         remote.insert("cpu".to_string(), nodes);
 
-        let expression = "cpu + memory";  // Sum pattern
+        let expression = "cpu + memory"; // Sum pattern
         let sources = vec!["cpu".to_string()];
 
         let result = AutoQueuesNode::compute_expression(&local, &remote, expression, &sources);

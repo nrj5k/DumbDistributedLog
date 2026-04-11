@@ -3,11 +3,11 @@
 //! This file contains tests for boundary conditions, unusual inputs,
 //! and edge case behaviors that might cause panics or unexpected behavior.
 
-use ddl::traits::ddl::{DDL, DdlConfig};
-use ddl::DdlDistributed;
 use ddl::queue::interval::IntervalConfig;
 use ddl::queue::source::{FunctionSource, QueueSource};
 use ddl::queue::spmc_lockfree_queue::SPMCLockFreeQueue as SimpleQueue;
+use ddl::traits::ddl::{DdlConfig, DDL};
+use ddl::DdlDistributed;
 use std::sync::{Arc, RwLock};
 
 // ============================================================================

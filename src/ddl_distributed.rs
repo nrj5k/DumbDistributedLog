@@ -9,8 +9,16 @@ use crate::cluster::membership::MembershipEvent;
 use crate::cluster::raft_cluster::RaftClusterNode;
 use crate::cluster::types::NodeConfig;
 use crate::gossip::GossipCoordinator;
-use crate::traits::ddl::{validate_topic, DDL, DdlConfig, DdlError, EntryStream};
+use crate::peer::advertisement::AdvertisementManager;
+use crate::peer::cache::PeerCache;
+use crate::peer::circuit_breaker::CircuitBreaker;
+use crate::peer::fetcher::PeerFetcher;
+use crate::peer::health::HealthMonitor;
+use crate::peer::pending::PendingRequestTracker;
+use crate::peer::registry::PeerRegistry;
+use crate::peer::routing::PeerRouter;
 use crate::topic_queue::{notify_subscribers, SubscriberInfo, TopicQueue};
+use crate::traits::ddl::{validate_topic, DdlConfig, DdlError, EntryStream, DDL};
 use async_trait::async_trait;
 use crossbeam::channel::bounded;
 use dashmap::DashMap;
@@ -41,6 +49,8 @@ pub struct DdlDistributed {
     gossip_task_handle: Option<JoinHandle<()>>,
     /// Atomic counter for topic count (avoid DashMap::len() overhead)
     topic_count: AtomicUsize,
+    /// Peer fetcher for distributed metric fetching (None in standalone mode)
+    peer_fetcher: Option<Arc<PeerFetcher>>,
 }
 
 impl Drop for DdlDistributed {
@@ -88,6 +98,7 @@ impl DdlDistributed {
             gossip: None,
             gossip_task_handle: None,
             topic_count,
+            peer_fetcher: None,
         }
     }
 
@@ -119,26 +130,33 @@ impl DdlDistributed {
         // Create Raft cluster if enabled
         let raft_cluster = if config.raft_enabled {
             let raft = Self::create_raft_cluster(&config).await?;
-            
+
             // Initialize cluster if bootstrap node
             if config.is_bootstrap {
-                info!(node_id = config.node_id, "Initializing Raft cluster as bootstrap node");
+                info!(
+                    node_id = config.node_id,
+                    "Initializing Raft cluster as bootstrap node"
+                );
                 raft.initialize()
                     .await
                     .map_err(|e| DdlError::Network(format!("Failed to initialize Raft: {}", e)))?;
-                
+
                 // P1 Fix: Wait for leadership with exponential backoff retry
                 let max_attempts = 10;
                 let mut attempt = 0;
                 let base_delay = std::time::Duration::from_millis(100);
                 let max_delay = std::time::Duration::from_secs(5);
-                
+
                 loop {
                     if raft.is_leader().await {
-                        info!(node_id = config.node_id, "Won leadership after {} attempts", attempt + 1);
+                        info!(
+                            node_id = config.node_id,
+                            "Won leadership after {} attempts",
+                            attempt + 1
+                        );
                         break;
                     }
-                    
+
                     attempt += 1;
                     if attempt >= max_attempts {
                         return Err(DdlError::Network(format!(
@@ -146,21 +164,24 @@ impl DdlDistributed {
                             max_attempts
                         )));
                     }
-                    
+
                     let delay = std::cmp::min(base_delay * 2u32.pow(attempt as u32), max_delay);
-                    debug!(node_id = config.node_id, attempt, "Waiting for leadership, next check in {:?}", delay);
+                    debug!(
+                        node_id = config.node_id,
+                        attempt, "Waiting for leadership, next check in {:?}", delay
+                    );
                     tokio::time::sleep(delay).await;
                 }
-                
+
                 // Now claim topics as the elected leader
                 for topic in &config.owned_topics {
                     info!(node_id = config.node_id, topic = %topic, "Claiming topic via Raft");
-                    raft.claim_topic(topic)
-                        .await
-                        .map_err(|e| DdlError::Network(format!("Failed to claim topic {}: {}", topic, e)))?;
+                    raft.claim_topic(topic).await.map_err(|e| {
+                        DdlError::Network(format!("Failed to claim topic {}: {}", topic, e))
+                    })?;
                 }
             }
-            
+
             Some(raft)
         } else {
             None
@@ -169,12 +190,12 @@ impl DdlDistributed {
         // Create gossip coordinator for node discovery (used in both modes)
         let gossip = if config.gossip_enabled || config.raft_enabled {
             let mut gossip = GossipCoordinator::new(
-                    config.node_id,
-                    &config.gossip_bind_addr,
-                    config.gossip_bootstrap.clone(),
-                )
-                .await
-                .map_err(|e| DdlError::Network(format!("Failed to create gossip: {:?}", e)))?;
+                config.node_id,
+                &config.gossip_bind_addr,
+                config.gossip_bootstrap.clone(),
+            )
+            .await
+            .map_err(|e| DdlError::Network(format!("Failed to create gossip: {:?}", e)))?;
 
             // Set configurable heartbeat and timeout values
             gossip.set_heartbeat_interval(config.heartbeat_interval_secs);
@@ -187,7 +208,10 @@ impl DdlDistributed {
 
                 // Join gossip for this topic (for discovery)
                 gossip.join_topic(topic).await.map_err(|e| {
-                    DdlError::Network(format!("Failed to join gossip for topic {}: {:?}", topic, e))
+                    DdlError::Network(format!(
+                        "Failed to join gossip for topic {}: {:?}",
+                        topic, e
+                    ))
                 })?;
             }
 
@@ -210,6 +234,34 @@ impl DdlDistributed {
         // Initialize topic count from owned topics
         let topic_count = AtomicUsize::new(config.owned_topics.len());
 
+        // Create peer components if peer_config is provided
+        let peer_fetcher = if config.peer_config.is_some() {
+            let peer_config = config.peer_config.clone().unwrap_or_default();
+            let registry = Arc::new(PeerRegistry::new(300));
+            let advertisement_mgr = Arc::new(AdvertisementManager::new(300));
+            let router = Arc::new(PeerRouter::new(registry.clone(), advertisement_mgr.clone()));
+            let pending = Arc::new(PendingRequestTracker::new(&peer_config));
+            let health = Arc::new(HealthMonitor::new(registry.clone(), peer_config.clone()));
+            let circuit_breaker = Arc::new(CircuitBreaker::new(&peer_config));
+            let cache = Arc::new(PeerCache::new(60, 1000));
+
+            // Pass gossip coordinator to PeerFetcher (only if gossip is enabled)
+            let gossip_for_fetcher = gossip.as_ref().map(|(g, _)| g.clone());
+
+            Some(Arc::new(PeerFetcher::new(
+                config.node_id,
+                peer_config,
+                router,
+                pending,
+                health,
+                circuit_breaker,
+                cache,
+                gossip_for_fetcher,
+            )))
+        } else {
+            None
+        };
+
         let (gossip, gossip_task_handle) = match gossip {
             Some((g, h)) => (Some(g), Some(h)),
             None => (None, None),
@@ -223,6 +275,7 @@ impl DdlDistributed {
             gossip,
             gossip_task_handle,
             topic_count,
+            peer_fetcher,
         })
     }
 
@@ -230,7 +283,7 @@ impl DdlDistributed {
     async fn create_raft_cluster(config: &DdlConfig) -> Result<Arc<RaftClusterNode>, DdlError> {
         // Build node configs from peers
         let mut nodes: HashMap<u64, NodeConfig> = HashMap::new();
-        
+
         // Add self to node list
         nodes.insert(
             config.node_id,
@@ -272,7 +325,9 @@ impl DdlDistributed {
 
         // Check topic limit using atomic counter (0 means unlimited)
         // Use Ordering::Relaxed for performance - strict ordering not needed
-        if self.config.max_topics > 0 && self.topic_count.load(Ordering::Relaxed) >= self.config.max_topics {
+        if self.config.max_topics > 0
+            && self.topic_count.load(Ordering::Relaxed) >= self.config.max_topics
+        {
             // Double-check with DashMap for race condition
             if let Some(queue) = self.topics.get(topic) {
                 return Ok(queue.clone());
@@ -286,14 +341,11 @@ impl DdlDistributed {
         // Use entry API for atomic check-and-insert
         // or_insert_with returns the value (either existing or newly created)
         // This handles the race where another thread creates the topic concurrently
-        let result = self
-            .topics
-            .entry(topic.to_string())
-            .or_insert_with(|| {
-                // Increment counter on new topic creation (use Relaxed ordering for performance)
-                self.topic_count.fetch_add(1, Ordering::Relaxed);
-                Arc::new(TopicQueue::new(self.config.buffer_size))
-            });
+        let result = self.topics.entry(topic.to_string()).or_insert_with(|| {
+            // Increment counter on new topic creation (use Relaxed ordering for performance)
+            self.topic_count.fetch_add(1, Ordering::Relaxed);
+            Arc::new(TopicQueue::new(self.config.buffer_size))
+        });
 
         Ok(result.clone())
     }
@@ -343,7 +395,9 @@ impl DdlDistributed {
                 .await
                 .map_err(|e| DdlError::Network(format!("Raft claim failed: {}", e)))
         } else {
-            Err(DdlError::Network("Not in distributed Raft mode".to_string()))
+            Err(DdlError::Network(
+                "Not in distributed Raft mode".to_string(),
+            ))
         }
     }
 
@@ -354,7 +408,9 @@ impl DdlDistributed {
                 .await
                 .map_err(|e| DdlError::Network(format!("Raft release failed: {}", e)))
         } else {
-            Err(DdlError::Network("Not in distributed Raft mode".to_string()))
+            Err(DdlError::Network(
+                "Not in distributed Raft mode".to_string(),
+            ))
         }
     }
 
@@ -390,7 +446,7 @@ impl DdlDistributed {
                 let _ = raft.release_topic(topic).await;
             }
         }
-        
+
         // Shutdown gossip
         if let Some(gossip) = &self.gossip {
             gossip.shutdown().await;
@@ -406,7 +462,7 @@ impl DdlDistributed {
     pub fn is_distributed(&self) -> bool {
         self.gossip.is_some() || self.raft_cluster.is_some()
     }
-    
+
     /// Check if running in Raft mode (strongly consistent ownership)
     pub fn is_raft_enabled(&self) -> bool {
         self.raft_cluster.is_some()
@@ -478,8 +534,12 @@ impl DdlDistributed {
     /// Events are delivered via a broadcast channel with configurable buffer size.
     /// Slow consumers won't block cluster operations - old events are dropped
     /// when the buffer is full (using `tokio::sync::broadcast` semantics).
-    pub fn subscribe_membership(&self) -> Option<tokio::sync::broadcast::Receiver<MembershipEvent>> {
-        self.raft_cluster.as_ref().map(|rc| rc.subscribe_membership())
+    pub fn subscribe_membership(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Receiver<MembershipEvent>> {
+        self.raft_cluster
+            .as_ref()
+            .map(|rc| rc.subscribe_membership())
     }
 
     /// Get current cluster membership view (Raft mode only)
@@ -692,6 +752,33 @@ impl DdlDistributed {
             ))
         }
     }
+
+    /// Fetch a metric from peers in distributed mode
+    ///
+    /// In standalone mode, returns an error since peer fetching is not available.
+    pub async fn fetch_metric(
+        &self,
+        metric_key: &str,
+        payload: Vec<u8>,
+    ) -> Result<Vec<u8>, DdlError> {
+        match &self.peer_fetcher {
+            Some(fetcher) => fetcher
+                .fetch_metric(
+                    crate::peer::types::MetricKey(metric_key.to_string()),
+                    payload,
+                )
+                .await
+                .map_err(|e| DdlError::PeerRequest(e.to_string())),
+            None => Err(DdlError::PeerRequest(
+                "Peer fetching not available in standalone mode".to_string(),
+            )),
+        }
+    }
+
+    /// Get the peer fetcher if available
+    pub fn peer_fetcher(&self) -> Option<&Arc<PeerFetcher>> {
+        self.peer_fetcher.as_ref()
+    }
 }
 
 #[async_trait]
@@ -784,10 +871,7 @@ impl DDL for DdlDistributed {
         self.subscribers
             .entry(topic.to_string())
             .or_insert_with(Vec::new)
-            .push(SubscriberInfo {
-                sender,
-                created_at,
-            });
+            .push(SubscriberInfo { sender, created_at });
 
         // Create stream with backpressure mode
         Ok(EntryStream::with_backpressure(

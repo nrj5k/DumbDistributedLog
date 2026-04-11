@@ -3,15 +3,15 @@
 //! Provides reliable, ordered message delivery with flow control.
 //! Unlike ZMQ, TCP will block rather than drop messages.
 
-use tokio::net::{TcpListener, TcpStream};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
-use tokio::time::{timeout, Duration};
+use crate::network::transport_traits::TransportError;
+use crate::traits::ddl::Entry;
+use log::{debug, error, info, warn};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{RwLock, mpsc, Semaphore};
-use crate::traits::ddl::Entry;
-use crate::network::transport_traits::TransportError;
-use log::{info, debug, warn, error};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{mpsc, RwLock, Semaphore};
+use tokio::time::{timeout, Duration};
 
 /// Maximum message size (10MB)
 const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
@@ -41,34 +41,41 @@ struct PeerConnection {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum NetworkMessage {
     /// Push entry to a topic
-    Push {
-        topic: String,
-        entry: Entry,
-    },
+    Push { topic: String, entry: Entry },
     /// Batch push entries to a topic
-    BatchPush {
-        topic: String,
-        entries: Vec<Entry>,
-    },
+    BatchPush { topic: String, entries: Vec<Entry> },
     /// Subscribe request
     Subscribe {
         topic: String,
         subscriber_id: String,
     },
     /// Acknowledge entry
-    Ack {
-        topic: String,
-        entry_id: u64,
-    },
+    Ack { topic: String, entry_id: u64 },
     /// Heartbeat for connection keepalive
     Heartbeat,
+    /// Peer metric request (TCP direct)
+    PeerReq {
+        request_id: u128,
+        source_node: u64,
+        target_node: u64,
+        metric_key: String,
+        payload: Vec<u8>,
+    },
+    /// Peer metric response (TCP direct)
+    PeerResp {
+        request_id: u128,
+        source_node: u64,
+        success: bool,
+        payload: Vec<u8>,
+        error_message: Option<String>,
+    },
 }
 
 impl TcpTransport {
     /// Create new TCP transport
     pub async fn new(bind_addr: &str, max_connections: usize) -> Result<Self, TransportError> {
         let (tx, rx) = mpsc::channel(1000);
-        
+
         Ok(Self {
             bind_addr: bind_addr.to_string(),
             peers: Arc::new(RwLock::new(HashMap::new())),
@@ -77,21 +84,20 @@ impl TcpTransport {
             connection_sem: Arc::new(Semaphore::new(max_connections)),
         })
     }
-    
+
     /// Start listening for connections
     pub async fn start_listener(&self) -> Result<(), TransportError> {
-        let listener = timeout(
-            Duration::from_secs(30),
-            TcpListener::bind(&self.bind_addr)
-        )
-        .await
-        .map_err(|_| TransportError::Timeout(format!("Bind timeout to {}", self.bind_addr)))??;
+        let listener = timeout(Duration::from_secs(30), TcpListener::bind(&self.bind_addr))
+            .await
+            .map_err(|_| {
+                TransportError::Timeout(format!("Bind timeout to {}", self.bind_addr))
+            })??;
         info!("TCP transport listening on {}", self.bind_addr);
-        
+
         let peers = self.peers.clone();
         let receiver_sender = self.sender.clone();
         let sem = self.connection_sem.clone();
-        
+
         tokio::spawn(async move {
             loop {
                 // Accept connection (with backpressure)
@@ -102,13 +108,13 @@ impl TcpTransport {
                         continue;
                     }
                 };
-                
+
                 match listener.accept().await {
                     Ok((stream, addr)) => {
                         debug!("Accepted connection from {}", addr);
                         let peers = peers.clone();
                         let sender = receiver_sender.clone();
-                        
+
                         tokio::spawn(async move {
                             // Handle connection (releases permit when done)
                             handle_connection(stream, peers, sender).await;
@@ -121,24 +127,21 @@ impl TcpTransport {
                 }
             }
         });
-        
+
         Ok(())
     }
-    
+
     /// Connect to a peer
     pub async fn connect_to_peer(&self, node_id: &str, addr: &str) -> Result<(), TransportError> {
-        let stream = timeout(
-            Duration::from_secs(10),
-            TcpStream::connect(addr)
-        )
-        .await
-        .map_err(|_| TransportError::Timeout(format!("Connect timeout to {}", addr)))??;
+        let stream = timeout(Duration::from_secs(10), TcpStream::connect(addr))
+            .await
+            .map_err(|_| TransportError::Timeout(format!("Connect timeout to {}", addr)))??;
         info!("Connected to peer {} at {}", node_id, addr);
-        
+
         // Create channel for sending to this peer
         let (tx, mut rx) = mpsc::channel(100);
         let peer_sem = Arc::new(Semaphore::new(100)); // Max 100 in-flight to this peer
-        
+
         // Spawn writer task
         let mut writer = BufWriter::new(stream);
         tokio::spawn(async move {
@@ -151,16 +154,18 @@ impl TcpTransport {
                         continue;
                     }
                 };
-                
+
                 // Write length prefix + data with timeout
                 let len = data.len() as u32;
-                
+
                 // Write length with timeout
                 match timeout(
                     Duration::from_secs(30),
-                    writer.write_all(&len.to_be_bytes())
-                ).await {
-                    Ok(Ok(())) => {},
+                    writer.write_all(&len.to_be_bytes()),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
                     Ok(Err(e)) => {
                         error!("Failed to write message length: {:?}", e);
                         break;
@@ -170,13 +175,10 @@ impl TcpTransport {
                         break;
                     }
                 }
-                
+
                 // Write data with timeout
-                match timeout(
-                    Duration::from_secs(30),
-                    writer.write_all(&data)
-                ).await {
-                    Ok(Ok(())) => {},
+                match timeout(Duration::from_secs(30), writer.write_all(&data)).await {
+                    Ok(Ok(())) => {}
                     Ok(Err(e)) => {
                         error!("Failed to write message data: {:?}", e);
                         break;
@@ -186,13 +188,10 @@ impl TcpTransport {
                         break;
                     }
                 }
-                
+
                 // Flush with timeout
-                match timeout(
-                    Duration::from_secs(30),
-                    writer.flush()
-                ).await {
-                    Ok(Ok(())) => {},
+                match timeout(Duration::from_secs(30), writer.flush()).await {
+                    Ok(Ok(())) => {}
                     Ok(Err(e)) => {
                         error!("Failed to flush: {:?}", e);
                         break;
@@ -204,53 +203,62 @@ impl TcpTransport {
                 }
             }
         });
-        
+
         // Store peer connection
         let peer = PeerConnection {
             sender: tx,
             semaphore: peer_sem,
         };
-        
+
         self.peers.write().await.insert(node_id.to_string(), peer);
         Ok(())
     }
-    
+
     /// Send message to a specific peer (with backpressure)
-    pub async fn send_to_peer(&self, node_id: &str, msg: NetworkMessage) -> Result<(), TransportError> {
+    pub async fn send_to_peer(
+        &self,
+        node_id: &str,
+        msg: NetworkMessage,
+    ) -> Result<(), TransportError> {
         let peers = self.peers.read().await;
-        
+
         if let Some(peer) = peers.get(node_id) {
             // Acquire permit for backpressure
-            let _permit = peer.semaphore.acquire().await
+            let _permit = peer
+                .semaphore
+                .acquire()
+                .await
                 .map_err(|_| TransportError::Backpressure("Peer busy".to_string()))?;
-            
-            peer.sender.send(msg).await
+
+            peer.sender
+                .send(msg)
+                .await
                 .map_err(|_| TransportError::SendFailed(node_id.to_string()))?;
-            
+
             Ok(())
         } else {
             Err(TransportError::PeerNotFound(node_id.to_string()))
         }
     }
-    
+
     /// Broadcast to all peers
     pub async fn broadcast(&self, msg: NetworkMessage) -> Result<(), TransportError> {
         let peers = self.peers.read().await;
-        
+
         for (node_id, peer) in peers.iter() {
             if let Err(e) = peer.sender.send(msg.clone()).await {
                 warn!("Failed to send to {}: {:?}", node_id, e);
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Receive next message from network
     pub async fn recv(&mut self) -> Option<NetworkMessage> {
         self.receiver.recv().await
     }
-    
+
     /// Get connected peer count
     pub async fn peer_count(&self) -> usize {
         self.peers.read().await.len()
@@ -265,32 +273,29 @@ async fn handle_connection(
 ) {
     let mut reader = BufReader::new(stream);
     let mut len_buf = [0u8; 4];
-    
+
     loop {
         // Read length prefix with timeout
-        match timeout(
-            Duration::from_secs(60),
-            reader.read_exact(&mut len_buf)
-        ).await {
+        match timeout(Duration::from_secs(60), reader.read_exact(&mut len_buf)).await {
             Ok(Ok(_)) => {
                 let len = u32::from_be_bytes(len_buf) as usize;
-                
+
                 // Validate message size to prevent OOM attacks
                 if len > MAX_MESSAGE_SIZE {
-                    error!("Message too large: {} bytes (max: {})", len, MAX_MESSAGE_SIZE);
+                    error!(
+                        "Message too large: {} bytes (max: {})",
+                        len, MAX_MESSAGE_SIZE
+                    );
                     break;
                 }
                 if len == 0 {
                     error!("Empty message length");
                     break;
                 }
-                
+
                 // Read message data with timeout
                 let mut data = vec![0u8; len];
-                match timeout(
-                    Duration::from_secs(60),
-                    reader.read_exact(&mut data)
-                ).await {
+                match timeout(Duration::from_secs(60), reader.read_exact(&mut data)).await {
                     Ok(Ok(_)) => {
                         // Deserialize
                         match serde_json::from_slice::<NetworkMessage>(&data) {
@@ -341,12 +346,7 @@ mod tests {
 
     #[test]
     fn test_network_message_push_serialization() {
-        let entry = Entry::with_timestamp(
-            1,
-            12345,
-            "test.topic",
-            vec![1, 2, 3],
-        );
+        let entry = Entry::with_timestamp(1, 12345, "test.topic", vec![1, 2, 3]);
         let msg = NetworkMessage::Push {
             topic: "test.topic".to_string(),
             entry: entry.clone(),
@@ -360,7 +360,10 @@ mod tests {
         // Deserialize
         let decoded: NetworkMessage = serde_json::from_str(&json).expect("Should deserialize Push");
         match decoded {
-            NetworkMessage::Push { topic, entry: decoded_entry } => {
+            NetworkMessage::Push {
+                topic,
+                entry: decoded_entry,
+            } => {
                 assert_eq!(topic, "test.topic");
                 assert_eq!(decoded_entry.id, 1);
                 assert_eq!(&*decoded_entry.payload, &[1, 2, 3]);
@@ -384,7 +387,8 @@ mod tests {
         assert!(json.contains("batch.topic"));
         assert!(json.contains("\"BatchPush\""));
 
-        let decoded: NetworkMessage = serde_json::from_str(&json).expect("Should deserialize BatchPush");
+        let decoded: NetworkMessage =
+            serde_json::from_str(&json).expect("Should deserialize BatchPush");
         match decoded {
             NetworkMessage::BatchPush { topic, entries } => {
                 assert_eq!(topic, "batch.topic");
@@ -408,9 +412,13 @@ mod tests {
         assert!(json.contains("node-123"));
         assert!(json.contains("\"Subscribe\""));
 
-        let decoded: NetworkMessage = serde_json::from_str(&json).expect("Should deserialize Subscribe");
+        let decoded: NetworkMessage =
+            serde_json::from_str(&json).expect("Should deserialize Subscribe");
         match decoded {
-            NetworkMessage::Subscribe { topic, subscriber_id } => {
+            NetworkMessage::Subscribe {
+                topic,
+                subscriber_id,
+            } => {
                 assert_eq!(topic, "subscribe.topic");
                 assert_eq!(subscriber_id, "node-123");
             }
@@ -447,7 +455,8 @@ mod tests {
         let json = serde_json::to_string(&msg).expect("Should serialize Heartbeat");
         assert!(json.contains("\"Heartbeat\""));
 
-        let decoded: NetworkMessage = serde_json::from_str(&json).expect("Should deserialize Heartbeat");
+        let decoded: NetworkMessage =
+            serde_json::from_str(&json).expect("Should deserialize Heartbeat");
         match decoded {
             NetworkMessage::Heartbeat => {}
             _ => panic!("Expected Heartbeat variant"),
@@ -493,12 +502,8 @@ mod tests {
 
     #[test]
     fn test_entry_serialization() {
-        let entry = Entry::with_timestamp(
-            12345,
-            999888777,
-            "test.entry",
-            vec![0, 255, 128, 64, 32],
-        );
+        let entry =
+            Entry::with_timestamp(12345, 999888777, "test.entry", vec![0, 255, 128, 64, 32]);
 
         let json = serde_json::to_string(&entry).expect("Should serialize Entry");
         assert!(json.contains("12345"));

@@ -4,8 +4,12 @@
 //! coordination using epidemic broadcast.
 
 use bytes::Bytes;
-use iroh::{protocol::Router, Endpoint, endpoint::presets::N0};
-use iroh_gossip::{net::Gossip, TopicId, api::{GossipSender, Event}};
+use iroh::{endpoint::presets::N0, protocol::Router, Endpoint};
+use iroh_gossip::{
+    api::{Event, GossipSender},
+    net::Gossip,
+    TopicId,
+};
 use n0_future::StreamExt;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,8 +18,12 @@ use tokio::sync::{broadcast, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
-use crate::gossip_protocol::{GossipMessage, NodeId, TopicOwnership};
 use crate::cluster::membership::{MembershipEvent, NodeInfo};
+use crate::gossip_protocol::{GossipMessage, NodeId, TopicOwnership};
+use crate::peer::advertisement::{AdvertisementManager, ServiceAdvertisement};
+use crate::peer::codec::PeerCodec;
+use crate::peer::fetcher::PeerFetcher;
+use crate::peer::response::PeerResponse;
 
 /// Default heartbeat interval in seconds
 const DEFAULT_HEARTBEAT_INTERVAL_SECS: u64 = 5;
@@ -73,6 +81,7 @@ pub fn bytes_to_topic_id(bytes: [u8; 32]) -> TopicId {
 }
 
 /// The main gossip coordinator using iroh-gossip
+#[derive(Clone)]
 pub struct GossipCoordinator {
     /// Our node ID (derived from iroh node ID)
     node_id: NodeId,
@@ -103,6 +112,10 @@ pub struct GossipCoordinator {
     membership_tx: Option<broadcast::Sender<MembershipEvent>>,
     /// Known peers with last-seen timestamps
     peers: Arc<RwLock<HashMap<u64, InternalPeerInfo>>>,
+    /// Peer fetcher for handling PeerResponse messages
+    peer_fetcher: Option<Arc<PeerFetcher>>,
+    /// Advertisement manager for service discovery
+    advertisement_manager: Arc<AdvertisementManager>,
 }
 
 /// Internal peer information for tracking
@@ -170,6 +183,8 @@ impl GossipCoordinator {
             owner_timeout_secs: DEFAULT_OWNER_TIMEOUT_SECS,
             membership_tx: None,
             peers: Arc::new(RwLock::new(HashMap::new())),
+            peer_fetcher: None,
+            advertisement_manager: Arc::new(AdvertisementManager::new(300)), // 5 minute TTL
         };
 
         // Start background cleanup tasks
@@ -193,7 +208,7 @@ impl GossipCoordinator {
         // P0 Fix: Validate topic name (defense-in-depth)
         crate::traits::ddl::validate_topic(topic)
             .map_err(|e| GossipError::Parse(format!("Invalid topic name: {}", e)))?;
-        
+
         let topic_id = derive_iroh_topic_id(topic);
 
         info!(
@@ -229,11 +244,14 @@ impl GossipCoordinator {
         }
 
         // Spawn task to handle incoming messages for this topic
+        let this = Arc::new(self.clone());
         let topic_owners = self.topic_owners.clone();
         let owned_topics = self.owned_topics.clone();
         let node_id = self.node_id;
         let mut shutdown_rx = self.shutdown_tx.subscribe();
         let topic_name = topic.to_string();
+        let peer_fetcher = self.peer_fetcher.clone();
+        let advertisement_manager = self.advertisement_manager.clone();
 
         let handle = tokio::spawn(async move {
             loop {
@@ -245,12 +263,14 @@ impl GossipCoordinator {
                     result = receiver.next() => {
                         match result {
                             Some(Ok(event)) => {
-                                Self::handle_event(
+                                this.handle_event(
                                     event,
                                     &topic_name,
                                     node_id,
                                     &topic_owners,
                                     &owned_topics,
+                                    &peer_fetcher,
+                                    &advertisement_manager,
                                 ).await;
                             }
                             Some(Err(e)) => {
@@ -278,11 +298,14 @@ impl GossipCoordinator {
 
     /// Handle a gossip event
     async fn handle_event(
+        &self,
         event: Event,
         topic: &str,
         our_node_id: NodeId,
         topic_owners: &Arc<RwLock<HashMap<String, TopicOwnership>>>,
         owned_topics: &Arc<RwLock<Vec<String>>>,
+        peer_fetcher: &Option<Arc<PeerFetcher>>,
+        advertisement_manager: &Arc<AdvertisementManager>,
     ) {
         match event {
             Event::Received(msg) => {
@@ -297,16 +320,18 @@ impl GossipCoordinator {
                     );
                     return;
                 }
-                
+
                 // Deserialize the message
                 match serde_json::from_slice::<GossipMessage>(&msg.content) {
                     Ok(gossip_msg) => {
-                        Self::handle_gossip_message(
+                        self.handle_gossip_message(
                             gossip_msg,
                             topic,
                             our_node_id,
                             topic_owners,
                             owned_topics,
+                            peer_fetcher,
+                            advertisement_manager,
                         )
                         .await;
                     }
@@ -343,11 +368,14 @@ impl GossipCoordinator {
 
     /// Handle a gossip message
     async fn handle_gossip_message(
+        &self,
         msg: GossipMessage,
         _topic: &str,
         _our_node_id: NodeId,
         topic_owners: &Arc<RwLock<HashMap<String, TopicOwnership>>>,
         owned_topics: &Arc<RwLock<Vec<String>>>,
+        peer_fetcher: &Option<Arc<PeerFetcher>>,
+        advertisement_manager: &Arc<AdvertisementManager>,
     ) {
         match msg {
             GossipMessage::TopicClaim {
@@ -526,6 +554,153 @@ impl GossipCoordinator {
                     owners.insert(response_topic.clone(), TopicOwnership::new(owner));
                 }
             }
+
+            // Peer-to-peer messages (Phase 07)
+            GossipMessage::PeerRequest {
+                payload,
+                target_node,
+                source_node,
+                request_id,
+                metric_key,
+                timestamp,
+            } => {
+                // Only handle if this node is the target
+                if target_node != self.node_id {
+                    return;
+                }
+
+                debug!(
+                    request_id = request_id,
+                    source = source_node,
+                    target = target_node,
+                    metric = %metric_key,
+                    "Received peer request"
+                );
+
+                // Decode request
+                let request = match PeerCodec::decode_request(&payload) {
+                    Ok(req) => req,
+                    Err(e) => {
+                        error!("Failed to decode peer request: {}", e);
+                        return;
+                    }
+                };
+
+                // Handle if we have a handler
+                if let Some(fetcher) = peer_fetcher {
+                    if let Some(handler) = fetcher.handler() {
+                        let handler = handler.clone();
+                        let gossip = self.clone();
+                        let source = source_node;
+                        let req_id = request_id;
+                        let ts = timestamp;
+                        let tgt = target_node;
+                        tokio::spawn(async move {
+                            match handler.handle_request(request).await {
+                                Ok(response) => {
+                                    // Encode response
+                                    match PeerCodec::encode_response(&response) {
+                                        Ok(encoded_payload) => {
+                                            // Serialize gossip message
+                                            match serde_json::to_vec(&GossipMessage::PeerResponse {
+                                                request_id: req_id,
+                                                source_node: tgt,
+                                                success: true,
+                                                payload: encoded_payload,
+                                                timestamp: ts,
+                                                error_message: None,
+                                            }) {
+                                                Ok(msg_bytes) => {
+                                                    let topic = format!(
+                                                        "peer.response.{}.{}",
+                                                        source, req_id
+                                                    );
+                                                    let _ = gossip.publish(&topic, msg_bytes).await;
+                                                }
+                                                Err(e) => {
+                                                    error!("Failed to serialize response: {}", e)
+                                                }
+                                            }
+                                        }
+                                        Err(e) => error!("Failed to encode response: {}", e),
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("Request handler error: {}", e);
+                                    // Send error response
+                                    let error_msg = GossipMessage::PeerResponse {
+                                        request_id: req_id,
+                                        source_node: tgt,
+                                        success: false,
+                                        payload: Vec::new(),
+                                        timestamp: ts,
+                                        error_message: Some(e.to_string()),
+                                    };
+                                    match serde_json::to_vec(&error_msg) {
+                                        Ok(msg_bytes) => {
+                                            let topic =
+                                                format!("peer.response.{}.{}", source, req_id);
+                                            let _ = gossip.publish(&topic, msg_bytes).await;
+                                        }
+                                        Err(e) => {
+                                            error!("Failed to serialize error response: {}", e)
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+            GossipMessage::PeerResponse {
+                payload,
+                request_id,
+                source_node,
+                success,
+                error_message,
+                timestamp,
+                ..
+            } => {
+                debug!(
+                    request_id = request_id,
+                    source = source_node,
+                    success = success,
+                    "Received peer response"
+                );
+                // Decode the payload and route to pending request
+                let response = PeerResponse {
+                    request_id: request_id.into(),
+                    source_node,
+                    success,
+                    payload,
+                    timestamp,
+                    error_message,
+                };
+                if let Some(ref fetcher) = peer_fetcher {
+                    fetcher.handle_response(response);
+                }
+            }
+            GossipMessage::ServiceAdvertise {
+                node_id,
+                metrics_offered,
+                address,
+                timestamp,
+            } => {
+                debug!(
+                    node_id = node_id,
+                    metrics = ?metrics_offered,
+                    address = %address,
+                    "Received service advertisement"
+                );
+                // Update advertisement manager
+                let ad = ServiceAdvertisement {
+                    node_id,
+                    metrics_offered,
+                    address,
+                    timestamp,
+                };
+                advertisement_manager.advertise(ad);
+            }
         }
     }
 
@@ -545,8 +720,10 @@ impl GossipCoordinator {
         // Record ownership locally with epoch
         let epoch = {
             let mut owners = self.topic_owners.write().await;
-            let ownership = owners.entry(topic.to_string()).or_insert_with(|| TopicOwnership::new(self.node_id));
-            
+            let ownership = owners
+                .entry(topic.to_string())
+                .or_insert_with(|| TopicOwnership::new(self.node_id));
+
             // If we already own it, increment epoch for reclaim
             // Otherwise use the epoch from new ownership
             if ownership.owner_node_id == self.node_id {
@@ -618,6 +795,51 @@ impl GossipCoordinator {
         self.broadcast_message(&topic_id, &msg).await
     }
 
+    /// Publish raw bytes to a topic (for peer-to-peer communication)
+    ///
+    /// This is a public method for publishing arbitrary data to a topic.
+    /// Used by PeerFetcher to send peer requests/responses.
+    pub async fn publish(&self, topic: &str, data: Vec<u8>) -> Result<(), GossipError> {
+        // P0 Fix: Validate topic name (defense-in-depth)
+        crate::traits::ddl::validate_topic(topic)
+            .map_err(|e| GossipError::Parse(format!("Invalid topic name: {}", e)))?;
+
+        // P0 Fix: Size limit to prevent DoS attacks
+        const MAX_MESSAGE_SIZE: usize = 1_048_576; // 1MB max message size
+        if data.len() > MAX_MESSAGE_SIZE {
+            return Err(GossipError::Serialization(format!(
+                "Message too large: {} bytes (max: {})",
+                data.len(),
+                MAX_MESSAGE_SIZE
+            )));
+        }
+
+        let topic_id = derive_iroh_topic_id(topic);
+        let senders = self.topic_senders.read().await;
+
+        let sender = senders
+            .get(&topic_id)
+            .ok_or_else(|| GossipError::NotSubscribed(hex::encode(topic_id.as_bytes())))?;
+
+        let bytes = Bytes::from(data);
+
+        // Broadcast
+        let sender_guard = sender.lock().await;
+        sender_guard
+            .broadcast(bytes)
+            .await
+            .map_err(|e| GossipError::Gossip(format!("Broadcast failed: {}", e)))?;
+
+        debug!(
+            node_id = self.node_id,
+            topic = %topic,
+            topic_id = ?topic_id.as_bytes()[..5],
+            "Published message"
+        );
+
+        Ok(())
+    }
+
     /// Broadcast a gossip message to a topic
     async fn broadcast_message(
         &self,
@@ -628,9 +850,7 @@ impl GossipCoordinator {
 
         let sender = senders
             .get(topic_id)
-            .ok_or_else(|| {
-                GossipError::NotSubscribed(hex::encode(topic_id.as_bytes()))
-            })?;
+            .ok_or_else(|| GossipError::NotSubscribed(hex::encode(topic_id.as_bytes())))?;
 
         // Serialize message
         let payload = serde_json::to_vec(msg)?;
@@ -737,7 +957,7 @@ impl GossipCoordinator {
                                 let owners = topic_owners.read().await;
                                 owners.get(topic).map(|o| o.epoch).unwrap_or(1)
                             };
-                            
+
                             let topic_id = derive_iroh_topic_id(topic);
                             let timestamp = crate::types::now_nanos();
 
@@ -777,18 +997,12 @@ impl GossipCoordinator {
     pub async fn handle_messages(&self) {
         let mut shutdown_rx = self.shutdown_tx.subscribe();
 
-        debug!(
-            node_id = self.node_id,
-            "Starting message handler"
-        );
+        debug!(node_id = self.node_id, "Starting message handler");
 
         // Wait for shutdown signal
         let _ = shutdown_rx.recv().await;
 
-        debug!(
-            node_id = self.node_id,
-            "Message handler stopped"
-        );
+        debug!(node_id = self.node_id, "Message handler stopped");
     }
 
     /// Trigger graceful shutdown of gossip operations
@@ -813,15 +1027,22 @@ impl GossipCoordinator {
             handle.abort();
         }
 
-        debug!(
-            node_id = self.node_id,
-            "Gossip shutdown complete"
-        );
+        debug!(node_id = self.node_id, "Gossip shutdown complete");
     }
 
     /// Set the membership event broadcaster (called by RaftClusterNode)
     pub fn set_membership_channel(&mut self, tx: broadcast::Sender<MembershipEvent>) {
         self.membership_tx = Some(tx);
+    }
+
+    /// Set the peer fetcher for handling PeerResponse messages
+    pub fn set_peer_fetcher(&mut self, fetcher: Arc<PeerFetcher>) {
+        self.peer_fetcher = Some(fetcher);
+    }
+
+    /// Get the advertisement manager
+    pub fn advertisement_manager(&self) -> Arc<AdvertisementManager> {
+        self.advertisement_manager.clone()
     }
 
     /// Emit a membership event
@@ -961,12 +1182,9 @@ impl GossipCoordinator {
 
             if let Some(sender) = senders.get(topic_id) {
                 let sender_guard = sender.lock().await;
-                sender_guard
-                    .broadcast(bytes.clone())
-                    .await
-                    .map_err(|e| {
-                        GossipError::Gossip(format!("Announce broadcast failed: {}", e))
-                    })?;
+                sender_guard.broadcast(bytes.clone()).await.map_err(|e| {
+                    GossipError::Gossip(format!("Announce broadcast failed: {}", e))
+                })?;
             }
         }
 
@@ -1414,7 +1632,12 @@ mod tests {
             let id2 = bytes_to_topic_id(bytes);
 
             // Roundtrip should preserve exact bytes
-            assert_eq!(id1.as_bytes(), id2.as_bytes(), "Failed for topic: {}", topic);
+            assert_eq!(
+                id1.as_bytes(),
+                id2.as_bytes(),
+                "Failed for topic: {}",
+                topic
+            );
         }
     }
 
@@ -1464,7 +1687,10 @@ mod tests {
 
     #[test]
     fn test_gossip_error_io() {
-        let err = GossipError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "file not found"));
+        let err = GossipError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "file not found",
+        ));
         let display = format!("{}", err);
         assert!(display.contains("IO error"));
         assert!(display.contains("file not found"));

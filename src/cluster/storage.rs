@@ -4,12 +4,12 @@
 //! Uses RaftStorage trait from openraft for compatibility.
 //! Supports synchronous file persistence for durability across restarts.
 
+use openraft::impls::BasicNode;
 use openraft::storage::{RaftLogReader, RaftSnapshotBuilder, RaftStorage};
 use openraft::{
     Entry, ErrorSubject, ErrorVerb, LogId, LogState, RaftTypeConfig, Snapshot, SnapshotMeta,
-    StoredMembership, StorageError, Vote,
+    StorageError, StoredMembership, Vote,
 };
-use openraft::impls::BasicNode;
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read};
 use std::ops::RangeBounds;
@@ -77,7 +77,9 @@ impl AutoqueuesRaftStorage {
     }
 
     /// Create a new Raft storage with file persistence
-    pub fn with_persistence(data_dir: impl AsRef<std::path::Path>) -> Result<Self, StorageError<u64>> {
+    pub fn with_persistence(
+        data_dir: impl AsRef<std::path::Path>,
+    ) -> Result<Self, StorageError<u64>> {
         std::fs::create_dir_all(data_dir.as_ref())
             .map_err(|e| StorageError::from_io_error(ErrorSubject::Store, ErrorVerb::Write, e))?;
 
@@ -120,20 +122,27 @@ impl AutoqueuesRaftStorage {
         use std::fs::File;
         use std::io::Read;
 
-        let file = File::open(path)
-            .map_err(|e| StorageError::from_io_error(ErrorSubject::Snapshot(None), ErrorVerb::Read, e))?;
+        let file = File::open(path).map_err(|e| {
+            StorageError::from_io_error(ErrorSubject::Snapshot(None), ErrorVerb::Read, e)
+        })?;
         let mut reader = std::io::BufReader::new(file);
         let mut buffer = Vec::new();
-        reader.read_to_end(&mut buffer)
-            .map_err(|e| StorageError::from_io_error(ErrorSubject::Snapshot(None), ErrorVerb::Read, e))?;
+        reader.read_to_end(&mut buffer).map_err(|e| {
+            StorageError::from_io_error(ErrorSubject::Snapshot(None), ErrorVerb::Read, e)
+        })?;
 
         if !buffer.is_empty() {
-            let state: OwnershipState = oxicode::serde::decode_from_slice(&buffer, oxicode::config::standard())
-                .map(|(v, _)| v)
-                .map_err(|e| {
-                    let io_err = std::io::Error::new(std::io::ErrorKind::InvalidData, e);
-                    StorageError::from_io_error(ErrorSubject::Snapshot(None), ErrorVerb::Read, io_err)
-                })?;
+            let state: OwnershipState =
+                oxicode::serde::decode_from_slice(&buffer, oxicode::config::standard())
+                    .map(|(v, _)| v)
+                    .map_err(|e| {
+                        let io_err = std::io::Error::new(std::io::ErrorKind::InvalidData, e);
+                        StorageError::from_io_error(
+                            ErrorSubject::Snapshot(None),
+                            ErrorVerb::Read,
+                            io_err,
+                        )
+                    })?;
             *self.ownership_state.write().unwrap() = state;
         }
 
@@ -143,15 +152,17 @@ impl AutoqueuesRaftStorage {
     /// Flush ownership state to file (synchronous, thread-safe)
     fn flush_to_file(&self) -> Result<(), StorageError<u64>> {
         // Try to acquire flush lock (non-blocking)
-        let _guard = self.flush_lock.try_lock()
-            .map_err(|_| StorageError::from_io_error(
+        let _guard = self.flush_lock.try_lock().map_err(|_| {
+            StorageError::from_io_error(
                 ErrorSubject::Logs,
                 ErrorVerb::Write,
                 std::io::Error::new(std::io::ErrorKind::WouldBlock, "Flush already in progress"),
-            ))?;
+            )
+        })?;
 
         let path = self.data_file.as_ref().ok_or_else(|| {
-            let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "No data file configured");
+            let io_err =
+                std::io::Error::new(std::io::ErrorKind::NotFound, "No data file configured");
             StorageError::from_io_error(ErrorSubject::Logs, ErrorVerb::Write, io_err)
         })?;
 
@@ -160,15 +171,22 @@ impl AutoqueuesRaftStorage {
         // Atomic write: write to temp, then rename
         let temp_path = path.with_extension("tmp");
         {
-            let file = std::fs::File::create(&temp_path)
-                .map_err(|e| StorageError::from_io_error(ErrorSubject::Logs, ErrorVerb::Write, e))?;
+            let file = std::fs::File::create(&temp_path).map_err(|e| {
+                StorageError::from_io_error(ErrorSubject::Logs, ErrorVerb::Write, e)
+            })?;
             let mut writer = std::io::BufWriter::new(file);
-            oxicode::serde::encode_into_std_write(&*state, &mut writer, oxicode::config::standard())
-                .map_err(|e| StorageError::from_io_error(
+            oxicode::serde::encode_into_std_write(
+                &*state,
+                &mut writer,
+                oxicode::config::standard(),
+            )
+            .map_err(|e| {
+                StorageError::from_io_error(
                     ErrorSubject::Logs,
                     ErrorVerb::Write,
                     std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-                ))?;
+                )
+            })?;
         }
 
         // Atomic rename (POSIX guarantees atomicity)
@@ -184,15 +202,19 @@ impl AutoqueuesRaftStorage {
             .map_err(|e| StorageError::from_io_error(ErrorSubject::Logs, ErrorVerb::Read, e))?;
         let mut reader = std::io::BufReader::new(file);
         let mut buffer = Vec::new();
-        reader.read_to_end(&mut buffer)
+        reader
+            .read_to_end(&mut buffer)
             .map_err(|e| StorageError::from_io_error(ErrorSubject::Logs, ErrorVerb::Read, e))?;
-        let entries: Vec<SerializableLogEntry> = oxicode::serde::decode_owned_from_slice(&buffer, oxicode::config::standard())
-            .map(|(v, _)| v)
-            .map_err(|e| StorageError::from_io_error(
-                ErrorSubject::Logs,
-                ErrorVerb::Read,
-                std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-            ))?;
+        let entries: Vec<SerializableLogEntry> =
+            oxicode::serde::decode_owned_from_slice(&buffer, oxicode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|e| {
+                    StorageError::from_io_error(
+                        ErrorSubject::Logs,
+                        ErrorVerb::Read,
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+                    )
+                })?;
 
         let mut log = self.log.write().unwrap();
         for se in entries {
@@ -206,12 +228,14 @@ impl AutoqueuesRaftStorage {
     /// Persist log entries to file
     fn flush_log_to_file(&self) -> Result<(), StorageError<u64>> {
         let path = self.log_file.as_ref().ok_or_else(|| {
-            let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "No log file configured");
+            let io_err =
+                std::io::Error::new(std::io::ErrorKind::NotFound, "No log file configured");
             StorageError::from_io_error(ErrorSubject::Logs, ErrorVerb::Write, io_err)
         })?;
 
         let log = self.log.read().unwrap();
-        let entries: Vec<SerializableLogEntry> = log.values()
+        let entries: Vec<SerializableLogEntry> = log
+            .values()
             .map(|e| SerializableLogEntry::from(e))
             .collect();
         drop(log);
@@ -219,15 +243,22 @@ impl AutoqueuesRaftStorage {
         // Atomic write: write to temp, then rename
         let temp_path = path.with_extension("tmp");
         {
-            let file = std::fs::File::create(&temp_path)
-                .map_err(|e| StorageError::from_io_error(ErrorSubject::Logs, ErrorVerb::Write, e))?;
+            let file = std::fs::File::create(&temp_path).map_err(|e| {
+                StorageError::from_io_error(ErrorSubject::Logs, ErrorVerb::Write, e)
+            })?;
             let mut writer = std::io::BufWriter::new(file);
-            oxicode::serde::encode_into_std_write(&entries, &mut writer, oxicode::config::standard())
-                .map_err(|e| StorageError::from_io_error(
+            oxicode::serde::encode_into_std_write(
+                &entries,
+                &mut writer,
+                oxicode::config::standard(),
+            )
+            .map_err(|e| {
+                StorageError::from_io_error(
                     ErrorSubject::Logs,
                     ErrorVerb::Write,
                     std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-                ))?;
+                )
+            })?;
         }
 
         // Atomic rename (POSIX guarantees atomicity)
@@ -243,15 +274,19 @@ impl AutoqueuesRaftStorage {
             .map_err(|e| StorageError::from_io_error(ErrorSubject::Vote, ErrorVerb::Read, e))?;
         let mut reader = std::io::BufReader::new(file);
         let mut buffer = Vec::new();
-        reader.read_to_end(&mut buffer)
+        reader
+            .read_to_end(&mut buffer)
             .map_err(|e| StorageError::from_io_error(ErrorSubject::Vote, ErrorVerb::Read, e))?;
-        let vote_data: SerializableVote = oxicode::serde::decode_owned_from_slice(&buffer, oxicode::config::standard())
-            .map(|(v, _)| v)
-            .map_err(|e| StorageError::from_io_error(
-                ErrorSubject::Vote,
-                ErrorVerb::Read,
-                std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-            ))?;
+        let vote_data: SerializableVote =
+            oxicode::serde::decode_owned_from_slice(&buffer, oxicode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|e| {
+                    StorageError::from_io_error(
+                        ErrorSubject::Vote,
+                        ErrorVerb::Read,
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+                    )
+                })?;
 
         let mut vote = Vote::new(vote_data.term, vote_data.node_id);
         if vote_data.committed {
@@ -265,7 +300,8 @@ impl AutoqueuesRaftStorage {
     /// Persist vote to file
     fn flush_vote_to_file(&self, vote: &Vote<u64>) -> Result<(), StorageError<u64>> {
         let path = self.vote_file.as_ref().ok_or_else(|| {
-            let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "No vote file configured");
+            let io_err =
+                std::io::Error::new(std::io::ErrorKind::NotFound, "No vote file configured");
             StorageError::from_io_error(ErrorSubject::Vote, ErrorVerb::Write, io_err)
         })?;
 
@@ -278,15 +314,22 @@ impl AutoqueuesRaftStorage {
         // Atomic write: write to temp, then rename
         let temp_path = path.with_extension("tmp");
         {
-            let file = std::fs::File::create(&temp_path)
-                .map_err(|e| StorageError::from_io_error(ErrorSubject::Vote, ErrorVerb::Write, e))?;
+            let file = std::fs::File::create(&temp_path).map_err(|e| {
+                StorageError::from_io_error(ErrorSubject::Vote, ErrorVerb::Write, e)
+            })?;
             let mut writer = std::io::BufWriter::new(file);
-            oxicode::serde::encode_into_std_write(&vote_data, &mut writer, oxicode::config::standard())
-                .map_err(|e| StorageError::from_io_error(
+            oxicode::serde::encode_into_std_write(
+                &vote_data,
+                &mut writer,
+                oxicode::config::standard(),
+            )
+            .map_err(|e| {
+                StorageError::from_io_error(
                     ErrorSubject::Vote,
                     ErrorVerb::Write,
                     std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-                ))?;
+                )
+            })?;
         }
 
         // Atomic rename (POSIX guarantees atomicity)
@@ -337,8 +380,8 @@ impl Clone for AutoqueuesRaftStorage {
             ownership_state: Arc::clone(&self.ownership_state),
             membership: RwLock::new(self.membership.read().unwrap().clone()),
             data_file: self.data_file.clone(),
-            dirty: Arc::clone(&self.dirty),  // Share dirty flag
-            flush_lock: Arc::clone(&self.flush_lock),  // Share flush lock
+            dirty: Arc::clone(&self.dirty), // Share dirty flag
+            flush_lock: Arc::clone(&self.flush_lock), // Share flush lock
         }
     }
 }
@@ -435,7 +478,11 @@ impl RaftStorage<TypeConfig> for AutoqueuesRaftStorage {
         log_id: LogId<u64>,
     ) -> Result<(), StorageError<u64>> {
         let mut log = self.log.write().unwrap();
-        let keys: Vec<u64> = log.keys().filter(|&&k| k >= log_id.index).cloned().collect();
+        let keys: Vec<u64> = log
+            .keys()
+            .filter(|&&k| k >= log_id.index)
+            .cloned()
+            .collect();
         for key in keys {
             log.remove(&key);
         }
@@ -451,7 +498,11 @@ impl RaftStorage<TypeConfig> for AutoqueuesRaftStorage {
 
     async fn purge_logs_upto(&mut self, log_id: LogId<u64>) -> Result<(), StorageError<u64>> {
         let mut log = self.log.write().unwrap();
-        let keys: Vec<u64> = log.keys().filter(|&&k| k <= log_id.index).cloned().collect();
+        let keys: Vec<u64> = log
+            .keys()
+            .filter(|&&k| k <= log_id.index)
+            .cloned()
+            .collect();
         for key in keys {
             log.remove(&key);
         }
@@ -496,27 +547,40 @@ impl RaftStorage<TypeConfig> for AutoqueuesRaftStorage {
                     let response = match cmd {
                         OwnershipCommand::ClaimTopic { topic, .. } => {
                             let owner = state.get_owner(topic);
-                            OwnershipResponse::Owner { topic: topic.clone(), owner }
+                            OwnershipResponse::Owner {
+                                topic: topic.clone(),
+                                owner,
+                            }
                         }
                         OwnershipCommand::ReleaseTopic { topic, .. } => {
                             let owner = state.get_owner(topic);
-                            OwnershipResponse::Owner { topic: topic.clone(), owner }
+                            OwnershipResponse::Owner {
+                                topic: topic.clone(),
+                                owner,
+                            }
                         }
                         OwnershipCommand::TransferTopic { topic, .. } => {
                             let owner = state.get_owner(topic);
-                            OwnershipResponse::Owner { topic: topic.clone(), owner }
+                            OwnershipResponse::Owner {
+                                topic: topic.clone(),
+                                owner,
+                            }
                         }
                         OwnershipCommand::AcquireLease { key, .. } => {
                             let info = state.get_lease_info(key);
-                            OwnershipResponse::LeaseOwner { key: key.clone(), info }
+                            OwnershipResponse::LeaseOwner {
+                                key: key.clone(),
+                                info,
+                            }
                         }
                         OwnershipCommand::RenewLease { lease_id, .. } => {
                             let lease = state.get_lease(*lease_id).cloned();
                             OwnershipResponse::LeaseResult { lease, error: None }
                         }
-                        OwnershipCommand::ReleaseLease { key } => {
-                            OwnershipResponse::LeaseOwner { key: key.clone(), info: None }
-                        }
+                        OwnershipCommand::ReleaseLease { key } => OwnershipResponse::LeaseOwner {
+                            key: key.clone(),
+                            info: None,
+                        },
                         OwnershipCommand::ExpireLeases { now } => {
                             let count = state.expire_leases(*now);
                             OwnershipResponse::LeaseCount { count }
@@ -527,11 +591,17 @@ impl RaftStorage<TypeConfig> for AutoqueuesRaftStorage {
                 openraft::entry::EntryPayload::Membership(_membership) => {
                     // Handle membership changes - update stored membership if needed
                     // For now, just return an empty response to satisfy openraft
-                    result.push(OwnershipResponse::Owner { topic: String::new(), owner: None });
+                    result.push(OwnershipResponse::Owner {
+                        topic: String::new(),
+                        owner: None,
+                    });
                 }
                 openraft::entry::EntryPayload::Blank => {
                     // Blank entries - return empty response
-                    result.push(OwnershipResponse::Owner { topic: String::new(), owner: None });
+                    result.push(OwnershipResponse::Owner {
+                        topic: String::new(),
+                        owner: None,
+                    });
                 }
             }
         }
@@ -569,21 +639,21 @@ impl RaftStorage<TypeConfig> for AutoqueuesRaftStorage {
         let mut cursor = snapshot;
         let mut data = Vec::new();
         use std::io::Read;
-        cursor.read_to_end(&mut data)
-            .map_err(|e| StorageError::from_io_error(
-                ErrorSubject::Snapshot(None),
-                ErrorVerb::Read,
-                e,
-            ))?;
+        cursor.read_to_end(&mut data).map_err(|e| {
+            StorageError::from_io_error(ErrorSubject::Snapshot(None), ErrorVerb::Read, e)
+        })?;
 
         if !data.is_empty() {
-            let state: OwnershipState = oxicode::serde::decode_from_slice(&data, oxicode::config::standard())
-                .map(|(v, _)| v)
-                .map_err(|e| StorageError::from_io_error(
-                    ErrorSubject::Snapshot(None),
-                    ErrorVerb::Read,
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-                ))?;
+            let state: OwnershipState =
+                oxicode::serde::decode_from_slice(&data, oxicode::config::standard())
+                    .map(|(v, _)| v)
+                    .map_err(|e| {
+                        StorageError::from_io_error(
+                            ErrorSubject::Snapshot(None),
+                            ErrorVerb::Read,
+                            std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+                        )
+                    })?;
 
             // Restore ownership state
             *self.ownership_state.write().unwrap() = state;
@@ -634,7 +704,10 @@ impl RaftLogReader<TypeConfig> for AutoqueuesRaftStorage {
                 }
             }
         };
-        Ok(log.range(start..end).map(|(_, v): (&u64, &Entry<TypeConfig>)| v.clone()).collect())
+        Ok(log
+            .range(start..end)
+            .map(|(_, v): (&u64, &Entry<TypeConfig>)| v.clone())
+            .collect())
     }
 }
 
@@ -654,20 +727,25 @@ impl RaftSnapshotBuilder<TypeConfig> for AutoqueuesRaftStorage {
         let meta = SnapshotMeta {
             last_log_id,
             last_membership: self.membership.read().unwrap().clone(),
-            snapshot_id: format!("snapshot-{}", std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis()),
+            snapshot_id: format!(
+                "snapshot-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis()
+            ),
         };
 
         // Serialize ownership state
         let state = self.ownership_state.read().unwrap();
         let snapshot_data = oxicode::serde::encode_to_vec(&*state, oxicode::config::standard())
-            .map_err(|e| StorageError::from_io_error(
-                ErrorSubject::Snapshot(None),
-                ErrorVerb::Write,
-                std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-            ))?;
+            .map_err(|e| {
+                StorageError::from_io_error(
+                    ErrorSubject::Snapshot(None),
+                    ErrorVerb::Write,
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+                )
+            })?;
 
         // Store snapshot metadata
         *self.snapshot_meta.write().unwrap() = Some(meta.clone());
@@ -703,15 +781,23 @@ mod tests {
         let storage = AutoqueuesRaftStorage::new();
 
         // State machine update on original
-        storage.ownership_state.write().unwrap().apply(&OwnershipCommand::ClaimTopic {
-            topic: "test.topic".to_string(),
-            node_id: 1,
-            timestamp: 1000,
-        });
+        storage
+            .ownership_state
+            .write()
+            .unwrap()
+            .apply(&OwnershipCommand::ClaimTopic {
+                topic: "test.topic".to_string(),
+                node_id: 1,
+                timestamp: 1000,
+            });
 
         // Clone should see the same state
         let cloned = storage.clone();
-        let owner = cloned.ownership_state.read().unwrap().get_owner("test.topic");
+        let owner = cloned
+            .ownership_state
+            .read()
+            .unwrap()
+            .get_owner("test.topic");
         assert_eq!(owner, Some(1), "Clone should share ownership state");
     }
 
@@ -721,14 +807,19 @@ mod tests {
         let path = dir.path();
 
         // Create storage with persistence
-        let storage = AutoqueuesRaftStorage::with_persistence(path).expect("Failed to create storage with persistence");
+        let storage = AutoqueuesRaftStorage::with_persistence(path)
+            .expect("Failed to create storage with persistence");
 
         // Apply some state changes
-        storage.ownership_state.write().unwrap().apply(&OwnershipCommand::ClaimTopic {
-            topic: "metrics.cpu".to_string(),
-            node_id: 1,
-            timestamp: 1000,
-        });
+        storage
+            .ownership_state
+            .write()
+            .unwrap()
+            .apply(&OwnershipCommand::ClaimTopic {
+                topic: "metrics.cpu".to_string(),
+                node_id: 1,
+                timestamp: 1000,
+            });
 
         storage.dirty.store(true, Ordering::Release);
 
@@ -736,10 +827,15 @@ mod tests {
         storage.flush_to_file().expect("Failed to flush");
 
         // Create new storage to load persisted state
-        let storage2 = AutoqueuesRaftStorage::with_persistence(path).expect("Failed to create second storage");
+        let storage2 =
+            AutoqueuesRaftStorage::with_persistence(path).expect("Failed to create second storage");
 
         // Should have persisted state
-        let owner = storage2.ownership_state.read().unwrap().get_owner("metrics.cpu");
+        let owner = storage2
+            .ownership_state
+            .read()
+            .unwrap()
+            .get_owner("metrics.cpu");
         assert_eq!(owner, Some(1), "Persisted state should be loaded");
     }
 
@@ -749,27 +845,43 @@ mod tests {
         let path = dir.path();
 
         // Create storage and apply commands
-        let storage = AutoqueuesRaftStorage::with_persistence(path).expect("Failed to create storage");
+        let storage =
+            AutoqueuesRaftStorage::with_persistence(path).expect("Failed to create storage");
 
-        storage.ownership_state.write().unwrap().apply(&OwnershipCommand::ClaimTopic {
-            topic: "topic1".to_string(),
-            node_id: 1,
-            timestamp: 1000,
-        });
+        storage
+            .ownership_state
+            .write()
+            .unwrap()
+            .apply(&OwnershipCommand::ClaimTopic {
+                topic: "topic1".to_string(),
+                node_id: 1,
+                timestamp: 1000,
+            });
 
-        storage.ownership_state.write().unwrap().apply(&OwnershipCommand::ClaimTopic {
-            topic: "topic2".to_string(),
-            node_id: 2,
-            timestamp: 1001,
-        });
+        storage
+            .ownership_state
+            .write()
+            .unwrap()
+            .apply(&OwnershipCommand::ClaimTopic {
+                topic: "topic2".to_string(),
+                node_id: 2,
+                timestamp: 1001,
+            });
 
         storage.dirty.store(true, Ordering::Release);
         storage.flush_to_file().expect("Failed to flush");
 
         // Create new storage and verify state loaded
-        let storage2 = AutoqueuesRaftStorage::with_persistence(path).expect("Failed to create second storage");
-        assert_eq!(storage2.ownership_state.read().unwrap().get_owner("topic1"), Some(1));
-        assert_eq!(storage2.ownership_state.read().unwrap().get_owner("topic2"), Some(2));
+        let storage2 =
+            AutoqueuesRaftStorage::with_persistence(path).expect("Failed to create second storage");
+        assert_eq!(
+            storage2.ownership_state.read().unwrap().get_owner("topic1"),
+            Some(1)
+        );
+        assert_eq!(
+            storage2.ownership_state.read().unwrap().get_owner("topic2"),
+            Some(2)
+        );
     }
 
     #[test]
@@ -777,20 +889,31 @@ mod tests {
         let dir = tempdir().expect("Failed to create temp dir");
         let path = dir.path();
 
-        let storage = AutoqueuesRaftStorage::with_persistence(path).expect("Failed to create storage");
+        let storage =
+            AutoqueuesRaftStorage::with_persistence(path).expect("Failed to create storage");
 
         // Write data
-        storage.ownership_state.write().unwrap().apply(&OwnershipCommand::ClaimTopic {
-            topic: "test".to_string(),
-            node_id: 1,
-            timestamp: 1000,
-        });
+        storage
+            .ownership_state
+            .write()
+            .unwrap()
+            .apply(&OwnershipCommand::ClaimTopic {
+                topic: "test".to_string(),
+                node_id: 1,
+                timestamp: 1000,
+            });
         storage.flush_to_file().expect("Failed to flush");
 
         // Atomic rename should have created the file
-        assert!(path.join("ownership_state.bin").exists(), "Ownership state file should exist");
+        assert!(
+            path.join("ownership_state.bin").exists(),
+            "Ownership state file should exist"
+        );
 
         // Temp file should be cleaned up
-        assert!(!path.join("ownership_state.tmp").exists(), "Temp file should be cleaned up");
+        assert!(
+            !path.join("ownership_state.tmp").exists(),
+            "Temp file should be cleaned up"
+        );
     }
 }

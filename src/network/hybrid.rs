@@ -13,20 +13,19 @@ pub enum TransportConfig {
         max_connections: usize,
     },
     /// ZMQ transport (fast, best-effort)
-    Zmq {
-        bind_addr: String,
-    },
+    Zmq { bind_addr: String },
 }
 
 impl TransportConfig {
     /// Create a TCP transport instance
     pub async fn create_tcp(&self) -> Result<TcpTransport, String> {
         match self {
-            TransportConfig::Tcp { bind_addr, max_connections } => {
-                TcpTransport::new(bind_addr, *max_connections)
-                    .await
-                    .map_err(|e| format!("Failed to create TCP transport: {}", e))
-            }
+            TransportConfig::Tcp {
+                bind_addr,
+                max_connections,
+            } => TcpTransport::new(bind_addr, *max_connections)
+                .await
+                .map_err(|e| format!("Failed to create TCP transport: {}", e)),
             _ => Err("TransportConfig is not TCP".to_string()),
         }
     }

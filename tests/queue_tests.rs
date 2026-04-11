@@ -14,7 +14,6 @@ use ddl::traits::queue::QueueTrait;
 // ============================================================================
 // Test SPMC queue capacity limits
 // ============================================================================
-
 #[test]
 fn test_spmc_queue_full_behavior() {
     // ARRANGE: Create queue with small capacity
@@ -94,7 +93,7 @@ fn test_function_source_creation() {
 fn test_spmc_multiple_consumers() {
     // ARRANGE: Create queue and multiple consumers
     let mut queue: SimpleQueue<i32, 16> = SimpleQueue::new();
-    
+
     // Push some initial data
     queue.push(1).unwrap();
     queue.push(2).unwrap();
@@ -199,7 +198,6 @@ fn test_queue_trait_publish() {
 // ============================================================================
 // Test consumer read behavior
 // ============================================================================
-
 #[test]
 fn test_consumer_has_data() {
     // ARRANGE: Create queue
@@ -213,7 +211,7 @@ fn test_consumer_has_data() {
 
     // ASSERT: Queue has data
     assert!(!queue.is_empty());
-    
+
     // ACT: Create consumer after push
     let consumer = queue.consumer();
     // ASSERT: Consumer now has data

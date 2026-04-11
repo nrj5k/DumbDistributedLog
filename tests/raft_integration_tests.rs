@@ -7,9 +7,13 @@
 //! - Vote persistence across restarts
 //! - Snapshot during active writes
 
-use ddl::cluster::{RaftClusterNode, OwnershipCommand, OwnershipState, AutoqueuesRaftStorage, NodeConfig};
 use ddl::cluster::types::{SerializableLogEntry, SerializableVote, TypeConfig};
-use openraft::{Entry, EntryPayload, LogId, CommittedLeaderId, Vote, RaftStorage, RaftSnapshotBuilder};
+use ddl::cluster::{
+    AutoqueuesRaftStorage, NodeConfig, OwnershipCommand, OwnershipState, RaftClusterNode,
+};
+use openraft::{
+    CommittedLeaderId, Entry, EntryPayload, LogId, RaftSnapshotBuilder, RaftStorage, Vote,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -95,30 +99,42 @@ async fn test_raft_topic_claim_release() {
     raft.initialize().await.expect("Failed to initialize");
 
     // Poll until leader is elected (with timeout)
-    let leader_ready = tokio::time::timeout(
-        tokio::time::Duration::from_secs(5),
-        async {
-            while !raft.is_leader().await {
-                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-            }
+    let leader_ready = tokio::time::timeout(tokio::time::Duration::from_secs(5), async {
+        while !raft.is_leader().await {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         }
-    ).await;
+    })
+    .await;
 
     assert!(leader_ready.is_ok(), "Timeout waiting for leader election");
 
     // Claim a topic
-    raft.claim_topic("test-topic").await.expect("Failed to claim topic");
+    raft.claim_topic("test-topic")
+        .await
+        .expect("Failed to claim topic");
 
     // Should own it
     assert!(raft.owns_topic("test-topic").await);
-    assert_eq!(raft.get_owner("test-topic").await.expect("Failed to get owner"), Some(1));
+    assert_eq!(
+        raft.get_owner("test-topic")
+            .await
+            .expect("Failed to get owner"),
+        Some(1)
+    );
 
     // Release it
-    raft.release_topic("test-topic").await.expect("Failed to release topic");
+    raft.release_topic("test-topic")
+        .await
+        .expect("Failed to release topic");
 
     // Should not own it
     assert!(!raft.owns_topic("test-topic").await);
-    assert_eq!(raft.get_owner("test-topic").await.expect("Failed to get owner"), None);
+    assert_eq!(
+        raft.get_owner("test-topic")
+            .await
+            .expect("Failed to get owner"),
+        None
+    );
 
     raft.shutdown().await.ok();
 }
@@ -160,8 +176,8 @@ async fn test_crash_recovery() {
 
     // Phase 1: Write entries before crash
     {
-        let mut storage = AutoqueuesRaftStorage::with_persistence(temp.path())
-            .expect("Failed to create storage");
+        let mut storage =
+            AutoqueuesRaftStorage::with_persistence(temp.path()).expect("Failed to create storage");
 
         // Add entries
         let entries = vec![
@@ -183,7 +199,10 @@ async fn test_crash_recovery() {
             },
         ];
 
-        storage.append_to_log(entries).await.expect("Failed to append entries");
+        storage
+            .append_to_log(entries)
+            .await
+            .expect("Failed to append entries");
     }
 
     // Phase 2: Simulate crash (drop storage)
@@ -194,9 +213,19 @@ async fn test_crash_recovery() {
         .expect("Failed to create recovered storage");
 
     // Phase 4: Verify entries restored
-    let log_state = storage2.get_log_state().await.expect("Failed to get log state");
-    assert!(log_state.last_log_id.is_some(), "Should have entries after recovery");
-    assert_eq!(log_state.last_log_id.unwrap().index, 2, "Should have 2 entries after recovery");
+    let log_state = storage2
+        .get_log_state()
+        .await
+        .expect("Failed to get log state");
+    assert!(
+        log_state.last_log_id.is_some(),
+        "Should have entries after recovery"
+    );
+    assert_eq!(
+        log_state.last_log_id.unwrap().index,
+        2,
+        "Should have 2 entries after recovery"
+    );
 }
 
 // Test 6: Vote persists across restarts
@@ -206,8 +235,8 @@ async fn test_vote_persistence_across_restart() {
 
     // Phase 1: Create storage and cast vote
     {
-        let mut storage = AutoqueuesRaftStorage::with_persistence(temp.path())
-            .expect("Failed to create storage");
+        let mut storage =
+            AutoqueuesRaftStorage::with_persistence(temp.path()).expect("Failed to create storage");
 
         // Cast a vote
         let vote = Vote::new(5, 3);
@@ -217,8 +246,8 @@ async fn test_vote_persistence_across_restart() {
     // Phase 2: Simulate restart (drop and recreate)
     std::thread::sleep(std::time::Duration::from_millis(100)); // Small delay
 
-    let mut storage2 = AutoqueuesRaftStorage::with_persistence(temp.path())
-        .expect("Failed to create storage2");
+    let mut storage2 =
+        AutoqueuesRaftStorage::with_persistence(temp.path()).expect("Failed to create storage2");
 
     // Phase 3: Verify vote restored
     let restored = storage2.read_vote().await.expect("Failed to read vote");
@@ -227,7 +256,10 @@ async fn test_vote_persistence_across_restart() {
 
     let restored = restored.unwrap();
     assert_eq!(restored.leader_id.term, 5, "Restored vote term should be 5");
-    assert_eq!(restored.leader_id.node_id, 3, "Restored vote node_id should be 3");
+    assert_eq!(
+        restored.leader_id.node_id, 3,
+        "Restored vote node_id should be 3"
+    );
 }
 
 // Test 7: Snapshot during active writes
@@ -237,37 +269,63 @@ async fn test_snapshot_during_active_writes() {
 
     // Start writing entries
     for i in 0..20 {
-        storage.append_to_log(vec![Entry {
-            log_id: LogId::new(CommittedLeaderId::new(1, 1), i + 1),
-            payload: EntryPayload::Normal(OwnershipCommand::ClaimTopic {
-                topic: format!("topic.snapshot_{}", i),
-                node_id: 1,
-                timestamp: 1000 + i as u64,
-            }),
-        }]).await.expect("Failed to append entry");
+        storage
+            .append_to_log(vec![Entry {
+                log_id: LogId::new(CommittedLeaderId::new(1, 1), i + 1),
+                payload: EntryPayload::Normal(OwnershipCommand::ClaimTopic {
+                    topic: format!("topic.snapshot_{}", i),
+                    node_id: 1,
+                    timestamp: 1000 + i as u64,
+                }),
+            }])
+            .await
+            .expect("Failed to append entry");
     }
 
     // Perform snapshot while writes are ongoing
-    let snapshot = storage.build_snapshot().await.expect("Failed to build snapshot");
+    let snapshot = storage
+        .build_snapshot()
+        .await
+        .expect("Failed to build snapshot");
 
     // Verify snapshot was created
-    assert!(snapshot.meta.last_log_id.is_some(), "Snapshot should have log_id");
-    assert_eq!(snapshot.meta.last_log_id.unwrap().index, 20, "Snapshot should capture all 20 entries");
+    assert!(
+        snapshot.meta.last_log_id.is_some(),
+        "Snapshot should have log_id"
+    );
+    assert_eq!(
+        snapshot.meta.last_log_id.unwrap().index,
+        20,
+        "Snapshot should capture all 20 entries"
+    );
 
     // Continue writing after snapshot
-    storage.append_to_log(vec![Entry {
-        log_id: LogId::new(CommittedLeaderId::new(1, 1), 21),
-        payload: EntryPayload::Normal(OwnershipCommand::ClaimTopic {
-            topic: "topic.after_snapshot".to_string(),
-            node_id: 2,
-            timestamp: 2000,
-        }),
-    }]).await.expect("Failed to append after snapshot");
+    storage
+        .append_to_log(vec![Entry {
+            log_id: LogId::new(CommittedLeaderId::new(1, 1), 21),
+            payload: EntryPayload::Normal(OwnershipCommand::ClaimTopic {
+                topic: "topic.after_snapshot".to_string(),
+                node_id: 2,
+                timestamp: 2000,
+            }),
+        }])
+        .await
+        .expect("Failed to append after snapshot");
 
     // Verify new entry was added
-    let log_state = storage.get_log_state().await.expect("Failed to get log state");
-    assert!(log_state.last_log_id.is_some(), "Should have last_log_id after snapshot");
-    assert_eq!(log_state.last_log_id.unwrap().index, 21, "Should have 21 entries total");
+    let log_state = storage
+        .get_log_state()
+        .await
+        .expect("Failed to get log state");
+    assert!(
+        log_state.last_log_id.is_some(),
+        "Should have last_log_id after snapshot"
+    );
+    assert_eq!(
+        log_state.last_log_id.unwrap().index,
+        21,
+        "Should have 21 entries total"
+    );
 }
 
 // Test 8: Multiple snapshots
@@ -279,24 +337,41 @@ async fn test_multiple_snapshots() {
     for snapshot_num in 0..3 {
         // Add entries before snapshot
         for i in 0..5 {
-            storage.append_to_log(vec![Entry {
-                log_id: LogId::new(CommittedLeaderId::new(1, 1), snapshot_num * 5 + i + 1),
-                payload: EntryPayload::Normal(OwnershipCommand::ClaimTopic {
-                    topic: format!("topic.s{}_e{}", snapshot_num, i),
-                    node_id: 1,
-                    timestamp: 1000 + (snapshot_num * 5 + i) as u64,
-                }),
-            }]).await.expect("Failed to append entry");
+            storage
+                .append_to_log(vec![Entry {
+                    log_id: LogId::new(CommittedLeaderId::new(1, 1), snapshot_num * 5 + i + 1),
+                    payload: EntryPayload::Normal(OwnershipCommand::ClaimTopic {
+                        topic: format!("topic.s{}_e{}", snapshot_num, i),
+                        node_id: 1,
+                        timestamp: 1000 + (snapshot_num * 5 + i) as u64,
+                    }),
+                }])
+                .await
+                .expect("Failed to append entry");
         }
 
         // Create snapshot
-        let snapshot = storage.build_snapshot().await.expect("Failed to build snapshot");
-        assert!(snapshot.meta.last_log_id.is_some(), "Snapshot {} should have log_id", snapshot_num);
+        let snapshot = storage
+            .build_snapshot()
+            .await
+            .expect("Failed to build snapshot");
+        assert!(
+            snapshot.meta.last_log_id.is_some(),
+            "Snapshot {} should have log_id",
+            snapshot_num
+        );
     }
 
     // Verify all 15 entries are still in log
-    let log_state = storage.get_log_state().await.expect("Failed to get log state");
-    assert_eq!(log_state.last_log_id.unwrap().index, 15, "Should have all 15 entries");
+    let log_state = storage
+        .get_log_state()
+        .await
+        .expect("Failed to get log state");
+    assert_eq!(
+        log_state.last_log_id.unwrap().index,
+        15,
+        "Should have all 15 entries"
+    );
 }
 
 // Test 9: Log compaction with purging
@@ -306,23 +381,36 @@ async fn test_log_compaction_with_purging() {
 
     // Add entries
     for i in 0..10 {
-        storage.append_to_log(vec![Entry {
-            log_id: LogId::new(CommittedLeaderId::new(1, 1), i + 1),
-            payload: EntryPayload::Normal(OwnershipCommand::ClaimTopic {
-                topic: format!("topic.compact_{}", i),
-                node_id: 1,
-                timestamp: 1000 + i as u64,
-            }),
-        }]).await.expect("Failed to append entry");
+        storage
+            .append_to_log(vec![Entry {
+                log_id: LogId::new(CommittedLeaderId::new(1, 1), i + 1),
+                payload: EntryPayload::Normal(OwnershipCommand::ClaimTopic {
+                    topic: format!("topic.compact_{}", i),
+                    node_id: 1,
+                    timestamp: 1000 + i as u64,
+                }),
+            }])
+            .await
+            .expect("Failed to append entry");
     }
 
     // Purge first 5 entries (simulate snapshot compaction)
     let log_id_to_purge = LogId::new(CommittedLeaderId::new(1, 1), 5);
-    storage.purge_logs_upto(log_id_to_purge).await.expect("Failed to purge");
+    storage
+        .purge_logs_upto(log_id_to_purge)
+        .await
+        .expect("Failed to purge");
 
     // Verify first 5 entries are removed
-    let log_state = storage.get_log_state().await.expect("Failed to get log state");
-    assert_eq!(log_state.last_purged_log_id.unwrap().index, 5, "Should have purged up to index 5");
+    let log_state = storage
+        .get_log_state()
+        .await
+        .expect("Failed to get log state");
+    assert_eq!(
+        log_state.last_purged_log_id.unwrap().index,
+        5,
+        "Should have purged up to index 5"
+    );
 }
 
 // Test 10: Concurrent storage clones
@@ -333,15 +421,23 @@ fn test_concurrent_storage_clones() {
 
     // Modify state through one clone
     let storage_clone1 = Arc::clone(&storage);
-    storage_clone1.ownership_state.write().unwrap().apply(&OwnershipCommand::ClaimTopic {
-        topic: "test.concurrency".to_string(),
-        node_id: 1,
-        timestamp: 1000,
-    });
+    storage_clone1
+        .ownership_state
+        .write()
+        .unwrap()
+        .apply(&OwnershipCommand::ClaimTopic {
+            topic: "test.concurrency".to_string(),
+            node_id: 1,
+            timestamp: 1000,
+        });
 
     // Verify other clone sees same state
     let storage_clone2 = Arc::clone(&storage);
-    let owner = storage_clone2.ownership_state.read().unwrap().get_owner("test.concurrency");
+    let owner = storage_clone2
+        .ownership_state
+        .read()
+        .unwrap()
+        .get_owner("test.concurrency");
     assert_eq!(owner, Some(1), "Clones should share state");
 }
 
@@ -352,34 +448,41 @@ async fn test_complete_roundtrip_persistence() {
 
     // Phase 1: Create storage and add entries
     {
-        let mut storage = AutoqueuesRaftStorage::with_persistence(temp.path())
-            .expect("Failed to create storage");
+        let mut storage =
+            AutoqueuesRaftStorage::with_persistence(temp.path()).expect("Failed to create storage");
 
         // Add log entries
-        let entries = vec![
-            Entry {
-                log_id: LogId::new(CommittedLeaderId::new(1, 1), 1),
-                payload: EntryPayload::Normal(OwnershipCommand::ClaimTopic {
-                    topic: "roundtrip.topic".to_string(),
-                    node_id: 1,
-                    timestamp: 1000,
-                }),
-            },
-        ];
+        let entries = vec![Entry {
+            log_id: LogId::new(CommittedLeaderId::new(1, 1), 1),
+            payload: EntryPayload::Normal(OwnershipCommand::ClaimTopic {
+                topic: "roundtrip.topic".to_string(),
+                node_id: 1,
+                timestamp: 1000,
+            }),
+        }];
 
-        storage.append_to_log(entries).await.expect("Failed to append");
+        storage
+            .append_to_log(entries)
+            .await
+            .expect("Failed to append");
 
         // Save vote
         let vote = Vote::new(1, 1);
         storage.save_vote(&vote).await.expect("Failed to save vote");
 
         // Save ownership state - use mark_dirty_and_flush for direct modifications
-        storage.ownership_state.write().unwrap().apply(&OwnershipCommand::ClaimTopic {
-            topic: "roundtrip.state".to_string(),
-            node_id: 1,
-            timestamp: 1001,
-        });
-        storage.mark_dirty_and_flush().expect("Failed to flush ownership state");
+        storage
+            .ownership_state
+            .write()
+            .unwrap()
+            .apply(&OwnershipCommand::ClaimTopic {
+                topic: "roundtrip.state".to_string(),
+                node_id: 1,
+                timestamp: 1001,
+            });
+        storage
+            .mark_dirty_and_flush()
+            .expect("Failed to flush ownership state");
     } // storage is dropped here - Drop implementation should also flush
 
     // Phase 2: Recreate storage (simulating restart)
@@ -387,13 +490,24 @@ async fn test_complete_roundtrip_persistence() {
         .expect("Failed to create recovered storage");
 
     // Phase 3: Verify all data restored
-    let log_state = storage2.get_log_state().await.expect("Failed to get log state");
-    assert_eq!(log_state.last_log_id.unwrap().index, 1, "Should have 1 log entry");
+    let log_state = storage2
+        .get_log_state()
+        .await
+        .expect("Failed to get log state");
+    assert_eq!(
+        log_state.last_log_id.unwrap().index,
+        1,
+        "Should have 1 log entry"
+    );
 
     let vote = storage2.read_vote().await.expect("Failed to read vote");
     assert!(vote.is_some(), "Should have vote");
 
-    let owner = storage2.ownership_state.read().unwrap().get_owner("roundtrip.state");
+    let owner = storage2
+        .ownership_state
+        .read()
+        .unwrap()
+        .get_owner("roundtrip.state");
     assert_eq!(owner, Some(1), "Should have ownership state");
 }
 
@@ -427,23 +541,41 @@ async fn test_log_state_operations() {
     let mut storage = AutoqueuesRaftStorage::new();
 
     // Initially empty
-    let state = storage.get_log_state().await.expect("Failed to get initial log state");
-    assert!(state.last_purged_log_id.is_none(), "Should have no purged logs initially");
-    assert!(state.last_log_id.is_none(), "Should have no log entries initially");
+    let state = storage
+        .get_log_state()
+        .await
+        .expect("Failed to get initial log state");
+    assert!(
+        state.last_purged_log_id.is_none(),
+        "Should have no purged logs initially"
+    );
+    assert!(
+        state.last_log_id.is_none(),
+        "Should have no log entries initially"
+    );
 
     // Add entries
-    storage.append_to_log(vec![Entry {
-        log_id: LogId::new(CommittedLeaderId::new(1, 1), 1),
-        payload: EntryPayload::Normal(OwnershipCommand::ClaimTopic {
-            topic: "test.state".to_string(),
-            node_id: 1,
-            timestamp: 1000,
-        }),
-    }]).await.expect("Failed to append");
+    storage
+        .append_to_log(vec![Entry {
+            log_id: LogId::new(CommittedLeaderId::new(1, 1), 1),
+            payload: EntryPayload::Normal(OwnershipCommand::ClaimTopic {
+                topic: "test.state".to_string(),
+                node_id: 1,
+                timestamp: 1000,
+            }),
+        }])
+        .await
+        .expect("Failed to append");
 
     // Should have log entry
-    let state = storage.get_log_state().await.expect("Failed to get log state");
-    assert!(state.last_log_id.is_some(), "Should have last_log_id after append");
+    let state = storage
+        .get_log_state()
+        .await
+        .expect("Failed to get log state");
+    assert!(
+        state.last_log_id.is_some(),
+        "Should have last_log_id after append"
+    );
 }
 
 // Test 14: Delete conflicting logs
@@ -453,23 +585,36 @@ async fn test_delete_conflicting_logs() {
 
     // Add entries
     for i in 0..10 {
-        storage.append_to_log(vec![Entry {
-            log_id: LogId::new(CommittedLeaderId::new(1, 1), i + 1),
-            payload: EntryPayload::Normal(OwnershipCommand::ClaimTopic {
-                topic: format!("topic.conflict_{}", i),
-                node_id: 1,
-                timestamp: 1000 + i as u64,
-            }),
-        }]).await.expect("Failed to append");
+        storage
+            .append_to_log(vec![Entry {
+                log_id: LogId::new(CommittedLeaderId::new(1, 1), i + 1),
+                payload: EntryPayload::Normal(OwnershipCommand::ClaimTopic {
+                    topic: format!("topic.conflict_{}", i),
+                    node_id: 1,
+                    timestamp: 1000 + i as u64,
+                }),
+            }])
+            .await
+            .expect("Failed to append");
     }
 
     // Delete logs from index 5 onwards
     let log_id = LogId::new(CommittedLeaderId::new(1, 1), 5);
-    storage.delete_conflict_logs_since(log_id).await.expect("Failed to delete");
+    storage
+        .delete_conflict_logs_since(log_id)
+        .await
+        .expect("Failed to delete");
 
     // Verify logs 5-10 were deleted - last_log_id should now be 4
-    let log_state = storage.get_log_state().await.expect("Failed to get log state");
-    assert_eq!(log_state.last_log_id.unwrap().index, 4, "Should have entries 1-4 after deletion");
+    let log_state = storage
+        .get_log_state()
+        .await
+        .expect("Failed to get log state");
+    assert_eq!(
+        log_state.last_log_id.unwrap().index,
+        4,
+        "Should have entries 1-4 after deletion"
+    );
 }
 
 // Test 15: Ownership state recovery
@@ -479,8 +624,8 @@ async fn test_ownership_state_recovery() {
 
     // Phase 1: Create and save state
     {
-        let storage = AutoqueuesRaftStorage::with_persistence(temp.path())
-            .expect("Failed to create storage");
+        let storage =
+            AutoqueuesRaftStorage::with_persistence(temp.path()).expect("Failed to create storage");
 
         // Apply multiple commands
         let commands = vec![
@@ -506,12 +651,14 @@ async fn test_ownership_state_recovery() {
         }
 
         // Explicitly flush to persist the ownership state
-        storage.mark_dirty_and_flush().expect("Failed to flush ownership state");
+        storage
+            .mark_dirty_and_flush()
+            .expect("Failed to flush ownership state");
     }
 
     // Phase 2: Recover and verify
-    let storage2 = AutoqueuesRaftStorage::with_persistence(temp.path())
-        .expect("Failed to create storage2");
+    let storage2 =
+        AutoqueuesRaftStorage::with_persistence(temp.path()).expect("Failed to create storage2");
 
     let state = storage2.ownership_state.read().unwrap();
 
@@ -540,12 +687,14 @@ fn test_serializable_log_entry_serialization() {
     let se = SerializableLogEntry::from(&entry);
 
     // Serialize
-    let serialized = oxicode::serde::encode_to_vec(&se, oxicode::config::standard()).expect("Failed to serialize");
+    let serialized = oxicode::serde::encode_to_vec(&se, oxicode::config::standard())
+        .expect("Failed to serialize");
 
     // Deserialize
-    let restored: SerializableLogEntry = oxicode::serde::decode_from_slice(&serialized, oxicode::config::standard())
-        .map(|(v, _)| v)
-        .expect("Failed to deserialize");
+    let restored: SerializableLogEntry =
+        oxicode::serde::decode_from_slice(&serialized, oxicode::config::standard())
+            .map(|(v, _)| v)
+            .expect("Failed to deserialize");
 
     // Convert back
     let entry2: Entry<TypeConfig> = restored.into();
@@ -560,7 +709,7 @@ fn test_serializable_log_entry_serialization() {
 fn test_serializable_vote_serialization() {
     let vote = Vote::new(3, 7);
 
-    // Create SerializableVote manually 
+    // Create SerializableVote manually
     let sv = SerializableVote {
         term: vote.leader_id.term,
         node_id: vote.leader_id.node_id,
@@ -568,12 +717,14 @@ fn test_serializable_vote_serialization() {
     };
 
     // Serialize
-    let serialized = oxicode::serde::encode_to_vec(&sv, oxicode::config::standard()).expect("Failed to serialize");
+    let serialized = oxicode::serde::encode_to_vec(&sv, oxicode::config::standard())
+        .expect("Failed to serialize");
 
     // Deserialize
-    let restored: SerializableVote = oxicode::serde::decode_from_slice(&serialized, oxicode::config::standard())
-        .map(|(v, _)| v)
-        .expect("Failed to deserialize");
+    let restored: SerializableVote =
+        oxicode::serde::decode_from_slice(&serialized, oxicode::config::standard())
+            .map(|(v, _)| v)
+            .expect("Failed to deserialize");
 
     // Create Vote from SerializableVote components
     let vote2 = Vote::new(restored.term, restored.node_id);
@@ -598,12 +749,14 @@ fn test_ownership_state_oxicode_serialization() {
     });
 
     // Serialize
-    let serialized = oxicode::serde::encode_to_vec(&state, oxicode::config::standard()).expect("Failed to serialize");
+    let serialized = oxicode::serde::encode_to_vec(&state, oxicode::config::standard())
+        .expect("Failed to serialize");
 
     // Deserialize
-    let restored: OwnershipState = oxicode::serde::decode_from_slice(&serialized, oxicode::config::standard())
-        .map(|(v, _)| v)
-        .expect("Failed to deserialize");
+    let restored: OwnershipState =
+        oxicode::serde::decode_from_slice(&serialized, oxicode::config::standard())
+            .map(|(v, _)| v)
+            .expect("Failed to deserialize");
 
     assert_eq!(restored.get_owner("topic1"), Some(1));
     assert_eq!(restored.get_owner("topic2"), Some(2));

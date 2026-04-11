@@ -3,9 +3,9 @@
 //! This file contains stress tests that push the system to its limits
 //! with concurrent operations, high throughput, and many participants.
 
-use ddl::traits::ddl::{DDL, DdlConfig, DdlError};
-use ddl::DdlDistributed;
 use ddl::queue::source::{FunctionSource, QueueSource};
+use ddl::traits::ddl::{DdlConfig, DdlError, DDL};
+use ddl::DdlDistributed;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -65,7 +65,7 @@ async fn test_stress_many_subscribers() {
 
     // Create DDL instance for this test
     let ddl = DdlDistributed::new_standalone(config_clone.clone());
-    
+
     // ACT: Create 100 subscribers
     let mut streams = vec![];
     for _ in 0..100 {
@@ -114,7 +114,8 @@ async fn test_stress_high_throughput() {
     // Push in batches
     for batch in 0..10 {
         for i in 0..1000 {
-            let id = ddl.push(&topic, format!("batch{}_entry{}", batch, i).into_bytes())
+            let id = ddl
+                .push(&topic, format!("batch{}_entry{}", batch, i).into_bytes())
                 .await
                 .unwrap();
             all_ids.push(id);
@@ -128,9 +129,12 @@ async fn test_stress_high_throughput() {
     // Throughput should be reasonable
     let rate = (all_ids.len() as f64) / duration.as_secs_f64();
     log::info!("Push rate: {:.2} entries/second", rate);
-    
+
     // We expect at least 1000 entries/second (conservative)
-    assert!(rate > 1000.0, "Push rate should be at least 1000 entries/second");
+    assert!(
+        rate > 1000.0,
+        "Push rate should be at least 1000 entries/second"
+    );
 }
 
 // ============================================================================
@@ -160,7 +164,10 @@ async fn test_performance_baseline_push_rate() {
     let mut count = 0;
 
     while start.elapsed() < Duration::from_secs(1) {
-        match ddl.push(&topic, format!("entry_{}", count).into_bytes()).await {
+        match ddl
+            .push(&topic, format!("entry_{}", count).into_bytes())
+            .await
+        {
             Ok(_) => count += 1,
             Err(DdlError::BufferFull(_)) => {
                 // Drain some entries and continue
@@ -235,7 +242,7 @@ fn test_function_source_pause_resume() {
 
     // ASSERT: Source has correct initial state
     assert!(!source.is_paused());
-    
+
     // ACT: Pause the source
     source.pause();
     assert!(source.is_paused());
@@ -265,7 +272,10 @@ async fn test_stress_many_producers_one_topic() {
             let mut ids = vec![];
             for i in 0..20 {
                 let id = ddl_clone
-                    .push(&topic_clone, format!("p{}_e{}", producer_id, i).into_bytes())
+                    .push(
+                        &topic_clone,
+                        format!("p{}_e{}", producer_id, i).into_bytes(),
+                    )
                     .await
                     .unwrap();
                 ids.push(id);

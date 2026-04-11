@@ -59,11 +59,15 @@ impl Transport for ZmqTransport {
     /// Connect to remote address
     async fn connect(&mut self, addr: &str) -> Result<ConnectionInfo, TransportError> {
         let socket = self.socket.lock().await;
-        
+
         // Connect to the address
-        socket.connect(addr).map_err(|_e| TransportError::ConnectionLost {
-            remote_addr: addr.parse().unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0))),
-        })?;
+        socket
+            .connect(addr)
+            .map_err(|_e| TransportError::ConnectionLost {
+                remote_addr: addr
+                    .parse()
+                    .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0))),
+            })?;
 
         let connection_info = ConnectionInfo {
             remote_addr: addr.to_string(),
@@ -82,11 +86,16 @@ impl Transport for ZmqTransport {
     /// Send data to remote endpoint
     async fn send(&mut self, data: &[u8]) -> Result<(), TransportError> {
         let socket = self.socket.lock().await;
-        
+
         let msg = Message::from(data);
-        socket.send(msg, 0).map_err(|_e| TransportError::ConnectionLost {
-            remote_addr: self.remote_addr.parse().unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0))),
-        })?;
+        socket
+            .send(msg, 0)
+            .map_err(|_e| TransportError::ConnectionLost {
+                remote_addr: self
+                    .remote_addr
+                    .parse()
+                    .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0))),
+            })?;
 
         Ok(())
     }
@@ -94,10 +103,15 @@ impl Transport for ZmqTransport {
     /// Receive data from remote endpoint
     async fn receive(&mut self) -> Result<Vec<u8>, TransportError> {
         let socket = self.socket.lock().await;
-        
-        let msg = socket.recv_bytes(0).map_err(|_e| TransportError::ConnectionLost {
-            remote_addr: self.remote_addr.parse().unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0))),
-        })?;
+
+        let msg = socket
+            .recv_bytes(0)
+            .map_err(|_e| TransportError::ConnectionLost {
+                remote_addr: self
+                    .remote_addr
+                    .parse()
+                    .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0))),
+            })?;
 
         Ok(msg)
     }

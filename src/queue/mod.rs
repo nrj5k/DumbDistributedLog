@@ -14,4 +14,3 @@ pub use interval::{AimdController, IntervalConfig};
 pub use persistence::{PersistenceConfig, PersistenceManager, QueuePersistence};
 pub use queue_server::{QueueError, QueueServerHandle};
 pub use spmc_lockfree_queue::{SPMCConsumer, SPMCLockFreeQueue};
-

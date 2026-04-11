@@ -2,15 +2,14 @@
 //!
 //! Bridges TCP server → Raft processing for multi-node coordination.
 
-use std::sync::Arc;
-use openraft::Raft;
+use crate::cluster::types::TypeConfig;
+use openraft::error::{InstallSnapshotError, RaftError};
 use openraft::raft::{
-    AppendEntriesRequest, AppendEntriesResponse,
-    InstallSnapshotRequest, InstallSnapshotResponse,
+    AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
     VoteRequest, VoteResponse,
 };
-use openraft::error::{RaftError, InstallSnapshotError};
-use crate::cluster::types::TypeConfig;
+use openraft::Raft;
+use std::sync::Arc;
 
 /// Routes incoming RPCs to the Raft instance
 pub struct RaftMessageRouter {

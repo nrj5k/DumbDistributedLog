@@ -1,6 +1,6 @@
 //! Basic usage example for the DDL API
 
-use ddl::{DdlDistributed, DDL, DdlConfig};
+use ddl::{DdlConfig, DdlDistributed, DDL};
 
 #[tokio::main]
 async fn main() {
@@ -28,7 +28,10 @@ async fn main() {
     match ddl.subscribe("cpu").await {
         Ok(stream) => {
             if let Some(entry) = stream.try_next() {
-                println!("Received CPU entry: {:?}", String::from_utf8_lossy(&entry.payload));
+                println!(
+                    "Received CPU entry: {:?}",
+                    String::from_utf8_lossy(&entry.payload)
+                );
                 // Acknowledge the entry
                 if let Err(e) = ddl.ack("cpu", entry.id).await {
                     println!("Error acknowledging CPU entry: {}", e);
@@ -36,7 +39,7 @@ async fn main() {
                     println!("Acknowledged CPU entry");
                 }
             }
-        },
+        }
         Err(e) => println!("Error subscribing to CPU: {}", e),
     }
 
